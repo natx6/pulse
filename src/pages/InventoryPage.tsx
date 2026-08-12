@@ -1,0 +1,177 @@
+import { useMemo, useState } from "react";
+import { useStore } from "../store/useStore";
+import { stockStatus } from "../lib/stock";
+import { fmtMoney } from "../lib/money";
+import type { Product } from "../types";
+
+function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reorder_level"> }) {
+  const st = stockStatus(p as Product);
+  if (st === "critical")
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-error/20 bg-error-container px-2 py-0.5 text-[10px] font-bold leading-tight text-on-error-container">
+        <span className="h-1.5 w-1.5 rounded-full bg-error" /> Critical
+      </span>
+    );
+  if (st === "low")
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-[#fef08a] bg-[#fef08a]/20 px-2 py-0.5 text-[10px] font-bold leading-tight text-[#854d0e]">
+        <span className="h-1.5 w-1.5 rounded-full bg-[#eab308]" /> Reorder Soon
+      </span>
+    );
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-surface-container px-2 py-0.5 text-[10px] font-bold leading-tight text-primary">
+      <span className="h-1.5 w-1.5 rounded-full bg-primary" /> In Stock
+    </span>
+  );
+}
+
+export function InventoryPage() {
+  const products = useStore((s) => s.products);
+  const setIntakeOpen = useStore((s) => s.setIntakeOpen);
+  const [q, setQ] = useState("");
+
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return products;
+    return products.filter(
+      (p) =>
+        p.name.toLowerCase().includes(s) ||
+        (p.barcode ?? "").includes(s) ||
+        (p.supplier ?? "").toLowerCase().includes(s),
+    );
+  }, [products, q]);
+
+  return (
+    <div className="flex h-full flex-col overflow-auto bg-surface-container-lowest p-margin-page">
+      <div className="mb-4 flex items-end justify-between">
+        <div>
+          <h2 className="mb-1 text-headline-md font-headline-md text-on-surface">
+            Inventory Management
+          </h2>
+          <p className="text-body-sm font-body-sm text-on-surface-variant">
+            Stock levels, batches, and suppliers. Status updates live after every sale.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <span className="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-[18px] text-on-surface-variant">
+              search
+            </span>
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search Inventory..."
+              className="h-8 w-64 rounded border border-outline-variant bg-surface-container-low pl-8 pr-12 text-body-sm text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            <span className="absolute right-2 top-1/2 flex h-4 -translate-y-1/2 items-center rounded-[2px] border border-outline-variant bg-surface-container px-1 text-shortcut-hint font-shortcut-hint text-on-surface-variant">
+              Ctrl+K
+            </span>
+          </div>
+          <button
+            className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
+            title="Print Label — coming soon"
+          >
+            <span className="material-symbols-outlined text-[16px]">print</span>
+            <span className="text-label-md font-label-md">Print Label</span>
+          </button>
+          <button
+            onClick={() => setIntakeOpen(true)}
+            className="flex items-center gap-2 rounded bg-primary px-4 py-1.5 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant"
+          >
+            <span className="material-symbols-outlined text-[16px]">add_box</span>
+            <span className="text-label-md font-label-md">Quick Stock Receive</span>
+            <span className="rounded-[2px] border border-on-primary/30 px-1 text-shortcut-hint font-shortcut-hint opacity-80">
+              [F2]
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <div className="flex h-[calc(100vh-14rem)] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface-container-lowest">
+        <div className="flex items-center border-b border-outline-variant bg-surface-container-low px-4 py-2">
+          <div className="flex-1 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+            Item Name
+          </div>
+          <div className="w-28 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+            Batch
+          </div>
+          <div className="w-36 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+            Supplier
+          </div>
+          <div className="w-40 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+            Barcode ID
+          </div>
+          <div className="w-28 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+            Expiry
+          </div>
+          <div className="w-20 text-right pr-2 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+            Qty
+          </div>
+          <div className="w-28 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+            Status
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {filtered.length === 0 && (
+            <p className="p-8 text-center text-body-sm text-on-surface-variant">
+              No items found.
+            </p>
+          )}
+          {filtered.map((p) => {
+            const st = stockStatus(p);
+            return (
+              <div
+                key={p.id}
+                className={`flex items-center border-b border-outline-variant px-4 transition-colors hover:bg-surface-container-low ${
+                  st === "critical" ? "border-l-[3px] border-l-error bg-error/5" : ""
+                }`}
+                style={{ height: 36 }}
+              >
+                <div className="flex-1 truncate pr-4 text-body-sm font-medium text-on-surface">
+                  {p.name}
+                </div>
+                <div className="w-28 truncate font-data-mono text-data-mono text-on-surface-variant">
+                  {p.batch_no ?? "—"}
+                </div>
+                <div className="w-36 truncate pr-4 text-body-sm text-on-surface-variant">
+                  {p.supplier ?? "—"}
+                </div>
+                <div className="w-40 truncate font-data-mono text-data-mono text-on-surface-variant">
+                  {p.barcode ?? "—"}
+                </div>
+                <div
+                  className={`w-28 text-body-sm ${
+                    st === "critical" ? "font-medium text-error" : "text-on-surface-variant"
+                  }`}
+                >
+                  {p.expiry_date ?? "—"}
+                </div>
+                <div className="w-20 pr-4 text-right font-data-mono text-data-mono text-on-surface">
+                  {p.stock_qty}
+                </div>
+                <div className="w-28">
+                  <StatusPill p={p} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex h-10 shrink-0 items-center justify-between border-t border-outline-variant bg-surface-container-low px-4">
+          <div className="text-body-sm font-body-sm text-on-surface-variant">
+            {filtered.length} of {products.length} items
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="px-2 text-body-sm font-body-sm text-on-surface">Cost of stock:</span>
+            <span className="font-data-mono text-data-mono font-bold text-primary">
+              {fmtMoney(
+                products.reduce((s, p) => s + p.cost_price * p.stock_qty, 0),
+              )}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
