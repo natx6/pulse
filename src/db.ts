@@ -210,8 +210,15 @@ export async function completeSale(
   lines: SaleLine[],
   payments: PaymentLine[],
   operator: string | null,
+  patient: { name: string; phone: string } | null = null,
 ): Promise<SaleResult> {
-  return await invoke("complete_sale", { payments, lines, operator });
+  return await invoke("complete_sale", {
+    payments,
+    lines,
+    operator,
+    patientName: patient?.name?.trim() || null,
+    patientPhone: patient?.phone?.trim() || null,
+  });
 }
 
 export async function backupDb(): Promise<string> {
@@ -267,6 +274,40 @@ export async function restoreBackup(name: string): Promise<string> {
 /** Restart the whole app (never resolves). */
 export async function restartApp(): Promise<void> {
   return await invoke("restart_app");
+}
+
+export interface CashUp {
+  id: number;
+  day: string;
+  operator: string | null;
+  opening_float: number;
+  counted: number;
+  variance: number;
+  timestamp: string;
+}
+
+/** Record a daily till reconciliation. */
+export async function saveCashUp(input: {
+  day: string;
+  opening_float: number;
+  counted: number;
+  variance: number;
+  operator: string | null;
+}): Promise<void> {
+  const d = await initDb();
+  await d.execute(
+    "INSERT INTO cash_ups (day, operator, opening_float, counted, variance) VALUES ($1,$2,$3,$4,$5)",
+    [input.day, input.operator, input.opening_float, input.counted, input.variance],
+  );
+}
+
+/** Past cash-ups for a day, newest first. */
+export async function listCashUps(day: string): Promise<CashUp[]> {
+  const d = await initDb();
+  return await d.select<CashUp[]>(
+    "SELECT id, day, operator, opening_float, counted, variance, timestamp FROM cash_ups WHERE day = $1 ORDER BY id DESC",
+    [day],
+  );
 }
 
 /** Write CSV rows (client-rendered) to an exports/ file; returns its path. */

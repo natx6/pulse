@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { initDb, backupDb, exportReport, voidLastSale } from "../db";
+import { initDb, backupDb, exportReport, voidLastSale, saveCashUp as dbSaveCashUp, listCashUps } from "../db";
+import type { CashUp } from "../db";
 import { useStore } from "../store/useStore";
 import type { PaymentLine, PaymentMethod } from "../types";
 import { fmtMoney } from "../lib/money";
@@ -40,6 +41,8 @@ interface Report {
   }[];
   /** Id of today's last sale — the only sale the Void action may target. */
   voidableId: number | null;
+  /** Operator names found on sales in the range (for the filter dropdown). */
+  legacyOps: string[];
 }
 
 const fmt = (d: Date) =>
@@ -64,11 +67,18 @@ function rangeDates(r: Range, customFrom: string, customTo: string): { from: str
   return { from: customFrom || fmt(now), to: customTo || fmt(now) };
 }
 
-async function fetchReport(from: string, to: string): Promise<Report> {
+async function fetchReport(
+  from: string,
+  to: string,
+  op: string | null,
+): Promise<Report> {
   const db = await initDb();
+  // Operator filter: `operator = $3` when a specific operator is selected.
+  const opCond = op ? " AND operator = $3" : "";
+  const p = op ? [from, to, op] : [from, to];
   const [summary] = await db.select<{ n: number; revenue: number }[]>(
-    "SELECT COUNT(*) AS n, COALESCE(SUM(total_amount),0) AS revenue FROM sales WHERE date(timestamp) BETWEEN $1 AND $2",
-    [from, to],
+    `SELECT COUNT(*) AS n, COALESCE(SUM(total_amount),0) AS revenue FROM sales WHERE date(timestamp) BETWEEN $1 AND $2${opCond}`,
+    p,
   );
   const [vol] = await db.select<{ items: number; profit: number }[]>(
     `SELECT COALESCE(SUM(si.quantity),0) AS items,
@@ -76,26 +86,26 @@ async function fetchReport(from: string, to: string): Promise<Report> {
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
      JOIN products p ON p.id = si.product_id
-     WHERE date(s.timestamp) BETWEEN $1 AND $2`,
-    [from, to],
+     WHERE date(s.timestamp) BETWEEN $1 AND $2${opCond.replace("operator", "s.operator")}`,
+    p,
   );
   const byMethod = await db.select<{ method: string; amt: number; n: number }[]>(
     `SELECT method, SUM(amount) AS amt, COUNT(*) AS n FROM (
        SELECT sp.method AS method, sp.amount AS amount
        FROM sale_payments sp JOIN sales s ON s.id = sp.sale_id
-       WHERE date(s.timestamp) BETWEEN $1 AND $2
+       WHERE date(s.timestamp) BETWEEN $1 AND $2${opCond.replace("operator", "s.operator")}
        UNION ALL
        SELECT s.payment_method, s.total_amount FROM sales s
-       WHERE date(s.timestamp) BETWEEN $1 AND $2
+       WHERE date(s.timestamp) BETWEEN $1 AND $2${opCond.replace("operator", "s.operator")}
          AND NOT EXISTS (SELECT 1 FROM sale_payments sp2 WHERE sp2.sale_id = s.id)
      ) GROUP BY method ORDER BY amt DESC`,
-    [from, to],
+    p,
   );
   const byOperator = await db.select<{ operator: string | null; amt: number; n: number }[]>(
     `SELECT operator, COUNT(*) AS n, SUM(total_amount) AS amt
-     FROM sales WHERE date(timestamp) BETWEEN $1 AND $2
+     FROM sales WHERE date(timestamp) BETWEEN $1 AND $2${opCond}
      GROUP BY operator ORDER BY amt DESC`,
-    [from, to],
+    p,
   );
   const byCategory = await db.select<
     { category: string | null; qty: number; amt: number; profit: number; n: number }[]
@@ -107,30 +117,34 @@ async function fetchReport(from: string, to: string): Promise<Report> {
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
      JOIN products p ON p.id = si.product_id
-     WHERE date(s.timestamp) BETWEEN $1 AND $2
+     WHERE date(s.timestamp) BETWEEN $1 AND $2${opCond.replace("operator", "s.operator")}
      GROUP BY p.category ORDER BY amt DESC`,
-    [from, to],
+    p,
   );
   const top = await db.select<{ product_name: string; qty: number; amt: number }[]>(
     `SELECT si.product_name, SUM(si.quantity) AS qty, SUM(si.quantity * si.unit_price) AS amt
      FROM sale_items si JOIN sales s ON s.id = si.sale_id
-     WHERE date(s.timestamp) BETWEEN $1 AND $2
+     WHERE date(s.timestamp) BETWEEN $1 AND $2${opCond.replace("operator", "s.operator")}
      GROUP BY si.product_name ORDER BY qty DESC LIMIT 8`,
-    [from, to],
+    p,
   );
   const recent = await db.select<Report["recent"]>(
-    "SELECT id, receipt_no, total_amount, payment_method, operator, timestamp FROM sales WHERE date(timestamp) BETWEEN $1 AND $2 ORDER BY id DESC LIMIT 10",
-    [from, to],
+    `SELECT id, receipt_no, total_amount, payment_method, operator, timestamp FROM sales WHERE date(timestamp) BETWEEN $1 AND $2${opCond} ORDER BY id DESC LIMIT 10`,
+    p,
   );
   const [returns] = await db.select<{ amount: number; n: number }[]>(
-    "SELECT COALESCE(SUM(total_refunded),0) AS amount, COUNT(*) AS n FROM sale_returns WHERE date(timestamp) BETWEEN $1 AND $2",
-    [from, to],
+    `SELECT COALESCE(SUM(total_refunded),0) AS amount, COUNT(*) AS n FROM sale_returns WHERE date(timestamp) BETWEEN $1 AND $2${opCond}`,
+    p,
   );
   const [latestToday] = await db.select<{ id: number }[]>(
     "SELECT id FROM sales WHERE date(timestamp) = date('now','localtime') ORDER BY id DESC LIMIT 1",
   );
   const adjustments = await db.select<Report["adjustments"]>(
     "SELECT product_name, delta, reason, operator, timestamp FROM stock_adjustments ORDER BY id DESC LIMIT 10",
+  );
+  const legacyOps = await db.select<{ operator: string }[]>(
+    `SELECT DISTINCT operator FROM sales WHERE date(timestamp) BETWEEN $1 AND $2 AND operator IS NOT NULL AND operator != '' ORDER BY operator`,
+    [from, to],
   );
   const slow = await db.select<Report["slow"]>(
     `SELECT p.name, p.stock_qty, (p.stock_qty * COALESCE(p.cost_price,0)) AS value
@@ -171,16 +185,19 @@ async function fetchReport(from: string, to: string): Promise<Report> {
     slow: slow.map((s) => ({ ...s, stock_qty: Number(s.stock_qty), value: Number(s.value) })),
     adjustments: adjustments.map((a) => ({ ...a, delta: Number(a.delta) })),
     voidableId: latestToday ? Number(latestToday.id) : null,
+    legacyOps: legacyOps.map((o) => o.operator).filter(Boolean),
   };
 }
 
 export function AnalyticsPage() {
   const products = useStore((s) => s.products);
   const operator = useStore((s) => s.operator);
+  const operators = useStore((s) => s.operators);
   const refreshProducts = useStore((s) => s.refreshProducts);
   const [range, setRange] = useState<Range>("today");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [opFilter, setOpFilter] = useState("All");
   const [report, setReport] = useState<Report | null>(null);
   const [err, setErr] = useState("");
   const [backupPath, setBackupPath] = useState("");
@@ -192,6 +209,84 @@ export function AnalyticsPage() {
   } | null>(null);
   const [voidArmed, setVoidArmed] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+
+  // ---- Daily cash-up ----
+  const [cashDay, setCashDay] = useState(fmt(new Date()));
+  const [cashFloat, setCashFloat] = useState("");
+  const [cashCounted, setCashCounted] = useState("");
+  const [cashUps, setCashUps] = useState<CashUp[]>([]);
+  const [cashData, setCashData] = useState({ sales: 0, refunds: 0 });
+  const [cashErr, setCashErr] = useState("");
+  const [cashBusy, setCashBusy] = useState(false);
+  const [cashSaved, setCashSaved] = useState(false);
+
+  const cashOp = opFilter === "All" ? null : opFilter;
+  useEffect(() => {
+    void (async () => {
+      try {
+        const db = await initDb();
+        const opCond = cashOp ? " AND s.operator = $2" : "";
+        const p = cashOp ? [cashDay, cashOp] : [cashDay];
+        const [sales] = await db.select<{ v: number }[]>(
+          `SELECT COALESCE(SUM(sp.amount),0) AS v FROM sale_payments sp
+           JOIN sales s ON s.id = sp.sale_id
+           WHERE sp.method = 'Cash' AND date(s.timestamp) = $1${opCond}`,
+          p,
+        );
+        const [refunds] = await db.select<{ v: number }[]>(
+          `SELECT COALESCE(SUM(sr.total_refunded),0) AS v FROM sale_returns sr
+           JOIN sales s ON s.id = sr.sale_id
+           WHERE s.payment_method = 'Cash' AND date(sr.timestamp) = $1${opCond}`,
+          p,
+        );
+        setCashData({
+          sales: Number(sales?.v ?? 0),
+          refunds: Number(refunds?.v ?? 0),
+        });
+        const ups = await listCashUps(cashDay);
+        setCashUps(ups);
+        if (ups.length > 0 && cashFloat === "") {
+          setCashFloat(String(ups[0].opening_float));
+        }
+        setCashErr("");
+      } catch (e) {
+        setCashErr(String(e));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cashDay, cashOp]);
+
+  const cashExpected = (Number(cashFloat) || 0) + cashData.sales - cashData.refunds;
+  const cashVariance = Math.round(((Number(cashCounted) || 0) - cashExpected) * 100) / 100;
+
+  const doCashUp = async () => {
+    const counted = Number(cashCounted);
+    if (!cashCounted.trim() || Number.isNaN(counted)) {
+      setCashErr("Enter the counted amount from the till.");
+      beep(false);
+      return;
+    }
+    setCashBusy(true);
+    setCashErr("");
+    try {
+      await dbSaveCashUp({
+        day: cashDay,
+        opening_float: Number(cashFloat) || 0,
+        counted,
+        variance: cashVariance,
+        operator,
+      });
+      setCashUps(await listCashUps(cashDay));
+      setCashSaved(true);
+      setTimeout(() => setCashSaved(false), 1500);
+      beep(true);
+    } catch (e) {
+      setCashErr(String(e));
+      beep(false);
+    } finally {
+      setCashBusy(false);
+    }
+  };
   const [reprint, setReprint] = useState<{
     result: { receipt_no: string; sale_id: number; total: number; change: number };
     lines: { productId: number; name: string; unit: string | null; unitPrice: number; qty: number }[];
@@ -210,14 +305,20 @@ export function AnalyticsPage() {
     return range;
   }, [range, from, to]);
 
+  const opOptions = useMemo(() => {
+    const set = new Set<string>(operators.map((o) => o.name));
+    (report?.legacyOps ?? []).forEach((n) => set.add(n));
+    return Array.from(set).sort();
+  }, [operators, report]);
+
   const load = useCallback(async () => {
     try {
-      setReport(await fetchReport(from, to));
+      setReport(await fetchReport(from, to, opFilter === "All" ? null : opFilter));
       setErr("");
     } catch (e) {
       setErr(String(e));
     }
-  }, [from, to]);
+  }, [from, to, opFilter]);
 
   useEffect(() => {
     void load();
@@ -277,6 +378,7 @@ export function AnalyticsPage() {
     if (!report) return;
     const rows: string[][] = [];
     rows.push([`Pulse Reports — ${rangeLabel}`]);
+    rows.push([`Operator: ${opFilter}`]);
     rows.push([]);
     rows.push(["Summary", "Transactions", "Items Sold", "Gross Profit (GH₵)"]);
     rows.push([
@@ -316,7 +418,11 @@ export function AnalyticsPage() {
     rows.push(["Slow Movers (no sale in 90 days)", "Stock Qty", "Stock Value (GH₵)"]);
     report.slow.forEach((s) => rows.push([s.name, String(s.stock_qty), s.value.toFixed(2)]));
     try {
-      const p = await exportReport(`sales-${rangeLabel}`, rows);
+      const opSuffix =
+        opFilter !== "All"
+          ? `-${opFilter.toLowerCase().replace(/[^a-z0-9]/g, "")}`
+          : "";
+      const p = await exportReport(`sales-${rangeLabel}${opSuffix}`, rows);
       setExportPath(p);
       beep(true);
     } catch (e) {
@@ -440,6 +546,19 @@ export function AnalyticsPage() {
               />
             </>
           )}
+          <select
+            value={opFilter}
+            onChange={(e) => setOpFilter(e.target.value)}
+            title="Filter every report section by operator"
+            className="h-8 rounded border border-outline-variant bg-surface px-2 text-label-md font-label-md text-on-surface focus:border-primary focus:outline-none"
+          >
+            <option value="All">Operator: All</option>
+            {opOptions.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
           <button
             onClick={() => void load()}
             className="rounded border border-outline-variant bg-surface px-3 py-1.5 text-label-md font-label-md text-on-surface hover:bg-surface-container-low"
@@ -663,6 +782,119 @@ export function AnalyticsPage() {
             </span>
           </div>
         ))}
+      </div>
+
+      <div className="mb-4 overflow-hidden rounded border border-outline-variant bg-surface">
+        <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
+          Daily Cash-up
+        </h3>
+        <div className="p-4">
+          <div className="mb-3 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-body-sm font-body-sm text-on-surface-variant">
+              Day
+              <input
+                type="date"
+                value={cashDay}
+                onChange={(e) => {
+                  setCashDay(e.target.value);
+                  setCashFloat("");
+                  setCashCounted("");
+                }}
+                className="h-8 rounded border border-outline-variant bg-surface-container-lowest px-2 font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
+              />
+            </label>
+            <span className="text-body-sm text-on-surface-variant">
+              Cash in the till = opening float + cash sales − cash refunds
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <label className="block">
+              <span className="mb-1 block text-label-md font-label-md text-on-surface">
+                Opening float (GH₵)
+              </span>
+              <input
+                value={cashFloat}
+                onChange={(e) => setCashFloat(e.target.value)}
+                inputMode="decimal"
+                placeholder="0.00"
+                className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-right font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
+              />
+            </label>
+            <div className="rounded border border-outline-variant/50 bg-surface-container-low p-2">
+              <span className="block text-label-md font-label-md text-on-surface-variant">Cash sales</span>
+              <span className="font-data-mono text-data-mono font-bold text-on-surface">
+                {fmtMoney(cashData.sales)}
+              </span>
+            </div>
+            <div className="rounded border border-outline-variant/50 bg-surface-container-low p-2">
+              <span className="block text-label-md font-label-md text-on-surface-variant">Cash refunds</span>
+              <span className="font-data-mono text-data-mono font-bold text-error">
+                −{fmtMoney(cashData.refunds)}
+              </span>
+            </div>
+            <div className="rounded border border-primary/20 bg-primary/5 p-2">
+              <span className="block text-label-md font-label-md text-primary">Expected in till</span>
+              <span className="font-data-mono text-data-mono font-bold text-primary">
+                {fmtMoney(cashExpected)}
+              </span>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <label className="block">
+              <span className="mb-1 block text-label-md font-label-md text-on-surface">
+                Counted (GH₵)
+              </span>
+              <input
+                value={cashCounted}
+                onChange={(e) => setCashCounted(e.target.value)}
+                inputMode="decimal"
+                placeholder="What's actually in the till"
+                className="h-9 w-52 rounded border border-outline-variant bg-surface-container-lowest px-3 text-right font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
+              />
+            </label>
+            <div className="pb-1">
+              <span className="block text-label-md font-label-md text-on-surface-variant">Variance</span>
+              <span
+                className={`font-data-mono text-data-mono text-headline-md font-bold ${
+                  cashVariance >= 0 ? "text-primary" : "text-error"
+                }`}
+              >
+                {cashCounted.trim() ? `${cashVariance >= 0 ? "+" : ""}${fmtMoney(cashVariance)}` : "—"}
+              </span>
+            </div>
+            <button
+              onClick={() => void doCashUp()}
+              disabled={cashBusy}
+              className="h-9 rounded bg-primary px-6 text-label-md font-label-md text-on-primary shadow-sm hover:bg-on-primary-fixed-variant disabled:opacity-50"
+            >
+              {cashSaved ? "Saved ✓" : cashBusy ? "Saving…" : "Save cash-up"}
+            </button>
+          </div>
+          {cashErr && <p className="mt-2 text-body-sm font-body-sm text-error">{cashErr}</p>}
+          {cashUps.length > 0 && (
+            <div className="mt-3 border-t border-outline-variant/50 pt-2">
+              <p className="mb-1 text-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+                Saved cash-ups for this day
+              </p>
+              {cashUps.slice(0, 5).map((u) => (
+                <div key={u.id} className="flex items-center justify-between py-0.5 text-body-sm text-on-surface">
+                  <span>
+                    float {fmtMoney(u.opening_float)} · counted {fmtMoney(u.counted)}
+                    {u.operator ? ` · ${u.operator}` : ""} · {u.timestamp}
+                  </span>
+                  <span
+                    className={`font-data-mono text-data-mono font-bold ${
+                      u.variance >= 0 ? "text-primary" : "text-error"
+                    }`}
+                  >
+                    {u.variance >= 0 ? "+" : ""}
+                    {fmtMoney(u.variance)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">

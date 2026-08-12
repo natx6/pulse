@@ -1,11 +1,18 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
-import { loadPurchaseOrders } from "../db";
+import { initDb, loadPurchaseOrders } from "../db";
 import type { PurchaseOrder } from "../db";
+import type { Product } from "../types";
 import { Tip } from "./Tip";
+import { PatientModal } from "./PatientModal";
 
 const fmt = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+interface PatientHit {
+  name: string;
+  phone: string | null;
+}
 
 export function TopBar() {
   const newSale = useStore((s) => s.newSale);
@@ -16,6 +23,65 @@ export function TopBar() {
 
   const [notifOpen, setNotifOpen] = useState(false);
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
+  const [searchText, setSearchText] = useState("");
+  const [matches, setMatches] = useState<{ products: Product[]; patients: PatientHit[] }>({
+    products: [],
+    patients: [],
+  });
+  const [patientModal, setPatientModal] = useState<PatientHit | null>(null);
+
+  // Live product + patient matches as the user types.
+  useEffect(() => {
+    const q = searchText.trim().toLowerCase();
+    if (!q) {
+      setMatches({ products: [], patients: [] });
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const db = await initDb();
+        const patients = await db.select<PatientHit[]>(
+          "SELECT name, phone FROM patients WHERE name LIKE $1 OR phone LIKE $1 ORDER BY name LIMIT 5",
+          [`%${q}%`],
+        );
+        if (cancelled) return;
+        setMatches({
+          products: products
+            .filter(
+              (p) => p.name.toLowerCase().includes(q) || (p.barcode ?? "").includes(q),
+            )
+            .slice(0, 5),
+          patients: patients.map((p) => ({ name: p.name, phone: p.phone ?? null })),
+        });
+      } catch {
+        if (!cancelled) setMatches({ products: [], patients: [] });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [searchText, products]);
+
+  const goToPosSearch = (q: string) => {
+    setSearch(q);
+    setPage("pos");
+    setSearchText("");
+    setMatches({ products: [], patients: [] });
+  };
+
+  const onEnter = () => {
+    const q = searchText.trim();
+    if (!q) return;
+    const exact = matches.patients.find((p) => p.name.toLowerCase() === q.toLowerCase());
+    if (exact) {
+      setSearchText("");
+      setMatches({ products: [], patients: [] });
+      setPatientModal(exact);
+    } else {
+      goToPosSearch(q);
+    }
+  };
 
   const refreshPos = () => {
     loadPurchaseOrders()
@@ -90,18 +156,17 @@ export function TopBar() {
         </span>
         <input
           id="global-search"
-          placeholder="Search patients, scripts..."
-          className="h-8 w-full rounded border border-outline-variant bg-surface-container-low pl-8 pr-14 text-body-sm placeholder-outline focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              const q = (e.target as HTMLInputElement).value.trim();
-              if (q) {
-                setSearch(q);
-                setPage("pos");
-                (e.target as HTMLInputElement).value = "";
-              }
+            if (e.key === "Enter") onEnter();
+            if (e.key === "Escape") {
+              setSearchText("");
+              setMatches({ products: [], patients: [] });
             }
           }}
+          placeholder="Search products, patients..."
+          className="h-8 w-full rounded border border-outline-variant bg-surface-container-low pl-8 pr-14 text-body-sm placeholder-outline focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
         />
         <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 opacity-60">
           <span className="rounded border border-outline-variant bg-surface px-1 text-shortcut-hint font-shortcut-hint text-on-surface-variant">
@@ -111,6 +176,57 @@ export function TopBar() {
             K
           </span>
         </div>
+
+        {searchText.trim() && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setSearchText("")} />
+            <div className="absolute left-0 right-0 top-10 z-50 overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
+              {matches.products.length > 0 && (
+                <div className="border-b border-outline-variant/50 px-3 py-1 text-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+                  Products
+                </div>
+              )}
+              {matches.products.map((p) => (
+                <button
+                  key={`p${p.id}`}
+                  onClick={() => goToPosSearch(p.name)}
+                  className="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-surface-container-low"
+                >
+                  <span className="min-w-0 truncate text-body-sm text-on-surface">{p.name}</span>
+                  <span className="ml-2 shrink-0 font-data-mono text-data-mono text-on-surface-variant">
+                    {p.barcode ?? "—"}
+                  </span>
+                </button>
+              ))}
+              {matches.patients.length > 0 && (
+                <div className="border-b border-outline-variant/50 px-3 py-1 text-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+                  Patients
+                </div>
+              )}
+              {matches.patients.map((pt) => (
+                <button
+                  key={`pt${pt.name}`}
+                  onClick={() => {
+                    setSearchText("");
+                    setMatches({ products: [], patients: [] });
+                    setPatientModal(pt);
+                  }}
+                  className="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-surface-container-low"
+                >
+                  <span className="min-w-0 truncate text-body-sm text-on-surface">{pt.name}</span>
+                  <span className="ml-2 shrink-0 font-data-mono text-data-mono text-on-surface-variant">
+                    {pt.phone ?? "—"}
+                  </span>
+                </button>
+              ))}
+              {matches.products.length === 0 && matches.patients.length === 0 && (
+                <p className="px-3 py-3 text-body-sm text-on-surface-variant">
+                  No matches — Enter searches the counter.
+                </p>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       <div className="flex items-center gap-4">
@@ -199,6 +315,14 @@ export function TopBar() {
           )}
         </div>
       </div>
+
+      {patientModal && (
+        <PatientModal
+          name={patientModal.name}
+          phone={patientModal.phone}
+          onClose={() => setPatientModal(null)}
+        />
+      )}
     </header>
   );
 }

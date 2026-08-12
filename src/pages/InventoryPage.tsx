@@ -4,6 +4,7 @@ import { stockStatus } from "../lib/stock";
 import { fmtMoney } from "../lib/money";
 import { adjustStock } from "../db";
 import { beep } from "../lib/audio";
+import { LabelModal } from "../components/LabelModal";
 import type { Product } from "../types";
 
 function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reorder_level"> }) {
@@ -39,6 +40,7 @@ export function InventoryPage() {
   const [note, setNote] = useState("");
   const [adjustErr, setAdjustErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [labelOpen, setLabelOpen] = useState(false);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -112,8 +114,9 @@ export function InventoryPage() {
             </span>
           </div>
           <button
+            onClick={() => setLabelOpen(true)}
             className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
-            title="Print Label — coming soon"
+            title="Print a scannable Code39 shelf label"
           >
             <span className="material-symbols-outlined text-[16px]">print</span>
             <span className="text-label-md font-label-md">Print Label</span>
@@ -298,6 +301,8 @@ export function InventoryPage() {
           </div>
         </div>
       )}
+
+      {labelOpen && <LabelModal onClose={() => setLabelOpen(false)} />}
     </div>
   );
 }

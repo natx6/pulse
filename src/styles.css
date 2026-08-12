@@ -124,13 +124,15 @@ body {
   background: #8fa398;
 }
 
-/* Print: only the receipt area */
+/* Print: only the receipt or label area */
 @media print {
   body * {
     visibility: hidden;
   }
   #receipt-area,
-  #receipt-area * {
+  #receipt-area *,
+  #label-area,
+  #label-area * {
     visibility: visible;
   }
   #receipt-area {
@@ -138,6 +140,14 @@ body {
     left: 0;
     top: 0;
     width: 80mm;
+    background: #fff;
+    color: #000;
+  }
+  #label-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 60mm;
     background: #fff;
     color: #000;
   }

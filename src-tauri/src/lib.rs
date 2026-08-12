@@ -1,4 +1,4 @@
-use rusqlite::TransactionBehavior;
+use rusqlite::{OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use tauri::{AppHandle, Manager};
@@ -48,6 +48,8 @@ fn complete_sale(
     payments: Vec<Payment>,
     lines: Vec<SaleLine>,
     operator: Option<String>,
+    patient_name: Option<String>,
+    patient_phone: Option<String>,
 ) -> Result<SaleResult, String> {
     if lines.is_empty() {
         return Err("Cart is empty".into());
@@ -109,19 +111,54 @@ fn complete_sale(
 
     // 3. Sale
     tx.execute(
-        "INSERT INTO sales (receipt_no, total_amount, payment_method, operator, tendered, change_given)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO sales (receipt_no, total_amount, payment_method, operator, tendered, change_given, patient_name, patient_phone)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             receipt_no,
             total,
             primary,
             operator,
             paid,
-            change
+            change,
+            patient_name,
+            patient_phone
         ],
     )
     .map_err(|e| e.to_string())?;
     let sale_id = tx.last_insert_rowid();
+
+    // 3a. Patient lookup index: populate `patients` (name-keyed) so search and
+    // history work. The sale itself keeps the name/phone snapshot.
+    if let Some(name) = patient_name.as_deref().map(str::trim) {
+        if !name.is_empty() {
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM patients WHERE name = ?1 LIMIT 1",
+                    [name],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match existing {
+                Some(pid) => {
+                    if patient_phone.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                        tx.execute(
+                            "UPDATE patients SET phone = COALESCE(?1, phone) WHERE id = ?2",
+                            rusqlite::params![patient_phone, pid],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+                None => {
+                    tx.execute(
+                        "INSERT INTO patients (name, phone) VALUES (?1, ?2)",
+                        rusqlite::params![name, patient_phone],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
 
     // 3b. Payment lines (one per method, optional transaction reference)
     for p in &payments {
@@ -686,6 +723,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0008_stock_adjustments",
         include_str!("../migrations/0008_stock_adjustments.sql"),
+    ),
+    (
+        "0009_patient_sales",
+        include_str!("../migrations/0009_patient_sales.sql"),
     ),
 ];
 
