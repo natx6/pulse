@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
-import { stockStatus } from "../lib/stock";
 import { fmtMoney } from "../lib/money";
 import { beep } from "../lib/audio";
 import { Tip } from "../components/Tip";
@@ -12,8 +11,6 @@ import {
   type PurchaseOrder,
   type PoItem,
 } from "../db";
-
-type View = "stock" | "reqs";
 
 function StatusPill({ po }: { po: PurchaseOrder }) {
   if (po.status === "received")
@@ -35,13 +32,11 @@ function StatusPill({ po }: { po: PurchaseOrder }) {
   );
 }
 
+/** Requisitions = what you've ordered from suppliers. Order here, receive
+ * stock via Inventory (F2 / Receive Stock). */
 export function RestockPage() {
-  const products = useStore((s) => s.products);
-  const setIntakeOpen = useStore((s) => s.setIntakeOpen);
   const refreshProducts = useStore((s) => s.refreshProducts);
 
-  const [view, setView] = useState<View>("stock");
-  const [q, setQ] = useState("");
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
   const [detail, setDetail] = useState<{ po: PurchaseOrder; items: PoItem[] } | null>(null);
   const [recv, setRecv] = useState<Record<number, string>>({});
@@ -53,18 +48,7 @@ export function RestockPage() {
   };
   useEffect(() => {
     void loadPos();
-  }, [view]);
-
-  const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    if (!s) return products;
-    return products.filter(
-      (p) =>
-        p.name.toLowerCase().includes(s) ||
-        (p.barcode ?? "").includes(s) ||
-        (p.supplier ?? "").toLowerCase().includes(s),
-    );
-  }, [products, q]);
+  }, []);
 
   const openDetail = async (po: PurchaseOrder) => {
     const items = await loadPoItems(po.id);
@@ -102,40 +86,23 @@ export function RestockPage() {
       <div className="mb-4 flex items-end justify-between">
         <div>
           <h2 className="mb-1 text-headline-lg font-headline-lg text-on-surface">
-            Restocking
+            Requisitions
           </h2>
           <p className="text-body-sm font-body-sm text-on-surface-variant">
-            Receive stock or raise requisitions to order more.
+            What you've ordered from suppliers. When the goods arrive, open the
+            requisition and receive them — stock lands in Inventory.
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search inventory..."
-            className="h-8 w-64 rounded border border-outline-variant bg-surface px-3 text-body-sm text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-          />
-          {view === "stock" ? (
-            <Tip label="Receive stock — scan or enter a barcode (F2)" align="right">
-              <button
-                onClick={() => setIntakeOpen(true)}
-                className="flex h-8 items-center gap-2 rounded bg-primary px-4 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant"
-              >
-                <span className="material-symbols-outlined text-[16px]">system_update_alt</span>
-                <span className="text-label-md font-label-md">Inventory Intake</span>
-              </button>
-            </Tip>
-          ) : (
-            <Tip label="Create a purchase requisition" align="right">
-              <button
-                onClick={() => setReqOpen(true)}
-                className="flex h-8 items-center gap-2 rounded bg-primary px-4 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant"
-              >
-                <span className="material-symbols-outlined text-[16px]">add_shopping_cart</span>
-                <span className="text-label-md font-label-md">New Requisition</span>
-              </button>
-            </Tip>
-          )}
+          <Tip label="Create a purchase requisition" align="right">
+            <button
+              onClick={() => setReqOpen(true)}
+              className="flex h-8 items-center gap-2 rounded bg-primary px-4 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant"
+            >
+              <span className="material-symbols-outlined text-[16px]">add_shopping_cart</span>
+              <span className="text-label-md font-label-md">New Requisition</span>
+            </button>
+          </Tip>
         </div>
       </div>
 
@@ -145,148 +112,47 @@ export function RestockPage() {
         </p>
       )}
 
-      <div className="mb-3 flex w-fit overflow-hidden rounded border border-outline-variant">
-        <button
-          onClick={() => setView("stock")}
-          className={`px-4 py-1.5 text-label-md font-label-md transition-colors ${
-            view === "stock"
-              ? "bg-primary text-on-primary"
-              : "bg-surface text-on-surface hover:bg-surface-container-low"
-          }`}
-        >
-          Stock
-        </button>
-        <button
-          onClick={() => setView("reqs")}
-          className={`px-4 py-1.5 text-label-md font-label-md transition-colors ${
-            view === "reqs"
-              ? "bg-primary text-on-primary"
-              : "bg-surface text-on-surface hover:bg-surface-container-low"
-          }`}
-        >
-          Requisitions
-        </button>
+      <div className="flex flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface">
+        <div className="flex items-center border-b border-outline-variant bg-surface-container-low px-4 py-2 text-label-md font-label-md text-on-surface-variant">
+          <div className="w-36">Requisition No.</div>
+          <div className="flex-1">Supplier</div>
+          <div className="w-20 text-right">Items</div>
+          <div className="w-32 text-right">Created</div>
+          <div className="w-28 text-right">Status</div>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {pos.length === 0 && (
+            <p className="p-8 text-center text-body-sm text-on-surface-variant">
+              No requisitions yet. Create one to order stock — receive it here
+              when it arrives.
+            </p>
+          )}
+          {pos.map((po) => (
+            <button
+              key={po.id}
+              onClick={() => void openDetail(po)}
+              className="flex w-full items-center border-b border-surface-variant bg-surface px-4 text-body-sm font-body-sm transition-colors hover:bg-surface-container-low"
+              style={{ height: 36 }}
+            >
+              <div className="w-36 truncate text-left font-data-mono text-data-mono text-on-surface">
+                {po.po_no}
+              </div>
+              <div className="flex-1 truncate pr-4 text-left text-on-surface-variant">
+                {po.supplier ?? "—"}
+              </div>
+              <div className="w-20 pr-4 text-right font-data-mono text-data-mono">
+                {po.item_count}
+              </div>
+              <div className="w-32 pr-4 text-right font-data-mono text-data-mono text-on-surface-variant">
+                {po.created_at}
+              </div>
+              <div className="w-28 text-right">
+                <StatusPill po={po} />
+              </div>
+            </button>
+          ))}
+        </div>
       </div>
-
-      {view === "stock" ? (
-        <div className="flex flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface">
-          <div className="flex items-center border-b border-outline-variant bg-surface-container-low px-4 py-2 text-label-md font-label-md text-on-surface-variant">
-            <div className="w-12 text-center">In</div>
-            <div className="flex-1">Medication Name / Barcode</div>
-            <div className="w-32">Supplier</div>
-            <div className="w-24 text-right">Qty</div>
-            <div className="w-28 text-right">Cost</div>
-            <div className="w-28 text-right">Retail</div>
-            <div className="w-32 text-right">Status</div>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            {filtered.length === 0 && (
-              <p className="p-8 text-center text-body-sm text-on-surface-variant">
-                Nothing here yet. Use Inventory Intake to receive stock.
-              </p>
-            )}
-            {filtered.map((p) => {
-              const st = stockStatus(p);
-              return (
-                <div
-                  key={p.id}
-                  className="flex items-center border-b border-surface-variant bg-surface px-4 text-body-sm font-body-sm"
-                  style={{ height: 36 }}
-                >
-                  <div className="flex w-12 justify-center">
-                    <div
-                      className={`h-2 w-2 rounded-full ${
-                        st === "critical"
-                          ? "bg-error"
-                          : st === "low"
-                            ? "bg-[#eab308]"
-                            : "bg-primary-container"
-                      }`}
-                    />
-                  </div>
-                  <div className="flex-1 truncate pr-4 font-data-mono text-data-mono text-on-surface">
-                    {p.name}
-                    <span className="ml-2 text-on-surface-variant">
-                      {p.unit ? `${p.unit} · ` : ""}
-                      {p.barcode ? `[${p.barcode}]` : "[no barcode]"}
-                    </span>
-                  </div>
-                  <div className="w-32 truncate text-on-surface-variant">{p.supplier ?? "—"}</div>
-                  <div className="w-24 pr-4 text-right font-data-mono text-data-mono">
-                    {p.stock_qty}
-                  </div>
-                  <div className="w-28 pr-4 text-right font-data-mono text-data-mono">
-                    {p.cost_price > 0 ? fmtMoney(p.cost_price) : "—"}
-                  </div>
-                  <div className="w-28 pr-4 text-right font-data-mono text-data-mono">
-                    {fmtMoney(p.selling_price)}
-                  </div>
-                  <div className="w-32 text-right">
-                    <span
-                      className={`rounded px-2 py-0.5 text-[11px] font-bold ${
-                        st === "critical"
-                          ? "bg-error-container text-on-error-container"
-                          : st === "low"
-                            ? "bg-[#fef08a]/20 text-[#854d0e]"
-                            : "bg-surface-container-highest text-on-surface-variant"
-                      }`}
-                    >
-                      {st === "critical"
-                        ? p.stock_qty <= 0
-                          ? "Out of Stock"
-                          : "Expiring / Low"
-                        : st === "low"
-                          ? "Reorder"
-                          : "OK"}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : (
-        <div className="flex flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface">
-          <div className="flex items-center border-b border-outline-variant bg-surface-container-low px-4 py-2 text-label-md font-label-md text-on-surface-variant">
-            <div className="w-36">Requisition No.</div>
-            <div className="flex-1">Supplier</div>
-            <div className="w-20 text-right">Items</div>
-            <div className="w-32 text-right">Created</div>
-            <div className="w-28 text-right">Status</div>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            {pos.length === 0 && (
-              <p className="p-8 text-center text-body-sm text-on-surface-variant">
-                No requisitions yet. Create one to order stock.
-              </p>
-            )}
-            {pos.map((po) => (
-              <button
-                key={po.id}
-                onClick={() => void openDetail(po)}
-                className="flex w-full items-center border-b border-surface-variant bg-surface px-4 text-body-sm font-body-sm transition-colors hover:bg-surface-container-low"
-                style={{ height: 36 }}
-              >
-                <div className="w-36 truncate text-left font-data-mono text-data-mono text-on-surface">
-                  {po.po_no}
-                </div>
-                <div className="flex-1 truncate pr-4 text-left text-on-surface-variant">
-                  {po.supplier ?? "—"}
-                </div>
-                <div className="w-20 pr-4 text-right font-data-mono text-data-mono">
-                  {po.item_count}
-                </div>
-                <div className="w-32 pr-4 text-right font-data-mono text-data-mono text-on-surface-variant">
-                  {po.created_at}
-                </div>
-                <div className="w-28 text-right">
-                  <StatusPill po={po} />
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Requisition detail */}
       {detail && (
@@ -452,7 +318,7 @@ function RequisitionModal({
               New Requisition
             </h3>
             <p className="text-body-sm font-body-sm text-on-surface-variant">
-              What do you need to order? Receive it later on this page.
+              What do you need to order? Receive it here when it arrives.
             </p>
           </div>
           <button

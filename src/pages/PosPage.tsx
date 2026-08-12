@@ -147,7 +147,7 @@ export function PosPage() {
       ]);
       beep(true);
       setReorder(null);
-      setFlash(`${poNo} created — receive it in Restocking → Requisitions.`);
+      setFlash(`${poNo} created — receive it in Requisitions.`);
       setTimeout(() => setFlash(""), 6000);
     } catch (e) {
       setOrderErr(String(e).replace(/^Error: /, ""));
@@ -277,7 +277,7 @@ export function PosPage() {
                     </span>
                     <div className="flex items-center gap-1">
                       {stockStatus(p) !== "in" && (
-                        <Tip label="Add to a requisition — receive it later in Restocking">
+                        <Tip label="Add to a requisition — receive it later in Requisitions">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -595,7 +595,7 @@ export function PosPage() {
             </h3>
             <p className="mb-4 text-body-sm font-body-sm text-on-surface-variant">
               Stock: {reorder.stock_qty} {reorder.unit ? `(${reorder.unit})` : ""} — this adds a
-              requisition; receive the goods under Restocking → Requisitions.
+              requisition; receive the goods under Requisitions.
             </p>
             <label className="mb-1 block text-label-md font-label-md text-on-surface">
               Quantity to order

@@ -3,7 +3,7 @@ import { useStore } from "../store/useStore";
 import { intakeStock } from "../db";
 import { beep } from "../lib/audio";
 
-/** Restocking intake: scan barcode, update existing product or create new. */
+/** Receive-stock intake: scan barcode, update existing product or create new. */
 export function IntakeModal() {
   const open = useStore((s) => s.intakeOpen);
   const setIntakeOpen = useStore((s) => s.setIntakeOpen);

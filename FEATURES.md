@@ -12,7 +12,7 @@ the app works fully offline (power cuts and flaky internet are assumed).
 
 - Single desktop window titled "Pulse" (pharmacy name shown inside the app is
   editable in Settings and never hard-codes the window title).
-- Left sidebar navigation: POS, Inventory, Restocking, Reports, Settings.
+- Left sidebar navigation: POS, Inventory, Requisitions, Reports, Settings.
 - Top bar: pharmacy name, search field (Ctrl+K focuses it), "New
   Prescription" button (holds current order if any, clears the counter,
   focuses the scanner), Barcode Scan shortcut, notification/history/account
@@ -68,7 +68,7 @@ the app works fully offline (power cuts and flaky internet are assumed).
   barcode, expiry date, live quantity, color-coded status.
 - Status logic: green = stock above reorder level; yellow = at/below reorder
   level; red = out of stock, expired, or expiring within 30 days.
-- Inventory Intake (F2 from anywhere): scan or enter a barcode, quantity,
+- **Receive Stock** (F2 from anywhere): scan or enter a barcode, quantity,
   batch/lot, expiry date, supplier, unit of measure, unit cost, retail price.
   Existing product = stock added; unknown barcode = new product created.
 - Quick-add for unknown barcodes from the POS.
@@ -86,18 +86,23 @@ the app works fully offline (power cuts and flaky internet are assumed).
   Code39 shelf label — completes the loop for QuickAdd products whose fake
   barcodes become printable, scannable labels.
 
-## 4. Restocking & requisitions
+## 4. Requisitions (ordering)
 
-- Two views: **Stock** (inventory table + Intake) and **Requisitions**.
-- **Requisitions (procurement)**: create a requisition (REQ-YYYYMMDD-NNN)
-  from any catalog product — search, pick, set quantity and optional unit
-  cost, optional supplier. Open requisitions list with status.
+Two clear stock surfaces, no overlap: **Inventory = see + receive**
+(what's on the shelf, take deliveries in — F2 anywhere), **Requisitions =
+order** (what you've asked suppliers for). The notifications bell covers
+what needs attention.
+
+- Create a requisition (REQ-YYYYMMDD-NNN) from any catalog product — search,
+  pick, set quantity and optional unit cost, optional supplier. Open
+  requisitions list with status.
 - **Receive (partial or full)**: open a requisition, enter what actually
   arrived per line (suppliers often deliver half an order in Ghana), one tap
   adds it to stock atomically and updates unit cost. Statuses: Open →
   Partially Received (x/y) → Received when every line is complete. Outstanding
   quantities stay tracked on the open requisition.
-- Requisitions can be created from the POS via the one-tap Order button.
+- Requisitions can be created from the POS via the one-tap Order button on
+  low/out-of-stock cards.
 
 ## 5. Reports (Analytics)
 

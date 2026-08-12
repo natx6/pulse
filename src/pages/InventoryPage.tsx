@@ -190,7 +190,7 @@ export function InventoryPage() {
             className="flex items-center gap-2 rounded bg-primary px-4 py-1.5 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant"
           >
             <span className="material-symbols-outlined text-[16px]">add_box</span>
-            <span className="text-label-md font-label-md">Quick Stock Receive</span>
+            <span className="text-label-md font-label-md">Receive Stock</span>
             <span className="rounded-[2px] border border-on-primary/30 px-1 text-shortcut-hint font-shortcut-hint opacity-80">
               [F2]
             </span>
