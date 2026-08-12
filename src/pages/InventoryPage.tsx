@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import { stockStatus } from "../lib/stock";
 import { fmtMoney } from "../lib/money";
+import { adjustStock } from "../db";
+import { beep } from "../lib/audio";
 import type { Product } from "../types";
 
 function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reorder_level"> }) {
@@ -28,7 +30,15 @@ function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reo
 export function InventoryPage() {
   const products = useStore((s) => s.products);
   const setIntakeOpen = useStore((s) => s.setIntakeOpen);
+  const refreshProducts = useStore((s) => s.refreshProducts);
+  const operator = useStore((s) => s.operator);
   const [q, setQ] = useState("");
+  const [adjust, setAdjust] = useState<Product | null>(null);
+  const [delta, setDelta] = useState("");
+  const [reason, setReason] = useState("Damaged");
+  const [note, setNote] = useState("");
+  const [adjustErr, setAdjustErr] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -40,6 +50,40 @@ export function InventoryPage() {
         (p.supplier ?? "").toLowerCase().includes(s),
     );
   }, [products, q]);
+
+  const openAdjust = (p: Product) => {
+    setAdjust(p);
+    setDelta("");
+    setReason("Damaged");
+    setNote("");
+    setAdjustErr("");
+  };
+
+  const doAdjust = async () => {
+    if (!adjust) return;
+    const d = Math.floor(Number(delta));
+    if (!delta.trim() || Number.isNaN(d) || d === 0) {
+      setAdjustErr("Enter a non-zero quantity (use − to reduce).");
+      beep(false);
+      return;
+    }
+    setBusy(true);
+    setAdjustErr("");
+    try {
+      const fullReason = note.trim() ? `${reason} — ${note.trim()}` : reason;
+      await adjustStock(adjust.id, d, fullReason, operator);
+      await refreshProducts();
+      beep(true);
+      setAdjust(null);
+    } catch (e) {
+      setAdjustErr(String(e).replace(/^Error: /, ""));
+      beep(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ADJUST_REASONS = ["Damaged", "Expired", "Counting error", "Returned to supplier", "Other"];
 
   return (
     <div className="flex h-full flex-col overflow-auto bg-surface-container-lowest p-margin-page">
@@ -110,6 +154,9 @@ export function InventoryPage() {
           <div className="w-28 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
             Status
           </div>
+          <div className="w-14 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+            Actions
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -123,7 +170,7 @@ export function InventoryPage() {
             return (
               <div
                 key={p.id}
-                className={`flex items-center border-b border-outline-variant px-4 transition-colors hover:bg-surface-container-low ${
+                className={`group flex items-center border-b border-outline-variant px-4 transition-colors hover:bg-surface-container-low ${
                   st === "critical" ? "border-l-[3px] border-l-error bg-error/5" : ""
                 }`}
                 style={{ height: 36 }}
@@ -153,6 +200,15 @@ export function InventoryPage() {
                 <div className="w-28">
                   <StatusPill p={p} />
                 </div>
+                <div className="w-14 pr-1 text-right">
+                  <button
+                    onClick={() => openAdjust(p)}
+                    title={`Adjust stock (damaged, expired, counting error…) — now ${p.stock_qty}`}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded text-outline opacity-0 transition-opacity hover:bg-surface-variant hover:text-on-surface group-hover:opacity-100"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">tune</span>
+                  </button>
+                </div>
               </div>
             );
           })}
@@ -172,6 +228,76 @@ export function InventoryPage() {
           </div>
         </div>
       </div>
+
+      {adjust && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+          <div className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface p-5 shadow-lg">
+            <h3 className="mb-1 text-headline-md font-headline-md text-on-surface">
+              Adjust — {adjust.name}
+            </h3>
+            <p className="mb-4 text-body-sm font-body-sm text-on-surface-variant">
+              Currently {adjust.stock_qty} in stock. Use − to reduce (e.g. −2 for
+              two damaged units).
+            </p>
+            <label className="mb-1 block text-label-md font-label-md text-on-surface">
+              Quantity change
+            </label>
+            <input
+              autoFocus
+              type="number"
+              value={delta}
+              onChange={(e) => setDelta(e.target.value)}
+              placeholder="e.g. 5 or −2"
+              className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            {delta.trim() && !Number.isNaN(Number(delta)) && (
+              <p className="mt-1 text-body-sm font-body-sm text-on-surface-variant">
+                Result:{" "}
+                <span className="font-bold text-on-surface">
+                  {adjust.stock_qty + Math.floor(Number(delta))}
+                </span>
+                {adjust.stock_qty + Math.floor(Number(delta)) < 0 && (
+                  <span className="text-error"> — can't go below zero</span>
+                )}
+              </p>
+            )}
+            <label className="mb-1 mt-4 block text-label-md font-label-md text-on-surface">
+              Reason
+            </label>
+            <select
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-2 text-body-md text-on-surface focus:border-primary focus:outline-none"
+            >
+              {ADJUST_REASONS.map((r) => (
+                <option key={r}>{r}</option>
+              ))}
+            </select>
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Note (optional)"
+              className="mt-2 h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            {adjustErr && <p className="mt-2 text-body-sm font-body-sm text-error">{adjustErr}</p>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setAdjust(null)}
+                className="rounded border border-outline px-4 py-2 text-label-md font-label-md text-on-surface hover:bg-surface-variant"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void doAdjust()}
+                disabled={busy}
+                className="rounded bg-primary px-4 py-2 text-label-md font-label-md text-on-primary shadow-sm hover:bg-on-primary-fixed-variant disabled:opacity-50"
+              >
+                {busy ? "Saving…" : "Save adjustment"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

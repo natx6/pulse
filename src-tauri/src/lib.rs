@@ -171,6 +171,8 @@ fn complete_sale(
 /// WAL-safe backup: copy the live database with the SQLite online backup API
 /// (a plain file copy would miss uncheckpointed WAL pages and could capture a
 /// torn state). Used by the manual button, every 10th sale, and app exit.
+/// After writing, backups/ is pruned to the newest 20 files (best-effort —
+/// a prune failure must never fail a sale).
 fn write_backup(app: &AppHandle) -> Result<String, String> {
     let src_path = db_path(app)?;
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -181,14 +183,36 @@ fn write_backup(app: &AppHandle) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .as_millis();
     let dst = bdir.join(format!("pulse-{}.db", epoch));
+    backup_to_path(&src_path, &dst)?;
+    prune_backups(&bdir);
+    Ok(dst.to_string_lossy().into_owned())
+}
+
+/// WAL-safe copy of one SQLite file to a destination path (online backup API).
+fn backup_to_path(src_path: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
     let src = rusqlite::Connection::open_with_flags(
-        &src_path,
+        src_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .map_err(|e| e.to_string())?;
-    src.backup(rusqlite::DatabaseName::Main, &dst, None)
+    src.backup(rusqlite::DatabaseName::Main, dst, None)
         .map_err(|e| e.to_string())?;
-    Ok(dst.to_string_lossy().into_owned())
+    Ok(())
+}
+
+/// Keep only the newest 20 backup files. Names are timestamped, so lexical
+/// sort == chronological. Best-effort: failures are swallowed.
+fn prune_backups(dir: &std::path::Path) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut files: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|x| x == "db").unwrap_or(false))
+        .collect();
+    files.sort();
+    while files.len() > 20 {
+        let _ = fs::remove_file(&files.remove(0));
+    }
 }
 
 /// Copy the SQLite file to backups/ (beside the database) with a timestamped name.
@@ -241,6 +265,27 @@ fn export_report(
 pub struct ReceiveLine {
     po_item_id: i64,
     qty: i64,
+}
+
+#[derive(Deserialize)]
+pub struct ReturnLine {
+    product_id: i64,
+    quantity: i64,
+}
+
+#[derive(Serialize)]
+pub struct ReturnResult {
+    receipt_no: String,
+    total_refunded: f64,
+    return_id: i64,
+}
+
+#[derive(Serialize)]
+pub struct BackupInfo {
+    name: String,
+    size: u64,
+    /// UNIX epoch seconds — formatted client-side.
+    modified: u64,
 }
 
 /// Receive a requisition (partially or fully): add the received quantities to
@@ -326,6 +371,304 @@ fn receive_po(
     Ok(serde_json::json!({ "po_no": po_no, "added": added, "complete": complete }))
 }
 
+/// Refund part or all of a sale. The SALE STAYS (history integrity — reports
+/// subtract returns); stock goes back on the shelf. One transaction: returns
+/// + return items + restock, all or nothing. A line can't return more than
+/// the sale sold for that product, net of anything already returned on this
+/// sale (prevents double refunds). The refund amount is computed here from the
+/// original line prices — the client never supplies a total.
+#[tauri::command]
+fn return_sale(
+    app: AppHandle,
+    sale_id: i64,
+    reason: Option<String>,
+    operator: Option<String>,
+    lines: Vec<ReturnLine>,
+) -> Result<ReturnResult, String> {
+    if lines.is_empty() {
+        return Err("Nothing to return".into());
+    }
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+
+    let receipt_no: String = tx
+        .query_row(
+            "SELECT receipt_no FROM sales WHERE id = ?1",
+            [sale_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| "Sale not found".to_string())?;
+
+    // FIFO consumption of the sale's own lines → (product, name, qty, price, unit)
+    let mut to_restock: Vec<(i64, String, i64, f64, Option<String>)> = Vec::new();
+    let mut total_refunded = 0.0;
+    for l in &lines {
+        if l.quantity <= 0 {
+            return Err("Return quantity must be positive".into());
+        }
+        let returned: i64 = tx
+            .query_row(
+                "SELECT COALESCE(SUM(sri.quantity), 0)
+                 FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
+                 WHERE sr.sale_id = ?1 AND sri.product_id = ?2",
+                rusqlite::params![sale_id, l.product_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let sold_rows: Vec<(i64, f64, Option<String>, String)> = tx
+            .prepare(
+                "SELECT quantity, unit_price, unit, product_name FROM sale_items
+                 WHERE sale_id = ?1 AND product_id = ?2 ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?
+            .query_map(rusqlite::params![sale_id, l.product_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        let sold: i64 = sold_rows.iter().map(|(q, _, _, _)| q).sum();
+        let avail = (sold - returned).max(0);
+        if l.quantity > avail {
+            return Err(format!(
+                "Only {} of that item can be returned on this sale (sold {}, already returned {})",
+                avail, sold, returned
+            ));
+        }
+        let mut remaining = l.quantity;
+        for (qty, price, unit, name) in &sold_rows {
+            if remaining <= 0 {
+                break;
+            }
+            let take = (*qty).min(remaining);
+            remaining -= take;
+            total_refunded += price * take as f64;
+            to_restock.push((l.product_id, name.clone(), take, *price, unit.clone()));
+        }
+    }
+
+    let _res = tx
+        .execute(
+            "INSERT INTO sale_returns (sale_id, receipt_no, total_refunded, reason, operator)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![sale_id, receipt_no, total_refunded, reason, operator],
+        )
+        .map_err(|e| e.to_string())?;
+    let return_id = tx.last_insert_rowid();
+    for (pid, name, qty, price, unit) in &to_restock {
+        tx.execute(
+            "INSERT INTO sale_return_items (return_id, product_id, product_name, quantity, unit_price, unit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![return_id, pid, name, qty, price, unit],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE products SET stock_qty = stock_qty + ?1 WHERE id = ?2",
+            rusqlite::params![qty, pid],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ReturnResult {
+        receipt_no,
+        total_refunded,
+        return_id,
+    })
+}
+
+/// Delete TODAY'S last sale entirely (items, payments, sale) and put the stock
+/// back. Guarded by design: only `id = MAX(id)` AND same-day — history stays
+/// intact; everything else goes through the return path.
+#[tauri::command]
+fn void_last_sale(
+    app: AppHandle,
+    operator: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let _ = operator; // nothing to stamp — the rows are deleted
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+
+    let (id, receipt_no, is_today): (i64, String, bool) = tx
+        .query_row(
+            "SELECT id, receipt_no, date(timestamp) = date('now','localtime')
+             FROM sales ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|_| "No sales to void".to_string())?;
+    if !is_today {
+        return Err("Only today's last sale can be voided".into());
+    }
+
+    let items: Vec<(i64, i64)> = tx
+        .prepare("SELECT product_id, quantity FROM sale_items WHERE sale_id = ?1")
+        .map_err(|e| e.to_string())?
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+
+    tx.execute("DELETE FROM sale_payments WHERE sale_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM sale_items WHERE sale_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM sales WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    for (pid, qty) in &items {
+        tx.execute(
+            "UPDATE products SET stock_qty = stock_qty + ?1 WHERE id = ?2",
+            rusqlite::params![qty, pid],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "receipt_no": receipt_no }))
+}
+
+/// Manual stock change with a mandatory reason; logged to stock_adjustments.
+/// delta is signed (+ in / − out) and the new quantity can never go negative.
+#[tauri::command]
+fn adjust_stock(
+    app: AppHandle,
+    product_id: i64,
+    delta: i64,
+    reason: String,
+    operator: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if reason.trim().is_empty() {
+        return Err("A reason is required for stock adjustments".into());
+    }
+    if delta == 0 {
+        return Err("Adjustment can't be zero".into());
+    }
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+
+    let (name, stock): (String, i64) = tx
+        .query_row(
+            "SELECT name, stock_qty FROM products WHERE id = ?1",
+            [product_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| "Unknown product".to_string())?;
+    let new_stock = stock + delta;
+    if new_stock < 0 {
+        return Err(format!(
+            "Stock can't go below zero (currently {})",
+            stock
+        ));
+    }
+    tx.execute(
+        "UPDATE products SET stock_qty = stock_qty + ?1 WHERE id = ?2",
+        rusqlite::params![delta, product_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO stock_adjustments (product_id, product_name, delta, reason, operator)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![product_id, name, delta, reason.trim(), operator],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "product_id": product_id,
+        "delta": delta,
+        "new_stock": new_stock,
+    }))
+}
+
+/// Backup files in backups/, newest first (names are timestamped).
+#[tauri::command]
+fn list_backups(app: AppHandle) -> Result<Vec<BackupInfo>, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("backups");
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x == "db").unwrap_or(false) {
+                if let Ok(meta) = p.metadata() {
+                    out.push(BackupInfo {
+                        name: p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                        size: meta.len(),
+                        modified: meta
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                    });
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(out)
+}
+
+/// Swap the live database for a backup file. The current DB is snapshotted to
+/// backups/pre-restore-<ts>.db FIRST (safety net), then the file is replaced
+/// and stale WAL/SHM sidecars removed. The JS side restarts the app right
+/// after — nothing writes through the old connection post-swap.
+#[tauri::command]
+fn restore_backup(app: AppHandle, name: String) -> Result<String, String> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") || !name.ends_with(".db") {
+        return Err("Invalid backup name".into());
+    }
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let src = dir.join("backups").join(&name);
+    if !src.is_file() {
+        return Err("Backup not found".into());
+    }
+    // Must be a real SQLite database.
+    let mut header = [0u8; 16];
+    {
+        use std::io::Read;
+        let mut f = std::fs::File::open(&src).map_err(|e| e.to_string())?;
+        f.read_exact(&mut header)
+            .map_err(|_| "Not a valid backup".to_string())?;
+    }
+    if &header != b"SQLite format 3\0" {
+        return Err("Not a valid SQLite backup file".into());
+    }
+    // Safety net: snapshot the CURRENT live DB before swapping.
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis();
+    backup_to_path(
+        &db_path(&app)?,
+        &dir.join("backups").join(format!("pre-restore-{}.db", epoch)),
+    )?;
+    // Swap.
+    let live = db_path(&app)?;
+    fs::copy(&src, &live).map_err(|e| e.to_string())?;
+    let _ = fs::remove_file(dir.join("pulse.db-wal"));
+    let _ = fs::remove_file(dir.join("pulse.db-shm"));
+    Ok(format!("Restored {}. Pulse will restart.", name))
+}
+
+/// Restart the app immediately (never returns). Used after a backup restore.
+#[tauri::command]
+fn restart_app(app: AppHandle) -> Result<(), String> {
+    app.restart()
+}
+
 const MIGRATIONS: &[(&str, &str)] = &[
     ("0001_init", include_str!("../migrations/0001_init.sql")),
     (
@@ -339,6 +682,11 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("0005_payments", include_str!("../migrations/0005_payments.sql")),
     ("0006_operators", include_str!("../migrations/0006_operators.sql")),
+    ("0007_returns", include_str!("../migrations/0007_returns.sql")),
+    (
+        "0008_stock_adjustments",
+        include_str!("../migrations/0008_stock_adjustments.sql"),
+    ),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.
@@ -402,7 +750,13 @@ pub fn run() {
             complete_sale,
             backup_db,
             export_report,
-            receive_po
+            receive_po,
+            return_sale,
+            void_last_sale,
+            adjust_stock,
+            list_backups,
+            restore_backup,
+            restart_app
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

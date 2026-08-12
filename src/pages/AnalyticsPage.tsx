@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { initDb, backupDb, exportReport } from "../db";
+import { initDb, backupDb, exportReport, voidLastSale } from "../db";
 import { useStore } from "../store/useStore";
 import type { PaymentLine, PaymentMethod } from "../types";
 import { fmtMoney } from "../lib/money";
 import { beep } from "../lib/audio";
 import { ReceiptModal } from "../components/ReceiptModal";
+import { ReturnModal } from "../components/ReturnModal";
 
 type Range = "today" | "yesterday" | "week" | "month" | "custom";
 
@@ -16,11 +17,13 @@ interface ByRow {
 
 interface Report {
   summary: { n: number; revenue: number; items: number; profit: number };
+  returns: { amount: number; n: number };
   byMethod: ByRow[];
   byOperator: ByRow[];
   byCategory: (ByRow & { qty: number; profit: number })[];
   top: { product_name: string; qty: number; amt: number }[];
   recent: {
+    id: number;
     receipt_no: string;
     total_amount: number;
     payment_method: string;
@@ -28,6 +31,15 @@ interface Report {
     timestamp: string;
   }[];
   slow: { name: string; stock_qty: number; value: number }[];
+  adjustments: {
+    product_name: string;
+    delta: number;
+    reason: string;
+    operator: string | null;
+    timestamp: string;
+  }[];
+  /** Id of today's last sale — the only sale the Void action may target. */
+  voidableId: number | null;
 }
 
 const fmt = (d: Date) =>
@@ -107,8 +119,18 @@ async function fetchReport(from: string, to: string): Promise<Report> {
     [from, to],
   );
   const recent = await db.select<Report["recent"]>(
-    "SELECT receipt_no, total_amount, payment_method, operator, timestamp FROM sales WHERE date(timestamp) BETWEEN $1 AND $2 ORDER BY id DESC LIMIT 10",
+    "SELECT id, receipt_no, total_amount, payment_method, operator, timestamp FROM sales WHERE date(timestamp) BETWEEN $1 AND $2 ORDER BY id DESC LIMIT 10",
     [from, to],
+  );
+  const [returns] = await db.select<{ amount: number; n: number }[]>(
+    "SELECT COALESCE(SUM(total_refunded),0) AS amount, COUNT(*) AS n FROM sale_returns WHERE date(timestamp) BETWEEN $1 AND $2",
+    [from, to],
+  );
+  const [latestToday] = await db.select<{ id: number }[]>(
+    "SELECT id FROM sales WHERE date(timestamp) = date('now','localtime') ORDER BY id DESC LIMIT 1",
+  );
+  const adjustments = await db.select<Report["adjustments"]>(
+    "SELECT product_name, delta, reason, operator, timestamp FROM stock_adjustments ORDER BY id DESC LIMIT 10",
   );
   const slow = await db.select<Report["slow"]>(
     `SELECT p.name, p.stock_qty, (p.stock_qty * COALESCE(p.cost_price,0)) AS value
@@ -127,6 +149,10 @@ async function fetchReport(from: string, to: string): Promise<Report> {
       items: Number(vol?.items ?? 0),
       profit: Number(vol?.profit ?? 0),
     },
+    returns: {
+      amount: Number(returns?.amount ?? 0),
+      n: Number(returns?.n ?? 0),
+    },
     byMethod: byMethod.map((m) => ({ label: m.method, amt: Number(m.amt), n: Number(m.n) })),
     byOperator: byOperator.map((o) => ({
       label: o.operator?.trim() || "—",
@@ -143,11 +169,15 @@ async function fetchReport(from: string, to: string): Promise<Report> {
     top: top.map((t) => ({ ...t, qty: Number(t.qty), amt: Number(t.amt) })),
     recent: recent.map((r) => ({ ...r, total_amount: Number(r.total_amount) })),
     slow: slow.map((s) => ({ ...s, stock_qty: Number(s.stock_qty), value: Number(s.value) })),
+    adjustments: adjustments.map((a) => ({ ...a, delta: Number(a.delta) })),
+    voidableId: latestToday ? Number(latestToday.id) : null,
   };
 }
 
 export function AnalyticsPage() {
   const products = useStore((s) => s.products);
+  const operator = useStore((s) => s.operator);
+  const refreshProducts = useStore((s) => s.refreshProducts);
   const [range, setRange] = useState<Range>("today");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -155,6 +185,13 @@ export function AnalyticsPage() {
   const [err, setErr] = useState("");
   const [backupPath, setBackupPath] = useState("");
   const [exportPath, setExportPath] = useState("");
+  const [returnSale, setReturnSale] = useState<{
+    id: number;
+    receipt_no: string;
+    timestamp: string;
+  } | null>(null);
+  const [voidArmed, setVoidArmed] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
   const [reprint, setReprint] = useState<{
     result: { receipt_no: string; sale_id: number; total: number; change: number };
     lines: { productId: number; name: string; unit: string | null; unitPrice: number; qty: number }[];
@@ -212,6 +249,30 @@ export function AnalyticsPage() {
     }
   };
 
+  /** Two-step void (mirrors the operator delete pattern): tap once to arm, again within 2.5s to execute. */
+  const armVoid = (receiptNo: string) => {
+    if (voidArmed !== receiptNo) {
+      setVoidArmed(receiptNo);
+      window.setTimeout(() => setVoidArmed((v) => (v === receiptNo ? null : v)), 2500);
+      return;
+    }
+    setVoidArmed(null);
+    void (async () => {
+      try {
+        const r = await voidLastSale(operator);
+        await refreshProducts();
+        await load();
+        setErr("");
+        setNotice(`${r.receipt_no} voided — stock returned.`);
+        setTimeout(() => setNotice(""), 5000);
+        beep(true);
+      } catch (e) {
+        setErr(String(e).replace(/^Error: /, ""));
+        beep(false);
+      }
+    })();
+  };
+
   const doExport = async () => {
     if (!report) return;
     const rows: string[][] = [];
@@ -223,6 +284,14 @@ export function AnalyticsPage() {
       String(report.summary.n),
       String(report.summary.items),
       report.summary.profit.toFixed(2),
+    ]);
+    rows.push([]);
+    rows.push(["Returns", "Count", "Refunded (GH₵)", "Net Revenue (GH₵)"]);
+    rows.push([
+      "",
+      String(report.returns.n),
+      report.returns.amount.toFixed(2),
+      Math.max(0, report.summary.revenue - report.returns.amount).toFixed(2),
     ]);
     rows.push([]);
     rows.push(["By Payment", "Revenue (GH₵)", "Count"]);
@@ -314,8 +383,12 @@ export function AnalyticsPage() {
     { id: "custom", label: "Custom" },
   ];
 
+  const gross = report ? report.summary.revenue : 0;
+  const returns = report ? report.returns.amount : 0;
   const kpis = [
-    { label: "Revenue", value: report ? fmtMoney(report.summary.revenue) : "—" },
+    { label: "Gross Sales", value: report ? fmtMoney(gross) : "—" },
+    { label: "Returns", value: report ? `−${fmtMoney(returns)}` : "—", negative: true },
+    { label: "Net Revenue", value: report ? fmtMoney(Math.max(0, gross - returns)) : "—" },
     { label: "Transactions", value: report ? String(report.summary.n) : "—" },
     { label: "Items Sold", value: report ? String(report.summary.items) : "—" },
     { label: "Gross Profit", value: report ? fmtMoney(report.summary.profit) : "—" },
@@ -407,14 +480,19 @@ export function AnalyticsPage() {
           {err}
         </p>
       )}
+      {notice && (
+        <p className="mb-3 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-body-sm font-body-sm text-primary">
+          {notice}
+        </p>
+      )}
 
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         {kpis.map((k) => (
-          <div key={k.label} className="rounded border border-outline-variant bg-surface p-3">
+          <div key={k.label} className={`rounded border border-outline-variant bg-surface p-3 ${k.negative ? "border-error/30 bg-error/5" : ""}`}>
             <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
               {k.label}
             </span>
-            <p className="mt-1 text-headline-lg font-headline-lg font-bold text-on-surface">
+            <p className={`mt-1 text-headline-lg font-headline-lg font-bold ${k.negative ? "text-error" : "text-on-surface"}`}>
               {k.value}
             </p>
           </div>
@@ -504,16 +582,17 @@ export function AnalyticsPage() {
 
         <div className="overflow-hidden rounded border border-outline-variant bg-surface">
           <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
-            Recent Sales <span className="font-normal normal-case text-on-surface-variant">(click to reprint)</span>
+            Recent Sales{" "}
+            <span className="font-normal normal-case text-on-surface-variant">(click to reprint)</span>
           </h3>
           {report && report.recent.length === 0 && (
             <p className="px-3 py-4 text-body-sm text-on-surface-variant">No sales in this range.</p>
           )}
           {report?.recent.map((r) => (
-            <button
+            <div
               key={r.receipt_no}
               onClick={() => void doReprint(r.receipt_no)}
-              className="flex w-full items-center justify-between border-b border-outline-variant/50 px-3 py-1.5 text-left transition-colors last:border-0 hover:bg-surface-container-low"
+              className="flex w-full cursor-pointer items-center justify-between border-b border-outline-variant/50 px-3 py-1.5 text-left transition-colors last:border-0 hover:bg-surface-container-low"
             >
               <span className={td}>
                 <span className="font-data-mono text-data-mono font-semibold">{r.receipt_no}</span>
@@ -521,12 +600,69 @@ export function AnalyticsPage() {
                   {r.payment_method} · {r.operator || "—"} · {r.timestamp}
                 </span>
               </span>
-              <span className="font-data-mono text-data-mono font-bold text-on-surface">
-                {fmtMoney(r.total_amount)}
+              <span className="flex shrink-0 items-center gap-2">
+                {report.voidableId === r.id && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      armVoid(r.receipt_no);
+                    }}
+                    title="Delete today's last sale entirely — stock returns (two taps)"
+                    className={`rounded px-2 py-0.5 text-[11px] font-bold transition-colors ${
+                      voidArmed === r.receipt_no
+                        ? "bg-error text-on-error"
+                        : "text-error hover:bg-error/10"
+                    }`}
+                  >
+                    {voidArmed === r.receipt_no ? "Void?" : "Void"}
+                  </button>
+                )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setReturnSale({ id: r.id, receipt_no: r.receipt_no, timestamp: r.timestamp });
+                  }}
+                  title="Refund part or all of this sale"
+                  className="rounded px-2 py-0.5 text-[11px] font-bold text-primary transition-colors hover:bg-primary/10"
+                >
+                  Return
+                </button>
+                <span className="font-data-mono text-data-mono font-bold text-on-surface">
+                  {fmtMoney(r.total_amount)}
+                </span>
               </span>
-            </button>
+            </div>
           ))}
         </div>
+      </div>
+
+      <div className="mb-4 overflow-hidden rounded border border-outline-variant bg-surface">
+        <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
+          Recent Stock Adjustments
+        </h3>
+        {report && report.adjustments.length === 0 && (
+          <p className="px-3 py-4 text-body-sm text-on-surface-variant">
+            None yet. Adjust stock from Inventory (damaged, expired, counting error…).
+          </p>
+        )}
+        {report?.adjustments.map((a, i) => (
+          <div key={i} className="flex items-center justify-between border-b border-outline-variant/50 px-3 py-1.5 last:border-0">
+            <span className={td}>
+              {a.product_name}
+              <span className="ml-2 text-[11px] text-on-surface-variant">
+                {a.reason}
+                {a.operator ? ` · ${a.operator}` : ""} · {a.timestamp}
+              </span>
+            </span>
+            <span
+              className={`font-data-mono text-data-mono font-bold ${
+                a.delta > 0 ? "text-primary" : "text-error"
+              }`}
+            >
+              {a.delta > 0 ? `+${a.delta}` : a.delta}
+            </span>
+          </div>
+        ))}
       </div>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
@@ -588,6 +724,16 @@ export function AnalyticsPage() {
           paymentMethod={reprint.method}
           payments={reprint.payments}
           onClose={() => setReprint(null)}
+        />
+      )}
+      {returnSale && (
+        <ReturnModal
+          sale={returnSale}
+          onClose={() => setReturnSale(null)}
+          onDone={() => {
+            void refreshProducts();
+            void load();
+          }}
         />
       )}
     </div>

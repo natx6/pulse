@@ -218,6 +218,57 @@ export async function backupDb(): Promise<string> {
   return await invoke("backup_db");
 }
 
+export interface ReturnResult {
+  receipt_no: string;
+  total_refunded: number;
+  return_id: number;
+}
+
+/** Refund part/all of a sale atomically in Rust; stock goes back on the shelf. */
+export async function returnSale(
+  saleId: number,
+  lines: { product_id: number; quantity: number }[],
+  reason: string | null,
+  operator: string | null,
+): Promise<ReturnResult> {
+  return await invoke("return_sale", { saleId, lines, reason, operator });
+}
+
+/** Delete today's last sale entirely (guarded in Rust: today-only, max-id). */
+export async function voidLastSale(operator: string | null): Promise<{ receipt_no: string }> {
+  return await invoke("void_last_sale", { operator });
+}
+
+/** Manual stock change with a mandatory reason; logged to stock_adjustments. */
+export async function adjustStock(
+  productId: number,
+  delta: number,
+  reason: string,
+  operator: string | null,
+): Promise<{ product_id: number; delta: number; new_stock: number }> {
+  return await invoke("adjust_stock", { productId, delta, reason, operator });
+}
+
+export interface BackupInfo {
+  name: string;
+  size: number;
+  modified: number; // UNIX epoch seconds
+}
+
+export async function listBackups(): Promise<BackupInfo[]> {
+  return await invoke("list_backups");
+}
+
+/** Swap the live DB for a backup; call restartApp() right after. */
+export async function restoreBackup(name: string): Promise<string> {
+  return await invoke("restore_backup", { name });
+}
+
+/** Restart the whole app (never resolves). */
+export async function restartApp(): Promise<void> {
+  return await invoke("restart_app");
+}
+
 /** Write CSV rows (client-rendered) to an exports/ file; returns its path. */
 export async function exportReport(name: string, rows: string[][]): Promise<string> {
   return await invoke("export_report", { name, rows });

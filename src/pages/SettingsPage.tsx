@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
-import { deleteOperator, saveOperator, saveSetting } from "../db";
-import type { Operator } from "../db";
+import { deleteOperator, saveOperator, saveSetting, listBackups, restoreBackup, restartApp } from "../db";
+import type { Operator, BackupInfo } from "../db";
 import { beep } from "../lib/audio";
 
 export function SettingsPage() {
@@ -27,9 +27,53 @@ export function SettingsPage() {
   const [addErr, setAddErr] = useState("");
   const [confirmDel, setConfirmDel] = useState<number | null>(null);
 
+  const [backups, setBackups] = useState<BackupInfo[]>([]);
+  const [backupErr, setBackupErr] = useState("");
+  const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+
   useEffect(() => {
     setRows(operators);
   }, [operators]);
+
+  const loadBackups = async () => {
+    try {
+      setBackups(await listBackups());
+      setBackupErr("");
+    } catch (e) {
+      setBackupErr(String(e));
+    }
+  };
+  useEffect(() => {
+    void loadBackups();
+  }, []);
+
+  const fmtSize = (b: number) =>
+    b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+  const fmtDate = (epoch: number) =>
+    epoch ? new Date(epoch * 1000).toLocaleString() : "—";
+
+  /** Two-step restore: tap once to arm, again to run. Current DB is backed up first, then the app restarts. */
+  const armRestore = (name: string) => {
+    if (confirmRestore !== name) {
+      setConfirmRestore(name);
+      window.setTimeout(() => setConfirmRestore((c) => (c === name ? null : c)), 4000);
+      return;
+    }
+    setConfirmRestore(null);
+    setRestoring(true);
+    void (async () => {
+      try {
+        await restoreBackup(name);
+        beep(true);
+        await restartApp(); // never resolves — the app relaunches
+      } catch (e) {
+        setBackupErr(String(e).replace(/^Error: /, ""));
+        setRestoring(false);
+        beep(false);
+      }
+    })();
+  };
 
   const save = async () => {
     await saveSetting("pharmacy_name", name.trim() || "Pulse Pharmacy");
@@ -239,6 +283,68 @@ export function SettingsPage() {
             optional; with auto-switch on, the app swaps to the operator whose
             shift covers the current time (overnight shifts work).
           </p>
+        </div>
+
+        <div className="mb-6 rounded-xl border border-outline-variant bg-surface p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-headline-md font-headline-md text-on-surface">Backups</h3>
+            <button
+              onClick={() => void loadBackups()}
+              className="rounded border border-outline-variant px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:bg-surface-variant"
+            >
+              Refresh
+            </button>
+          </div>
+          <p className="mb-3 text-body-sm font-body-sm text-on-surface-variant">
+            Automatic backups run after every 10th sale, on app exit, and via
+            the Reports page. The newest 20 are kept. Restoring swaps the
+            database — the current data is backed up first, then the app
+            restarts.
+          </p>
+          {backupErr && (
+            <p className="mb-2 text-body-sm font-body-sm text-error">{backupErr}</p>
+          )}
+          {backups.length === 0 && !backupErr && (
+            <p className="py-3 text-center text-body-sm text-on-surface-variant">
+              No backups yet — hit Backup on the Reports page.
+            </p>
+          )}
+          {backups.slice(0, 10).map((b) => (
+            <div key={b.name} className="flex items-center gap-2 border-b border-outline-variant/50 py-1.5 last:border-0">
+              <span className="material-symbols-outlined text-[16px] text-on-surface-variant">
+                database
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-data-mono text-data-mono text-on-surface">
+                  {b.name}
+                </p>
+                <p className="text-[11px] text-on-surface-variant">
+                  {fmtSize(b.size)} · {fmtDate(b.modified)}
+                </p>
+              </div>
+              <button
+                onClick={() => armRestore(b.name)}
+                disabled={restoring}
+                title="Restore this backup — current data is saved first, app restarts"
+                className={`h-8 w-20 shrink-0 rounded text-label-md font-label-md transition-colors disabled:opacity-50 ${
+                  confirmRestore === b.name
+                    ? "bg-error/10 text-error hover:bg-error/20"
+                    : "border border-outline-variant text-on-surface hover:bg-surface-variant"
+                }`}
+              >
+                {restoring && confirmRestore === b.name
+                  ? "Restoring…"
+                  : confirmRestore === b.name
+                    ? "Restore?"
+                    : "Restore"}
+              </button>
+            </div>
+          ))}
+          {backups.length > 10 && (
+            <p className="pt-2 text-[11px] text-on-surface-variant">
+              +{backups.length - 10} older backups (kept, newest 20 shown)
+            </p>
+          )}
         </div>
 
         <button
