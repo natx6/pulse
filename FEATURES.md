@@ -40,7 +40,8 @@ the app works fully offline (power cuts and flaky internet are assumed).
   Item" (products without barcodes), Hold Order (saves the cart, restorable
   via "Restore Held Order"), unit of measure shown per line.
 - **Customer header**: inline patient name entry (walk-in by default; name
-  goes on the receipt), no patient database required.
+  goes on the receipt). Every sale stamps the patient's name/phone and builds
+  a patient history (search the top bar, see section 5).
 - **Totals**: live subtotal, tax (rate from Settings), total. All amounts in
   GH₵.
 - **Payments** (all one tap, no dialogs):
@@ -74,6 +75,16 @@ the app works fully offline (power cuts and flaky internet are assumed).
 - Units of measure: every product carries a unit label (strip of 6,
   bottle of 100, sachet…) shown on cards, cart lines, and receipts.
 - Batch number, expiry date, cost and selling price per product.
+- **Stock adjustments** (row action on hover): a signed quantity change
+  (damaged / expired / counting error / returned to supplier / other + note),
+  mandatory reason, logged to an audit list on the Reports page. Stock can
+  never be adjusted below zero.
+- **Archive**: any product can be archived (two-tap confirm) — it disappears
+  from the POS and inventory but keeps its sales history. "Show archived"
+  lists them with a one-tap Restore.
+- **Print Label**: pick a product (or type any barcode) and print a scannable
+  Code39 shelf label — completes the loop for QuickAdd products whose fake
+  barcodes become printable, scannable labels.
 
 ## 4. Restocking & requisitions
 
@@ -91,12 +102,26 @@ the app works fully offline (power cuts and flaky internet are assumed).
 ## 5. Reports (Analytics)
 
 - Date range: Today / Yesterday / This Week / This Month / Custom dates.
-- KPIs: revenue, transaction count, items sold, gross profit (uses stored
-  cost price).
+- **Operator filter**: a dropdown (All | operators from Settings | any legacy
+  name found on sales in the range) filters every section — KPIs, payment
+  breakdown, categories, top products, recent sales, returns, cash-up. The
+  CSV export and its filename carry the operator (`sales-today-ama.csv`).
+- KPIs: **Gross Sales / Returns / Net Revenue** (refunds subtracted honestly),
+  transaction count, items sold, gross profit (uses stored cost price).
 - Breakdowns: by payment method (Cash/Card/MoMo — split payments counted
   per method), by operator, by category.
-- Top products (by quantity), recent sales list (click a receipt number to
-  reprint the receipt).
+- Top products (by quantity), recent sales list — each row has a **Return**
+  action; today's last sale also shows a two-tap **Void** (deletes it
+  entirely and restocks). Click a receipt number to reprint it.
+- **Returns**: refund part or all of any sale (per-line quantities, optional
+  reason) — the sale stays on record, stock goes back on the shelf, and a
+  printable RETURN slip with negative amounts is generated. Reports subtract
+  returns from net revenue.
+- **Daily cash-up**: pick a day, enter the opening float (remembered per day),
+  see cash sales minus cash refunds, enter what was counted, and save the
+  variance (green/red) to a per-day history.
+- **Recent stock adjustments**: the last 10 audit entries (product, ±qty,
+  reason, operator).
 - Stock health: low stock, expiring ≤ 60 days, expired, and **slow movers**
   (products with no sale in 90 days, ranked by cost value — cash tied up on
   the shelf).
@@ -104,15 +129,28 @@ the app works fully offline (power cuts and flaky internet are assumed).
   database (path shown in the UI).
 - Backup button: WAL-safe copy of the database to `backups/` (path shown).
 
-## 6. Settings & operations
+## 6. Patient history
+
+- The top-bar search matches products **and** patients (name or phone).
+  Clicking a patient opens their history: total visits, last visit, and the
+  last 10 sales with receipt reprint.
+- Patients are created automatically at checkout whenever a name is attached
+  to a sale; the sale keeps a name/phone snapshot, so history never breaks
+  even if a patient record is cleaned up.
+
+## 7. Settings & operations
 
 - Pharmacy name (shown in the top bar and on receipts), tax rate, receipt
   footer, operator name.
 - Operator chip in the sidebar: tap to change who is on duty; the operator's
   name is stamped on every sale and feeds the per-operator report. No login,
   no passwords — the data exists, the flow forces nothing.
+- **Backups card**: every backup in `backups/` (name, size, date) with a
+  two-tap Restore. Restoring snapshots the current database to
+  `backups/pre-restore-<ts>.db` first, swaps the file, and restarts the app.
+  Auto-backups keep the newest 20 files.
 
-## 7. Keyboard map
+## 8. Keyboard map
 
 - F9 / F10 / F11 — Cash / Card / MoMo: on POS with items they open checkout
   pre-selected; inside the payment screen they switch method.
@@ -120,39 +158,46 @@ the app works fully offline (power cuts and flaky internet are assumed).
 - Ctrl+K — focus top search. Ctrl+F — focus POS scan/search.
 - Esc — close modal. Enter — confirm (and scan-equivalent in the POS box).
 
-## 8. Data & reliability
+## 9. Data & reliability
 
 - SQLite, WAL journal mode. Database, backups, and CSV exports live in the
   OS config dir (`~/.config/com.pulse.pharmacy/` on Linux).
 - **Automatic backups**: after every 10th sale and on app exit (plus the
   manual button) — WAL-safe via the SQLite online backup API, so a power cut
-  mid-shift can never cost more than the current day's partial data.
+  mid-shift can never cost more than the current day's partial data. The
+  newest 20 backups are kept (timestamped names); restores are two-tap with a
+  pre-restore safety snapshot.
 - Schema: products (name, barcode unique+indexed, category, manufacturer,
   supplier, strength, unit, Rx flag, batch, expiry, cost, retail, stock,
-  reorder level), sales (receipt no, total, primary payment method, operator,
-  timestamp), sale_payments (per-method amount + optional reference),
-  sale_items (snapshot of name/unit/price, quantity), purchase orders +
-  items, settings key/value.
+  reorder level, active flag), sales (receipt no, total, primary payment
+  method, operator, patient name/phone snapshot, timestamp),
+  sale_payments (per-method amount + optional reference), sale_items
+  (snapshot of name/unit/price, quantity), sale_returns + sale_return_items,
+  stock_adjustments (audit log), cash_ups (per-day till records), patients
+  (search index), purchase orders + items, settings key/value.
+- Migrations run through an in-app runner keyed by PRAGMA user_version
+  (currently v11) — the plugin's own runner and its leftover
+  `_sqlx_migrations` table were dropped.
 - Demo seed catalog ships with the first migration (Coartem, Amoxicillin,
   Paracetamol, Ibuprofen, Lisinopril, Amlodipine, Metformin, ORS) with real
   expiry/status variety — deletable.
 
-## 9. Deliberately NOT included (v1 scope decisions)
+## 10. Deliberately NOT included (v1 scope decisions)
 
 - No login / passwords / user roles (operator name only).
 - No credit sales ledger (planned add-on).
 - No NHIS/insurance claims or e-invoicing.
 - No live MoMo API integration (merchant number display planned).
 - No thermal-printer direct driver (browser print only).
-- No patient database / prescriptions lifecycle (patient name on receipt only).
+- No prescriptions lifecycle / dosing regimens (patient history only).
 - No multi-branch sync, no cloud.
 - No internet required for any feature.
 
-## 10. Build & run
+## 11. Build & run
 
 - `npm install`, then `npm run tauri dev` (first Rust build takes several
   minutes; afterwards it hot-reloads). Production binary: `npm run tauri
   build`. Linux prerequisites: webkit2gtk4.1-devel, openssl-devel,
   librsvg2-devel, libxdo-devel, patchelf, Rust toolchain.
-- Bundle is ~64 KB gzipped JS + ~7 KB CSS; release binary is a few MB
+- Bundle is ~76 KB gzipped JS + ~7 KB CSS; release binary is a few MB
   (opt-level=s, lto, strip).

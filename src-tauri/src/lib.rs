@@ -728,6 +728,11 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0009_patient_sales",
         include_str!("../migrations/0009_patient_sales.sql"),
     ),
+    (
+        "0010_products_active",
+        include_str!("../migrations/0010_products_active.sql"),
+    ),
+    ("0011_cleanup", include_str!("../migrations/0011_cleanup.sql")),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.

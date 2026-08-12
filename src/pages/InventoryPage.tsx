@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import { stockStatus } from "../lib/stock";
 import { fmtMoney } from "../lib/money";
-import { adjustStock } from "../db";
+import { adjustStock, loadProductsAll, setProductActive } from "../db";
 import { beep } from "../lib/audio";
 import { LabelModal } from "../components/LabelModal";
 import type { Product } from "../types";
@@ -41,17 +41,67 @@ export function InventoryPage() {
   const [adjustErr, setAdjustErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [archived, setArchived] = useState<Product[]>([]);
+  const [archiveArmed, setArchiveArmed] = useState<number | null>(null);
+
+  // Load archived products when the toggle is on (active ones come from the store).
+  useEffect(() => {
+    if (!showArchived) return;
+    let cancelled = false;
+    void loadProductsAll().then((all) => {
+      if (!cancelled) setArchived(all.filter((p) => !p.active));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [showArchived]);
+
+  const list = showArchived ? archived : products;
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return products;
-    return products.filter(
+    if (!s) return list;
+    return list.filter(
       (p) =>
         p.name.toLowerCase().includes(s) ||
         (p.barcode ?? "").includes(s) ||
         (p.supplier ?? "").toLowerCase().includes(s),
     );
-  }, [products, q]);
+  }, [list, q]);
+
+  /** Two-step archive (mirrors operator delete): tap once to arm, again to run. */
+  const armArchive = async (p: Product) => {
+    if (archiveArmed !== p.id) {
+      setArchiveArmed(p.id);
+      window.setTimeout(() => setArchiveArmed((a) => (a === p.id ? null : a)), 2500);
+      return;
+    }
+    setArchiveArmed(null);
+    try {
+      await setProductActive(p.id, 0);
+      await refreshProducts();
+      if (showArchived) {
+        setArchived((a) => a.filter((x) => x.id !== p.id));
+      }
+      beep(true);
+    } catch (e) {
+      setAdjustErr(String(e));
+      beep(false);
+    }
+  };
+
+  const doRestore = async (p: Product) => {
+    try {
+      await setProductActive(p.id, 1);
+      setArchived((a) => a.filter((x) => x.id !== p.id));
+      await refreshProducts();
+      beep(true);
+    } catch (e) {
+      setAdjustErr(String(e));
+      beep(false);
+    }
+  };
 
   const openAdjust = (p: Product) => {
     setAdjust(p);
@@ -114,6 +164,20 @@ export function InventoryPage() {
             </span>
           </div>
           <button
+            onClick={() => setShowArchived((v) => !v)}
+            className={`flex items-center gap-2 rounded border px-3 py-1.5 transition-colors ${
+              showArchived
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-outline-variant text-on-surface hover:bg-surface-container-low"
+            }`}
+            title={showArchived ? "Showing archived — tap to go back to live stock" : "List archived (discontinued) products"}
+          >
+            <span className="material-symbols-outlined text-[16px]">archive</span>
+            <span className="text-label-md font-label-md">
+              {showArchived ? "Archived on" : "Show archived"}
+            </span>
+          </button>
+          <button
             onClick={() => setLabelOpen(true)}
             className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
             title="Print a scannable Code39 shelf label"
@@ -157,7 +221,7 @@ export function InventoryPage() {
           <div className="w-28 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
             Status
           </div>
-          <div className="w-14 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
+          <div className="w-20 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
             Actions
           </div>
         </div>
@@ -203,14 +267,41 @@ export function InventoryPage() {
                 <div className="w-28">
                   <StatusPill p={p} />
                 </div>
-                <div className="w-14 pr-1 text-right">
-                  <button
-                    onClick={() => openAdjust(p)}
-                    title={`Adjust stock (damaged, expired, counting error…) — now ${p.stock_qty}`}
-                    className="inline-flex h-6 w-6 items-center justify-center rounded text-outline opacity-0 transition-opacity hover:bg-surface-variant hover:text-on-surface group-hover:opacity-100"
-                  >
-                    <span className="material-symbols-outlined text-[15px]">tune</span>
-                  </button>
+                <div className="w-20 pr-1 text-right">
+                  {p.active ? (
+                    <span className="inline-flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                      <button
+                        onClick={() => openAdjust(p)}
+                        title={`Adjust stock (damaged, expired, counting error…) — now ${p.stock_qty}`}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-surface-variant hover:text-on-surface"
+                      >
+                        <span className="material-symbols-outlined text-[15px]">tune</span>
+                      </button>
+                      <button
+                        onClick={() => void armArchive(p)}
+                        title="Archive — removes it from the POS and Inventory (two taps)"
+                        className={`inline-flex h-6 items-center gap-0.5 rounded px-1 ${
+                          archiveArmed === p.id
+                            ? "bg-error/10 text-error"
+                            : "text-outline hover:bg-surface-variant hover:text-error"
+                        }`}
+                      >
+                        <span className="material-symbols-outlined text-[15px]">archive</span>
+                        {archiveArmed === p.id && (
+                          <span className="text-[10px] font-bold">Again?</span>
+                        )}
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => void doRestore(p)}
+                      title="Restore — bring it back to the POS and Inventory"
+                      className="inline-flex h-6 items-center gap-0.5 rounded px-1 text-primary opacity-0 transition-opacity hover:bg-primary/10 group-hover:opacity-100"
+                    >
+                      <span className="material-symbols-outlined text-[15px]">unarchive</span>
+                      <span className="text-[10px] font-bold">Restore</span>
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -219,13 +310,14 @@ export function InventoryPage() {
 
         <div className="flex h-10 shrink-0 items-center justify-between border-t border-outline-variant bg-surface-container-low px-4">
           <div className="text-body-sm font-body-sm text-on-surface-variant">
-            {filtered.length} of {products.length} items
+            {filtered.length} of {list.length} items
+            {showArchived ? " (archived)" : ""}
           </div>
           <div className="flex items-center gap-2">
             <span className="px-2 text-body-sm font-body-sm text-on-surface">Cost of stock:</span>
             <span className="font-data-mono text-data-mono font-bold text-primary">
               {fmtMoney(
-                products.reduce((s, p) => s + p.cost_price * p.stock_qty, 0),
+                list.reduce((s, p) => s + p.cost_price * p.stock_qty, 0),
               )}
             </span>
           </div>

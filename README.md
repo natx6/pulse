@@ -61,7 +61,7 @@ Demo seed products ship with the first migration — delete the rows to start cl
 ## Project layout
 
     src/                 React app
-      pages/             POS, Inventory, Restocking, Dispensing, Analytics, Settings
+      pages/             POS, Inventory, Restocking, Analytics, Settings
       components/        Sidebar, TopBar, modals (payment, receipt, intake, quick-add)
       lib/               scanner, audio (WebAudio beeps), stock status, money
       db.ts              SQLite init + queries (plugin)

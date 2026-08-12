@@ -16,6 +16,7 @@ export interface Product {
   reorder_level: number;
   fda_reg_no: string | null;
   is_controlled: number;
+  active: number;
 }
 
 export interface CartLine {

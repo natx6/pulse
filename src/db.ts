@@ -108,12 +108,32 @@ export async function deleteOperator(id: number): Promise<void> {
 
 export async function loadProducts(): Promise<Product[]> {
   const d = await initDb();
+  const rows = await d.select<Product[]>(
+    "SELECT * FROM products WHERE active = 1 ORDER BY name",
+  );
+  return rows.map((r) => ({
+    ...r,
+    cost_price: Number(r.cost_price),
+    selling_price: Number(r.selling_price),
+  }));
+}
+
+/** All products including archived (Inventory's "Show archived" toggle). */
+export async function loadProductsAll(): Promise<Product[]> {
+  const d = await initDb();
   const rows = await d.select<Product[]>("SELECT * FROM products ORDER BY name");
   return rows.map((r) => ({
     ...r,
     cost_price: Number(r.cost_price),
     selling_price: Number(r.selling_price),
   }));
+}
+
+/** Archive (0) or restore (1) a product. Archived items leave the POS and
+ * inventory lists but keep their sales history. */
+export async function setProductActive(id: number, active: number): Promise<void> {
+  const d = await initDb();
+  await d.execute("UPDATE products SET active = $1 WHERE id = $2", [active, id]);
 }
 
 export interface IntakeInput {
