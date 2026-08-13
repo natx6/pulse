@@ -9,6 +9,11 @@ on:
   push:
     tags: ["v*"]
 
+# Needed so the runner's GITHUB_TOKEN can create the draft release and attach
+# installers (default token is read-only in this repo).
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -23,9 +28,9 @@ jobs:
             args: ""
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
