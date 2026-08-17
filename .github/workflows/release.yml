@@ -40,10 +40,11 @@ jobs:
             bundles: dmg
     runs-on: ${{ matrix.platform }}
     env:
-      # Updater artifacts are created (and signed) only when the private key
-      # secret exists — TAURI_CONFIG deep-merges over tauri.conf.json. Without
-      # the secret, plain unsigned installers are built exactly as before.
-      TAURI_CONFIG: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' && '{"bundle":{"createUpdaterArtifacts":true}}' || '{"bundle":{"createUpdaterArtifacts":false}}' }}
+      # createUpdaterArtifacts is on permanently in tauri.conf.json, so every
+      # release build produces signed updater artifacts (.sig files) as long as
+      # the signing key is present in the repo secrets. If the secret is ever
+      # missing, the build fails loudly instead of silently shipping unsigned
+      # installers.
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
@@ -102,6 +103,7 @@ jobs:
             src-tauri/target/release/bundle/msi/*.sig
             src-tauri/target/release/bundle/nsis/*.sig
             src-tauri/target/release/bundle/dmg/*.sig
+            src-tauri/target/release/bundle/macos/*.sig
             src-tauri/target/release/bundle/appimage/*.sig
             src-tauri/target/release/bundle/deb/*.sig
             src-tauri/target/release/bundle/rpm/*.sig
@@ -136,7 +138,7 @@ jobs:
               n = name.lower()
               if "x64-setup.exe" in n or "x86_64-setup" in n:
                   return "windows-x86_64"
-              if "x64.app.tar.gz" in n or "x64.dmg" in n:
+              if "x64.app.tar.gz" in n:
                   return "darwin-x86_64"
               if "aarch64" in n or "arm64" in n:
                   if "appimage" in n:
