@@ -5,6 +5,11 @@ name: Build installers
 # run's artifacts; or push a tag like v0.2.0 to also create a draft GitHub
 # Release with everything attached.
 #
+# Auto-update: when the TAURI_SIGNING_PRIVATE_KEY secret is set, builds also
+# produce signed updater artifacts (`.sig` files) and the release job assembles
+# `latest.json` — the manifest the installed app polls on launch. Publish the
+# draft release to roll the update out to every installed copy.
+#
 # The tauri CLI downloads WiX/NSIS/linuxdeploy from GitHub release endpoints
 # while bundling; those downloads occasionally drop ("io: Peer disconnected").
 # The build step retries — retries reuse the same runner, so the compiled
@@ -29,9 +34,18 @@ jobs:
             bundles: msi,nsis
           - platform: ubuntu-22.04
             bundles: appimage,deb
+          - platform: macos-13
+            bundles: dmg
           - platform: macos-latest
             bundles: dmg
     runs-on: ${{ matrix.platform }}
+    env:
+      # Updater artifacts are created (and signed) only when the private key
+      # secret exists — TAURI_CONFIG deep-merges over tauri.conf.json. Without
+      # the secret, plain unsigned installers are built exactly as before.
+      TAURI_CONFIG: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' && '{"bundle":{"createUpdaterArtifacts":true}}' || '{"bundle":{"createUpdaterArtifacts":false}}' }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v5
 
@@ -73,7 +87,7 @@ jobs:
           echo "All 4 attempts failed"
           exit 1
 
-      - name: Upload installers
+      - name: Upload installers + update signatures
         uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.platform }}
@@ -85,17 +99,99 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/msi/*.sig
+            src-tauri/target/release/bundle/nsis/*.sig
+            src-tauri/target/release/bundle/dmg/*.sig
+            src-tauri/target/release/bundle/appimage/*.sig
+            src-tauri/target/release/bundle/deb/*.sig
+            src-tauri/target/release/bundle/rpm/*.sig
+            src-tauri/target/release/bundle/**/*.tar.gz
           if-no-files-found: error
 
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # latest.json is what installed apps poll. Each .sig file produced by the
+      # signed build becomes one platform entry; the URL points at the matching
+      # installer attached to this same release.
+      - name: Assemble update manifest (latest.json)
+        run: |
+          python3 - <<'PY'
+          import json, os, datetime
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tag.lstrip("v")
+          base_url = f"https://github.com/natx6/pulse/releases/download/{tag}"
+
+          def platform_key(name):
+              n = name.lower()
+              if "x64-setup.exe" in n or "x86_64-setup" in n:
+                  return "windows-x86_64"
+              if "x64.app.tar.gz" in n or "x64.dmg" in n:
+                  return "darwin-x86_64"
+              if "aarch64" in n or "arm64" in n:
+                  if "appimage" in n:
+                      return "linux-arm64"
+                  return "darwin-aarch64"
+              if "amd64.appimage" in n or "x86_64.appimage" in n:
+                  return "linux-x86_64"
+              if "i686" in n:
+                  return "linux-i686"
+              return None
+
+          platforms = {}
+          for dirpath, _, files in os.walk("artifacts"):
+              for f in sorted(files):
+                  if not f.endswith(".sig"):
+                      continue
+                  target = f[:-4]
+                  key = platform_key(f)
+                  if not key:
+                      print(f"WARN: no platform mapping for {f}")
+                      continue
+                  with open(os.path.join(dirpath, f)) as fh:
+                      sig = fh.read().strip()
+                  platforms[key] = {
+                      "signature": sig,
+                      "url": f"{base_url}/{target}",
+                  }
+
+          if not platforms:
+              print("No updater signatures found — skipping latest.json")
+              raise SystemExit(0)
+
+          manifest = {
+              "version": version,
+              "notes": f"Pulse v{version} — auto-built installers.",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": platforms,
+          }
+          with open("latest.json", "w") as fh:
+              json.dump(manifest, fh, indent=2)
+          print(open("latest.json").read())
+          PY
+
       - name: Draft release (tag pushes only)
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          FILES=$(find src-tauri/target/release/bundle -type f \
+          ASSETS=$(find artifacts -type f \
             \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \
                -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \))
+          if [ -f latest.json ]; then
+            ASSETS="$ASSETS latest.json"
+          fi
           gh release create "v${VERSION}" --draft --title "Pulse v${VERSION}" \
-            --notes "Auto-built installers for testing." $FILES
+            --notes "Auto-built installers for testing. Publish this release to roll the update out." \
+            $ASSETS

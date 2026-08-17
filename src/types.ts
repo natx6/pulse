@@ -2,6 +2,7 @@ export interface Product {
   id: number;
   name: string;
   barcode: string | null;
+  sku: string | null;
   category: string | null;
   manufacturer: string | null;
   supplier: string | null;
@@ -41,9 +42,9 @@ export interface PaymentLine {
   reference: string | null;
 }
 
-export type PaymentMethod = "Cash" | "Card" | "MoMo";
+export type PaymentMethod = "Cash" | "Card" | "MoMo" | "Credit";
 
-export type PageId = "pos" | "inventory" | "restock" | "analytics" | "settings";
+export type PageId = "pos" | "inventory" | "restock" | "analytics" | "support" | "settings";
 
 export interface SaleResult {
   receipt_no: string;

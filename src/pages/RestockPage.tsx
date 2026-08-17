@@ -1,77 +1,135 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
 import { fmtMoney } from "../lib/money";
 import { beep } from "../lib/audio";
 import { Tip } from "../components/Tip";
+import { PurchaseModal } from "../components/PurchaseModal";
+import { PrintPOModal } from "../components/PrintPOModal";
+import { PurchasePaymentModal } from "../components/PurchasePaymentModal";
 import {
-  loadPurchaseOrders,
-  loadPoItems,
-  createPurchaseOrder,
-  receivePo,
-  type PurchaseOrder,
-  type PoItem,
+  cancelPurchase,
+  loadPurchases,
+  loadPurchaseItems,
+  receivePurchase,
+  type Purchase,
+  type PurchaseItem,
 } from "../db";
 
-function StatusPill({ po }: { po: PurchaseOrder }) {
-  if (po.status === "received")
+function StatusPill({ p }: { p: Purchase }) {
+  if (p.status === "Received")
     return (
-      <span className="rounded bg-surface-container-highest px-2 py-0.5 text-[11px] font-bold text-on-surface-variant">
+      <span className="rounded bg-[#dcfce7]/60 px-2 py-0.5 text-[11px] font-bold text-[#166534]">
         Received
       </span>
     );
-  if (po.received_qty > 0)
+  if (p.received_qty > 0)
     return (
       <span className="rounded bg-[#fef08a]/40 px-2 py-0.5 text-[11px] font-bold text-[#854d0e]">
-        Partially Received ({po.received_qty}/{po.total_qty})
+        Partially Received ({p.received_qty}/{p.total_qty})
+      </span>
+    );
+  if (p.status === "Ordered")
+    return (
+      <span className="rounded bg-primary/10 px-2 py-0.5 text-[11px] font-bold text-primary">
+        Ordered
       </span>
     );
   return (
-    <span className="rounded bg-primary/10 px-2 py-0.5 text-[11px] font-bold text-primary">
-      Open
+    <span className="rounded bg-surface-container-highest px-2 py-0.5 text-[11px] font-bold text-on-surface-variant">
+      Draft
     </span>
   );
 }
 
-/** Requisitions = what you've ordered from suppliers. Order here, receive
- * stock via Inventory (F2 / Receive Stock). */
+/** Requisitions: orders placed with suppliers (and the invoices that come
+ * back). Saving as Received lands the goods in stock immediately; Ordered/
+ * Draft orders can be edited, cancelled, printed, and received from the
+ * detail view when the delivery arrives. */
 export function RestockPage() {
   const refreshProducts = useStore((s) => s.refreshProducts);
 
-  const [pos, setPos] = useState<PurchaseOrder[]>([]);
-  const [detail, setDetail] = useState<{ po: PurchaseOrder; items: PoItem[] } | null>(null);
-  const [recv, setRecv] = useState<Record<number, string>>({});
-  const [reqOpen, setReqOpen] = useState(false);
+  const [purchases, setPurchases] = useState<Purchase[]>([]);
+  const [detail, setDetail] = useState<{ p: Purchase; items: PurchaseItem[] } | null>(null);
+  const [recv, setRecv] = useState<Record<string, string>>({});
+  const [inv, setInv] = useState<Record<string, string>>({});
+  const [newOpen, setNewOpen] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
+  const [editing, setEditing] = useState<{ p: Purchase; items: PurchaseItem[] } | null>(null);
+  const [payOpen, setPayOpen] = useState(false);
+  const [cancelArm, setCancelArm] = useState(false);
   const [msg, setMsg] = useState("");
+  const [warn, setWarn] = useState("");
 
-  const loadPos = async () => {
-    setPos(await loadPurchaseOrders());
+  const load = async () => {
+    const rows = await loadPurchases();
+    setPurchases(rows);
+    return rows;
   };
   useEffect(() => {
-    void loadPos();
+    void load();
   }, []);
 
-  const openDetail = async (po: PurchaseOrder) => {
-    const items = await loadPoItems(po.id);
-    setDetail({ po, items });
-    // Default each line to receiving everything still outstanding.
-    setRecv(Object.fromEntries(items.map((it) => [it.id, String(it.qty - it.qty_received)])));
+  const openDetail = async (p: Purchase) => {
+    const items = await loadPurchaseItems(p.id);
+    setDetail({ p, items });
+    setPrintOpen(false);
+    setPayOpen(false);
+    setCancelArm(false);
+    setWarn("");
+    // Default each line to receiving everything still outstanding, with the
+    // ordered unit cost pre-filled as the invoice cost to compare against.
+    setRecv(Object.fromEntries(items.map((it) => [it.id, String(it.quantity - it.qty_received)])));
+    setInv(Object.fromEntries(items.map((it) => [it.id, String(it.unit_cost_net)])));
   };
 
   const doReceive = async () => {
     if (!detail) return;
+    setWarn("");
     const lines = Object.entries(recv)
-      .map(([id, v]) => ({ po_item_id: Number(id), qty: Number(v) || 0 }))
+      .map(([id, v]) => {
+        const ic = Number(inv[id]);
+        return {
+          line_id: id,
+          qty: Number(v) || 0,
+          // Skip the invoice-cost check when the field was cleared.
+          invoice_cost: Number.isFinite(ic) && ic > 0 ? ic : null,
+        };
+      })
       .filter((l) => l.qty > 0);
     if (lines.length === 0) return;
     try {
-      const r = await receivePo(detail.po.id, lines);
+      const r = await receivePurchase(detail.p.id, lines);
       await refreshProducts();
-      await loadPos();
-      setMsg(
-        r.complete
-          ? `${r.po_no} received — ${r.added} unit${r.added === 1 ? "" : "s"} added to stock.`
-          : `${r.po_no}: received ${r.added} — the rest is still outstanding.`,
-      );
+      await load();
+      const done = r.complete
+        ? `${r.reference_no} received — ${r.added} unit${r.added === 1 ? "" : "s"} added to stock.`
+        : `${r.reference_no}: received ${r.added} — the rest is still outstanding.`;
+      if (r.warnings.length > 0) {
+        setWarn(
+          `${r.warnings.length} line${r.warnings.length === 1 ? "" : "s"} invoiced at a different cost than ordered — check before paying: ${r.warnings.join(" · ")}`,
+        );
+      }
+      setMsg(done);
+      setDetail(null);
+      beep(true);
+      setTimeout(() => {
+        setMsg("");
+        setWarn("");
+      }, 8000);
+    } catch (e) {
+      setMsg(String(e).replace(/^Error: /, ""));
+      beep(false);
+    }
+  };
+
+  /** Two-step cancel: only Draft/Ordered, never Received. Cancelled orders
+   * drop out of the list and the bell. */
+  const doCancel = async () => {
+    if (!detail) return;
+    try {
+      await cancelPurchase(detail.p.id, null);
+      await load();
+      setMsg(`${detail.p.reference_no ?? detail.p.id} cancelled.`);
       setDetail(null);
       beep(true);
       setTimeout(() => setMsg(""), 5000);
@@ -85,22 +143,21 @@ export function RestockPage() {
     <div className="flex h-full flex-col overflow-auto bg-surface-container-lowest p-margin-page">
       <div className="mb-4 flex items-end justify-between">
         <div>
-          <h2 className="mb-1 text-headline-lg font-headline-lg text-on-surface">
-            Requisitions
-          </h2>
+          <h2 className="mb-1 text-headline-lg font-headline-lg text-on-surface">Requisitions</h2>
           <p className="text-body-sm font-body-sm text-on-surface-variant">
-            What you've ordered from suppliers. When the goods arrive, open the
-            requisition and receive them — stock lands in Inventory.
+            What we've ordered from suppliers. Save as Received to add goods to
+            stock in one transaction — or save an order, print it, and receive
+            it here when it arrives.
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <Tip label="Create a purchase requisition" align="right">
+          <Tip label="Record a supplier invoice or order" align="right">
             <button
-              onClick={() => setReqOpen(true)}
+              onClick={() => setNewOpen(true)}
               className="flex h-8 items-center gap-2 rounded bg-primary px-4 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant"
             >
               <span className="material-symbols-outlined text-[16px]">add_shopping_cart</span>
-              <span className="text-label-md font-label-md">New Requisition</span>
+              <span className="text-label-md font-label-md">New Purchase</span>
             </button>
           </Tip>
         </div>
@@ -111,64 +168,117 @@ export function RestockPage() {
           {msg}
         </p>
       )}
+      {warn && (
+        <p className="mb-3 rounded border border-[#f59e0b]/50 bg-[#fef08a]/20 px-3 py-2 text-body-sm font-body-sm text-[#854d0e]">
+          {warn}
+        </p>
+      )}
 
       <div className="flex flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface">
         <div className="flex items-center border-b border-outline-variant bg-surface-container-low px-4 py-2 text-label-md font-label-md text-on-surface-variant">
-          <div className="w-36">Requisition No.</div>
+          <div className="w-44">Reference</div>
           <div className="flex-1">Supplier</div>
-          <div className="w-20 text-right">Items</div>
-          <div className="w-32 text-right">Created</div>
+          <div className="w-16 text-right">Items</div>
+          <div className="w-32 text-right">Date</div>
+          <div className="w-28 text-right">Total</div>
+          <div className="w-24 text-right">Pay term</div>
           <div className="w-28 text-right">Status</div>
+          <div className="w-24 text-right">Balance</div>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {pos.length === 0 && (
+          {purchases.length === 0 && (
             <p className="p-8 text-center text-body-sm text-on-surface-variant">
-              No requisitions yet. Create one to order stock — receive it here
-              when it arrives.
+              No purchases yet. Record a supplier invoice to bring stock in.
             </p>
           )}
-          {pos.map((po) => (
+          {purchases.map((p) => (
             <button
-              key={po.id}
-              onClick={() => void openDetail(po)}
+              key={p.id}
+              onClick={() => void openDetail(p)}
               className="flex w-full items-center border-b border-surface-variant bg-surface px-4 text-body-sm font-body-sm transition-colors hover:bg-surface-container-low"
               style={{ height: 36 }}
             >
-              <div className="w-36 truncate text-left font-data-mono text-data-mono text-on-surface">
-                {po.po_no}
+              <div className="w-44 truncate text-left font-data-mono text-data-mono text-on-surface">
+                {p.reference_no ?? p.id}
               </div>
               <div className="flex-1 truncate pr-4 text-left text-on-surface-variant">
-                {po.supplier ?? "—"}
+                {p.supplier_name ?? "—"}
               </div>
-              <div className="w-20 pr-4 text-right font-data-mono text-data-mono">
-                {po.item_count}
+              <div className="w-16 pr-4 text-right font-data-mono text-data-mono">
+                {p.item_count}
               </div>
               <div className="w-32 pr-4 text-right font-data-mono text-data-mono text-on-surface-variant">
-                {po.created_at}
+                {p.purchase_date}
               </div>
+              <div className="w-28 pr-4 text-right font-data-mono text-data-mono font-bold text-on-surface">
+                {fmtMoney(p.total_amount)}
+              </div>
+              <div className="w-24 pr-4 text-right text-on-surface-variant">{p.pay_term ?? "—"}</div>
               <div className="w-28 text-right">
-                <StatusPill po={po} />
+                <StatusPill p={p} />
+              </div>
+              <div className="w-24 pr-4 text-right font-data-mono text-data-mono">
+                {p.status === "Received" || p.paid_amount > 0 ? (
+                  p.paid_amount >= p.total_amount ? (
+                    <span className="text-[#166534]">Paid</span>
+                  ) : (
+                    fmtMoney(p.total_amount - p.paid_amount)
+                  )
+                ) : (
+                  "—"
+                )}
               </div>
             </button>
           ))}
         </div>
       </div>
 
-      {/* Requisition detail */}
+      {/* Purchase detail / receive */}
       {detail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
-          <div className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
+          <div className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
             <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
               <div>
                 <h3 className="text-headline-md font-headline-md text-on-surface">
-                  {detail.po.po_no}
+                  {detail.p.reference_no ?? detail.p.id}
                 </h3>
                 <p className="text-body-sm font-body-sm text-on-surface-variant">
-                  {detail.po.supplier ?? "No supplier"} · created {detail.po.created_at}
+                  {detail.p.supplier_name ?? "No supplier"} · {detail.p.purchase_date} ·{" "}
+                  {detail.p.pay_term ?? "Cash"}
+                  {detail.p.discount_type !== "None"
+                    ? ` · discount ${detail.p.discount_type === "Fixed" ? fmtMoney(detail.p.discount_amount) : `${detail.p.discount_amount}%`}`
+                    : ""}
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <StatusPill po={detail.po} />
+                <StatusPill p={detail.p} />
+                {detail.p.status !== "Received" && (
+                  <>
+                    <button
+                      onClick={() => setEditing({ p: detail.p, items: detail.items })}
+                      className="flex items-center gap-1 rounded border border-outline px-2 py-1 text-label-md font-label-md text-on-surface hover:bg-surface-variant"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">edit</span>
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (cancelArm) {
+                          void doCancel();
+                        } else {
+                          setCancelArm(true);
+                          setTimeout(() => setCancelArm(false), 4000);
+                        }
+                      }}
+                      className={`flex items-center gap-1 rounded border px-2 py-1 text-label-md font-label-md hover:bg-surface-variant ${
+                        cancelArm ? "border-error text-error" : "border-outline text-on-surface"
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[14px]">close</span>
+                      {cancelArm ? "Confirm cancel?" : "Cancel"}
+                    </button>
+                  </>
+                )}
                 <button
                   onClick={() => setDetail(null)}
                   className="rounded-full p-1 text-on-surface-variant hover:bg-surface-variant"
@@ -179,271 +289,180 @@ export function RestockPage() {
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               {detail.items.map((it) => {
-                const remaining = it.qty - it.qty_received;
+                const remaining = it.quantity - it.qty_received;
                 return (
                   <div
                     key={it.id}
                     className="flex items-center justify-between border-b border-outline-variant/50 py-2 last:border-0"
                   >
-                    <div>
-                      <p className="text-body-md font-semibold text-on-surface">
+                    <div className="min-w-0">
+                      <p className="truncate text-body-md font-semibold text-on-surface">
                         {it.product_name}
                       </p>
                       <p className="font-data-mono text-data-mono text-on-surface-variant">
-                        {it.qty} ordered
+                        {it.quantity} × {fmtMoney(it.unit_cost_net)} · sells at{" "}
+                        {fmtMoney(it.unit_selling_price)}
+                        {it.profit_margin_percent !== null
+                          ? ` · ${it.profit_margin_percent.toFixed(1)}% margin`
+                          : ""}
+                        {it.expiry_date ? ` · exp ${it.expiry_date}` : ""}
                         {it.qty_received > 0 ? ` · ${it.qty_received} received` : ""}
-                        {it.unit_cost ? ` · ${fmtMoney(it.unit_cost)} each` : ""}
                       </p>
                     </div>
-                    {detail.po.status === "open" ? (
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min={0}
-                          max={remaining}
-                          value={recv[it.id] ?? String(remaining)}
-                          onChange={(e) =>
-                            setRecv((r) => ({ ...r, [it.id]: e.target.value }))
-                          }
-                          title={`Receiving now (max ${remaining})`}
-                          className="h-7 w-16 rounded border border-outline-variant bg-surface-container-lowest px-1 text-right font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
-                        />
-                        <span className="text-[11px] text-on-surface-variant">
-                          of {remaining} left
-                        </span>
+                    {detail.p.status !== "Received" ? (
+                      <div className="flex items-center gap-3">
+                        <label
+                          className="flex items-center gap-1"
+                          title="Unit cost on the supplier's invoice — compared against the ordered cost when you receive"
+                        >
+                          <span className="text-[11px] text-on-surface-variant">Invoice cost</span>
+                          <input
+                            type="number"
+                            min={0}
+                            step="any"
+                            value={inv[it.id] ?? String(it.unit_cost_net)}
+                            onChange={(e) =>
+                              setInv((r) => ({ ...r, [it.id]: e.target.value }))
+                            }
+                            className="h-7 w-20 rounded border border-outline-variant bg-surface-container-lowest px-1 text-right font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
+                          />
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={0}
+                            max={remaining}
+                            step="any"
+                            value={recv[it.id] ?? String(remaining)}
+                            onChange={(e) =>
+                              setRecv((r) => ({ ...r, [it.id]: e.target.value }))
+                            }
+                            title={`Receiving now (max ${remaining})`}
+                            className="h-7 w-16 rounded border border-outline-variant bg-surface-container-lowest px-1 text-right font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
+                          />
+                          <span className="text-[11px] text-on-surface-variant">
+                            of {remaining} left
+                          </span>
+                        </div>
                       </div>
                     ) : (
                       <span className="font-data-mono text-data-mono font-bold text-on-surface">
-                        {fmtMoney((it.unit_cost ?? 0) * it.qty)}
+                        {fmtMoney(it.line_total)}
                       </span>
                     )}
                   </div>
                 );
               })}
             </div>
-            <div className="flex items-center justify-end gap-3 border-t border-outline-variant bg-surface-container px-6 py-4">
-              <button
-                onClick={() => setDetail(null)}
-                className="rounded border border-outline px-4 py-2 text-label-md font-label-md text-on-surface hover:bg-surface-variant"
-              >
-                Close
-              </button>
-              {detail.po.status === "open" && (
-                <Tip label="Add the received quantities to stock — one transaction">
+            <div className="flex items-center justify-between border-t border-outline-variant bg-surface-container px-6 py-4">
+              <div>
+                <p className="font-data-mono text-data-mono text-on-surface">
+                  Net total{" "}
+                  <span className="text-headline-md font-headline-md font-bold text-primary">
+                    {fmtMoney(detail.p.total_amount)}
+                  </span>
+                </p>
+                <p className="text-body-sm text-on-surface-variant">
+                  Paid {fmtMoney(detail.p.paid_amount)}
+                  {detail.p.paid_amount >= detail.p.total_amount
+                    ? " · Fully paid"
+                    : ` · Balance ${fmtMoney(detail.p.total_amount - detail.p.paid_amount)}`}
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setPrintOpen(true)}
+                  className="flex items-center gap-2 rounded border border-outline px-4 py-2 text-label-md font-label-md text-on-surface hover:bg-surface-variant"
+                >
+                  <span className="material-symbols-outlined text-[18px]">print</span>
+                  Print order
+                </button>
+                <button
+                  onClick={() => setDetail(null)}
+                  className="rounded border border-outline px-4 py-2 text-label-md font-label-md text-on-surface hover:bg-surface-variant"
+                >
+                  Close
+                </button>
+                {detail.p.paid_amount < detail.p.total_amount && (
                   <button
-                    onClick={() => void doReceive()}
-                    className="flex items-center gap-2 rounded bg-primary px-6 py-2 text-label-md font-label-md text-on-primary shadow-sm hover:bg-on-primary-fixed-variant"
+                    onClick={() => setPayOpen(true)}
+                    className="flex items-center gap-2 rounded border border-primary/40 bg-primary/5 px-4 py-2 text-label-md font-label-md text-primary hover:bg-primary/10"
                   >
-                    <span className="material-symbols-outlined text-[18px]">inventory_2</span>
-                    Receive & Add to Stock
+                    <span className="material-symbols-outlined text-[18px]">payments</span>
+                    Record payment
                   </button>
-                </Tip>
-              )}
+                )}
+                {detail.p.status !== "Received" && (
+                  <Tip label="Add the received quantities to stock — one transaction">
+                    <button
+                      onClick={() => void doReceive()}
+                      className="flex items-center gap-2 rounded bg-primary px-6 py-2 text-label-md font-label-md text-on-primary shadow-sm hover:bg-on-primary-fixed-variant"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">inventory_2</span>
+                      Receive & Add to Stock
+                    </button>
+                  </Tip>
+                )}
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {reqOpen && (
-        <RequisitionModal
-          onClose={() => setReqOpen(false)}
-          onCreated={async () => {
-            setReqOpen(false);
-            await loadPos();
-            setMsg("Requisition created. When the goods arrive, open it and tap Receive.");
-            setTimeout(() => setMsg(""), 5000);
+      {printOpen && detail && (
+        <PrintPOModal p={detail.p} items={detail.items} onClose={() => setPrintOpen(false)} />
+      )}
+
+      {editing && (
+        <PurchaseModal
+          edit={editing}
+          onClose={() => setEditing(null)}
+          onSaved={async (r) => {
+            setEditing(null);
+            setDetail(null);
+            await load();
+            setMsg(
+              `${r.id} updated — ${r.items} line${r.items === 1 ? "" : "s"} (${fmtMoney(r.total)}).`,
+            );
+            setTimeout(() => setMsg(""), 6000);
           }}
         />
       )}
-    </div>
-  );
-}
 
-function RequisitionModal({
-  onClose,
-  onCreated,
-}: {
-  onClose(): void;
-  onCreated(): Promise<void>;
-}) {
-  const products = useStore((s) => s.products);
-  const [supplier, setSupplier] = useState("");
-  const [search, setSearch] = useState("");
-  const [lines, setLines] = useState<
-    { product_id: number; product_name: string; qty: number; unit_cost: number | null }[]
-  >([]);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+      {payOpen && detail && (
+        <PurchasePaymentModal
+          p={detail.p}
+          onClose={() => setPayOpen(false)}
+          onPaid={async (r) => {
+            setPayOpen(false);
+            const fresh = await load();
+            const upd = fresh.find((x) => x.id === detail.p.id);
+            if (upd) setDetail((d) => (d ? { p: upd, items: d.items } : d));
+            setMsg(
+              `${r.reference_no ?? detail.p.id}: ${fmtMoney(r.paid)} paid${
+                r.balance > 0 ? ` — ${fmtMoney(r.balance)} left` : " — fully paid"
+              }.`,
+            );
+            setTimeout(() => setMsg(""), 6000);
+          }}
+        />
+      )}
 
-  const matches = useMemo(() => {
-    const s = search.trim().toLowerCase();
-    if (!s) return [];
-    return products
-      .filter((p) => p.name.toLowerCase().includes(s) || (p.barcode ?? "").includes(s))
-      .slice(0, 6);
-  }, [products, search]);
-
-  const add = (productId: number, name: string) => {
-    setLines((ls) =>
-      ls.some((l) => l.product_id === productId)
-        ? ls.map((l) => (l.product_id === productId ? { ...l, qty: l.qty + 1 } : l))
-        : [...ls, { product_id: productId, product_name: name, qty: 1, unit_cost: null }],
-    );
-  };
-
-  const create = async () => {
-    if (lines.length === 0) {
-      setErr("Add at least one product.");
-      return;
-    }
-    setBusy(true);
-    try {
-      await createPurchaseOrder(supplier, lines);
-      beep(true);
-      await onCreated();
-    } catch (e) {
-      setErr(String(e).replace(/^Error: /, ""));
-      beep(false);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
-      <div className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
-        <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
-          <div>
-            <h3 className="text-headline-md font-headline-md text-on-surface">
-              New Requisition
-            </h3>
-            <p className="text-body-sm font-body-sm text-on-surface-variant">
-              What do you need to order? Receive it here when it arrives.
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="rounded-full p-1 text-on-surface-variant hover:bg-surface-variant"
-          >
-            <span className="material-symbols-outlined">close</span>
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4">
-          <label className="mb-3 block">
-            <span className="mb-1 block text-label-md font-label-md text-on-surface">
-              Supplier
-            </span>
-            <input
-              value={supplier}
-              onChange={(e) => setSupplier(e.target.value)}
-              placeholder="e.g. McKesson, PharmaCorp (optional)"
-              className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-          </label>
-          <label className="mb-2 block">
-            <span className="mb-1 block text-label-md font-label-md text-on-surface">
-              Add products
-            </span>
-            <input
-              autoFocus
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search catalog..."
-              className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-          </label>
-          {search.trim() && matches.length === 0 && (
-            <p className="mb-2 text-body-sm text-on-surface-variant">No matches.</p>
-          )}
-          {matches.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => add(p.id, p.name)}
-              className="flex w-full items-center justify-between border-b border-outline-variant/50 py-1.5 text-left hover:bg-surface-container-low"
-            >
-              <span className="text-body-sm text-on-surface">
-                {p.name}
-                {p.unit ? <span className="ml-1 text-on-surface-variant">({p.unit})</span> : null}
-              </span>
-              <span className="material-symbols-outlined text-[16px] text-primary">add</span>
-            </button>
-          ))}
-
-          {lines.length > 0 && (
-            <div className="mt-4">
-              <h4 className="mb-2 text-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
-                In this requisition
-              </h4>
-              {lines.map((l) => (
-                <div
-                  key={l.product_id}
-                  className="flex items-center gap-2 border-b border-outline-variant/50 py-1.5"
-                >
-                  <span className="min-w-0 flex-1 truncate text-body-sm text-on-surface">
-                    {l.product_name}
-                  </span>
-                  <input
-                    value={l.qty}
-                    onChange={(e) =>
-                      setLines((ls) =>
-                        ls.map((x) =>
-                          x.product_id === l.product_id
-                            ? { ...x, qty: Math.max(1, Number(e.target.value) || 1) }
-                            : x,
-                        ),
-                      )
-                    }
-                    title="Quantity"
-                    className="h-7 w-14 rounded border border-outline-variant bg-surface-container-lowest px-1 text-center font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
-                  />
-                  <input
-                    value={l.unit_cost ?? ""}
-                    onChange={(e) =>
-                      setLines((ls) =>
-                        ls.map((x) =>
-                          x.product_id === l.product_id
-                            ? { ...x, unit_cost: e.target.value ? Number(e.target.value) : null }
-                            : x,
-                        ),
-                      )
-                    }
-                    placeholder="Cost"
-                    title="Unit cost (optional)"
-                    inputMode="decimal"
-                    className="h-7 w-16 rounded border border-outline-variant bg-surface-container-lowest px-1 text-right font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
-                  />
-                  <button
-                    onClick={() =>
-                      setLines((ls) => ls.filter((x) => x.product_id !== l.product_id))
-                    }
-                    className="text-outline hover:text-error"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">close</span>
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          {err && <p className="mt-3 text-body-sm text-error">{err}</p>}
-        </div>
-
-        <div className="flex items-center justify-end gap-3 border-t border-outline-variant bg-surface-container px-6 py-4">
-          <button
-            onClick={onClose}
-            className="rounded border border-outline px-4 py-2 text-label-md font-label-md text-on-surface hover:bg-surface-variant"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => void create()}
-            disabled={busy || lines.length === 0}
-            className="rounded bg-primary px-6 py-2 text-label-md font-label-md text-on-primary shadow-sm hover:bg-on-primary-fixed-variant disabled:opacity-50"
-          >
-            {busy ? "Creating…" : "Create Requisition"}
-          </button>
-        </div>
-      </div>
+      {newOpen && (
+        <PurchaseModal
+          onClose={() => setNewOpen(false)}
+          onSaved={async (r) => {
+            setNewOpen(false);
+            await load();
+            setMsg(
+              r.received
+                ? `${r.id} saved — ${r.items} line${r.items === 1 ? "" : "s"} added to stock (${fmtMoney(r.total)}).`
+                : `${r.id} saved as an order (${fmtMoney(r.total)}). Receive it when the goods arrive.`,
+            );
+            setTimeout(() => setMsg(""), 6000);
+          }}
+        />
+      )}
     </div>
   );
 }

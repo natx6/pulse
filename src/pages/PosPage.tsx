@@ -3,10 +3,11 @@ import { useStore } from "../store/useStore";
 import { beep } from "../lib/audio";
 import { fmtMoney } from "../lib/money";
 import { stockStatus } from "../lib/stock";
-import { createPurchaseOrder } from "../db";
+import { initDb, savePurchase } from "../db";
 import type { PaymentLine, PaymentMethod, Product, SaleResult } from "../types";
 import { PaymentModal } from "../components/PaymentModal";
 import { ReceiptModal } from "../components/ReceiptModal";
+import { AddCustomerModal } from "../components/AddCustomerModal";
 import { Tip } from "../components/Tip";
 
 function StatusBadge({ p }: { p: Product }) {
@@ -65,6 +66,33 @@ export function PosPage() {
     payments: PaymentLine[];
   } | null>(null);
   const [patientInput, setPatientInput] = useState("");
+  const [patientHits, setPatientHits] = useState<{ name: string; phone: string | null }[]>([]);
+  const [showAddCustomer, setShowAddCustomer] = useState(false);
+
+  // Live patient suggestions while typing the customer name (click to attach).
+  useEffect(() => {
+    const q = patientInput.trim();
+    if (!q) {
+      setPatientHits([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const d = await initDb();
+        const rows = await d.select<{ name: string; phone: string | null }[]>(
+          "SELECT name, phone FROM patients WHERE name LIKE $1 OR phone LIKE $1 ORDER BY name LIMIT 6",
+          [`%${q}%`],
+        );
+        if (!cancelled) setPatientHits(rows);
+      } catch {
+        if (!cancelled) setPatientHits([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [patientInput]);
 
   const categories = useMemo(
     () => Array.from(new Set(products.map((p) => p.category).filter(Boolean))) as string[],
@@ -142,12 +170,32 @@ export function PosPage() {
     if (!reorder) return;
     setOrderBusy(true);
     try {
-      const poNo = await createPurchaseOrder("", [
-        { product_id: reorder.id, product_name: reorder.name, qty: orderQty, unit_cost: null },
-      ]);
+      const r = await savePurchase({
+        supplier_id: null,
+        supplier_name: null,
+        reference_no: null,
+        purchase_date: new Date().toISOString().slice(0, 10),
+        pay_term: "Cash",
+        status: "Ordered",
+        discount_type: "None",
+        discount_amount: 0,
+        lines: [
+          {
+            product_id: reorder.id,
+            product_name: reorder.name,
+            unit_type: "Pack",
+            quantity: orderQty,
+            unit_cost_raw: reorder.cost_price ?? 0,
+            discount_percent: 0,
+            unit_selling_price: reorder.selling_price ?? 0,
+            mfg_date: null,
+            expiry_date: reorder.expiry_date ?? "",
+          },
+        ],
+      });
       beep(true);
       setReorder(null);
-      setFlash(`${poNo} created — receive it in Requisitions.`);
+      setFlash(`${r.id} created — receive it in Requisitions.`);
       setTimeout(() => setFlash(""), 6000);
     } catch (e) {
       setOrderErr(String(e).replace(/^Error: /, ""));
@@ -248,14 +296,24 @@ export function PosPage() {
                       <h3 className="line-clamp-2 text-label-md font-label-md font-bold text-on-surface">
                         {p.name}
                       </h3>
-                      <span
-                        className={`ml-2 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                          p.rx_flag
-                            ? "bg-primary-container text-on-primary-container"
-                            : "bg-surface-variant text-on-surface-variant"
-                        }`}
-                      >
-                        {p.rx_flag ? "Rx" : "OTC"}
+                      <span className="ml-2 flex shrink-0 items-center gap-1">
+                        <span
+                          className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                            p.rx_flag
+                              ? "bg-primary-container text-on-primary-container"
+                              : "bg-surface-variant text-on-surface-variant"
+                          }`}
+                        >
+                          {p.rx_flag ? "Rx" : "OTC"}
+                        </span>
+                        {p.is_controlled ? (
+                          <span
+                            className="whitespace-nowrap rounded bg-[#7f1d1d] px-1.5 py-0.5 text-[10px] font-bold text-white"
+                            title="Controlled drug — see the register in Reports"
+                          >
+                            C
+                          </span>
+                        ) : null}
                       </span>
                     </div>
                     <p className="mb-2 font-data-mono text-data-mono text-on-surface-variant">
@@ -277,7 +335,7 @@ export function PosPage() {
                     </span>
                     <div className="flex items-center gap-1">
                       {stockStatus(p) !== "in" && (
-                        <Tip label="Add to a requisition — receive it later in Requisitions">
+                        <Tip label="Order more of this item — receive it later in Requisitions">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -363,18 +421,54 @@ export function PosPage() {
               </Tip>
             </div>
           ) : (
-            <input
-              value={patientInput}
-              onChange={(e) => setPatientInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && patientInput.trim()) {
-                  setPatient({ name: patientInput.trim(), phone: "" });
-                  setPatientInput("");
-                }
-              }}
-              placeholder="Patient name (Enter to attach)"
-              className="h-8 w-full rounded border border-outline-variant bg-surface-container-lowest px-2 text-body-sm text-on-surface focus:border-primary focus:outline-none"
-            />
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  value={patientInput}
+                  onChange={(e) => setPatientInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && patientInput.trim()) {
+                      setPatient({ name: patientInput.trim(), phone: "" });
+                      setPatientInput("");
+                      setPatientHits([]);
+                    }
+                  }}
+                  placeholder="Patient name (Enter to attach)"
+                  className="h-8 w-full rounded border border-outline-variant bg-surface-container-lowest px-2 text-body-sm text-on-surface focus:border-primary focus:outline-none"
+                />
+                {patientInput.trim() && patientHits.length > 0 && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setPatientHits([])} />
+                    <div className="absolute left-0 right-0 top-9 z-50 overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-lg">
+                      {patientHits.map((h) => (
+                        <button
+                          key={h.name}
+                          onClick={() => {
+                            setPatient({ name: h.name, phone: h.phone ?? "" });
+                            setPatientInput("");
+                            setPatientHits([]);
+                          }}
+                          className="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-surface-container-low"
+                        >
+                          <span className="truncate text-body-sm text-on-surface">{h.name}</span>
+                          <span className="ml-2 shrink-0 font-data-mono text-[11px] text-on-surface-variant">
+                            {h.phone ?? "—"}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+              <Tip label="Register a new customer">
+                <button
+                  onClick={() => setShowAddCustomer(true)}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-outline-variant bg-surface-container-lowest text-primary transition-colors hover:bg-surface-variant"
+                >
+                  <span className="material-symbols-outlined text-[18px]">person_add</span>
+                </button>
+              </Tip>
+            </div>
           )}
         </div>
 
@@ -586,6 +680,8 @@ export function PosPage() {
           onClose={() => setLastSale(null)}
         />
       )}
+
+      {showAddCustomer && <AddCustomerModal onClose={() => setShowAddCustomer(false)} />}
 
       {reorder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">

@@ -54,9 +54,10 @@ Demo seed products ship with the first migration — delete the rows to start cl
 
 ## Roadmap (intentionally not built)
 
-- NHIS claims, credit sales ledger, controlled-drug register, shifts
+- NHIS claims, full shift handover, e-invoicing
 - ESC/POS direct thermal printing (currently browser print)
-- Offline font bundling (Inter/Material Symbols currently load from Google Fonts)
+- Live MoMo API (the merchant number is shown on receipts; Pulse doesn't
+  move money itself)
 
 ## Project layout
 

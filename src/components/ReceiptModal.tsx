@@ -15,6 +15,9 @@ interface Props {
 export function ReceiptModal({ result, lines, subtotal, tax, paymentMethod, payments, onClose }: Props) {
   const pharmacyName = useStore((s) => s.pharmacyName);
   const footer = useStore((s) => s.receiptFooter);
+  const momoNumber = useStore((s) => s.momoNumber);
+  const paidByMoMo =
+    paymentMethod === "MoMo" || (payments ?? []).some((p) => p.method === "MoMo");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
@@ -84,6 +87,12 @@ export function ReceiptModal({ result, lines, subtotal, tax, paymentMethod, paym
               <div className="flex justify-between text-on-surface-variant">
                 <span>Ref</span>
                 <span>{payments[0].reference}</span>
+              </div>
+            )}
+            {paidByMoMo && momoNumber && (
+              <div className="flex justify-between text-on-surface-variant">
+                <span>MoMo number</span>
+                <span>{momoNumber}</span>
               </div>
             )}
             {result.change > 0 && (

@@ -2,7 +2,6 @@ use rusqlite::{OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use tauri::{AppHandle, Manager};
-
 #[derive(Deserialize)]
 pub struct SaleLine {
     product_id: i64,
@@ -27,6 +26,58 @@ pub struct SaleResult {
     sale_id: i64,
     total: f64,
     change: f64,
+}
+
+/// One row of a stock import, produced by the frontend column mapping.
+/// All fields optional except `name`; None means "leave the existing value"
+/// on update, or the column default on insert.
+#[derive(Deserialize)]
+pub struct StockImportRow {
+    name: String,
+    #[serde(default)]
+    barcode: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    manufacturer: Option<String>,
+    #[serde(default)]
+    supplier: Option<String>,
+    #[serde(default)]
+    strength: Option<String>,
+    #[serde(default)]
+    unit: Option<String>,
+    #[serde(default)]
+    rx_flag: Option<i64>,
+    #[serde(default)]
+    batch_no: Option<String>,
+    #[serde(default)]
+    expiry_date: Option<String>,
+    #[serde(default)]
+    cost_price: Option<f64>,
+    #[serde(default)]
+    selling_price: Option<f64>,
+    #[serde(default)]
+    stock_qty: Option<f64>,
+    #[serde(default)]
+    reorder_level: Option<i64>,
+    #[serde(default)]
+    fda_reg_no: Option<String>,
+    #[serde(default)]
+    is_controlled: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct ParsedSheet {
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+}
+
+#[derive(Serialize)]
+pub struct ImportSummary {
+    created: usize,
+    updated: usize,
+    skipped: usize,
+    errors: Vec<String>,
 }
 
 /// MUST match tauri-plugin-sql's resolution of "sqlite:pulse.db": the plugin
@@ -59,13 +110,23 @@ fn complete_sale(
     }
     let mut paid = 0.0;
     for p in &payments {
-        if !matches!(p.method.as_str(), "Cash" | "Card" | "MoMo") {
+        if !matches!(p.method.as_str(), "Cash" | "Card" | "MoMo" | "Credit") {
             return Err("Unknown payment method".into());
         }
         if p.amount <= 0.0 {
             return Err(format!("Payment amount for {} must be positive", p.method));
         }
         paid += p.amount;
+    }
+    // Book sales must be tied to a customer — otherwise "what do they owe"
+    // has nobody to attach to.
+    if payments.iter().any(|p| p.method == "Credit") {
+        let name = patient_name.as_deref().map(str::trim).unwrap_or("");
+        if name.is_empty() {
+            return Err(
+                "Credit sales need a customer name — attach one at the counter".into(),
+            );
+        }
     }
 
     let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
@@ -258,17 +319,10 @@ fn backup_db(app: AppHandle) -> Result<String, String> {
     write_backup(&app)
 }
 
-/// Write report rows (already rendered client-side) to a CSV file in exports/.
+/// Write report rows (already rendered client-side) to the CSV file the user
+/// picked in the native Save dialog. Returns the written path.
 #[tauri::command]
-fn export_report(
-    app: AppHandle,
-    name: String,
-    rows: Vec<Vec<String>>,
-) -> Result<String, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let edir = dir.join("exports");
-    fs::create_dir_all(&edir).map_err(|e| e.to_string())?;
-
+fn export_report(path: String, rows: Vec<Vec<String>>) -> Result<String, String> {
     let mut out = String::new();
     for r in &rows {
         let line: Vec<String> = r
@@ -284,24 +338,40 @@ fn export_report(
         out.push_str(&line.join(","));
         out.push('\n');
     }
-
-    let epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_secs();
-    let safe = name
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-        .collect::<String>();
-    let dst = edir.join(format!("{}-{}.csv", safe, epoch));
-    fs::write(&dst, out).map_err(|e| e.to_string())?;
-    Ok(dst.to_string_lossy().into_owned())
+    fs::write(&path, out).map_err(|e| format!("Can't write {}: {}", path, e))?;
+    Ok(path)
 }
 
 #[derive(Deserialize)]
 pub struct ReceiveLine {
     po_item_id: i64,
     qty: i64,
+}
+
+/// One line of a purchase (supplier invoice) being saved or received.
+#[derive(Deserialize)]
+pub struct PurchaseLine {
+    product_id: i64,
+    product_name: String,
+    unit_type: String,
+    quantity: f64,
+    unit_cost_raw: f64,
+    discount_percent: f64,
+    unit_selling_price: f64,
+    #[serde(default)]
+    mfg_date: Option<String>,
+    expiry_date: String,
+}
+
+/// A receive request against an existing (Ordered/Draft) purchase line.
+/// invoice_cost is the unit cost on the supplier's invoice, used for the
+/// three-way match (order vs delivery vs invoice); None = skip the check.
+#[derive(Deserialize)]
+pub struct PurchaseReceiveLine {
+    line_id: String,
+    qty: f64,
+    #[serde(default)]
+    invoice_cost: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -406,6 +476,689 @@ fn receive_po(
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "po_no": po_no, "added": added, "complete": complete }))
+}
+
+/// Resolve the supplier for a purchase: by id (authoritative, from the
+/// suppliers table) or by name (find-or-insert, case-insensitive). Returns
+/// (supplier_id, supplier_name).
+fn resolve_supplier(
+    tx: &rusqlite::Transaction,
+    supplier_id: Option<i64>,
+    supplier_name: Option<&str>,
+) -> Result<(Option<i64>, Option<String>), String> {
+    if let Some(sid) = supplier_id {
+        let name: Option<String> = tx
+            .query_row("SELECT name FROM suppliers WHERE id = ?1", [sid], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match name {
+            Some(n) => Ok((Some(sid), Some(n))),
+            None => Err("Supplier not found".into()),
+        }
+    } else if let Some(name) = supplier_name.map(str::trim).filter(|s| !s.is_empty()) {
+        tx.execute("INSERT OR IGNORE INTO suppliers (name) VALUES (?1)", [name])
+            .map_err(|e| e.to_string())?;
+        let sid: i64 = tx
+            .query_row(
+                "SELECT id FROM suppliers WHERE name = ?1 COLLATE NOCASE",
+                [name],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok((Some(sid), Some(name.to_string())))
+    } else {
+        Ok((None, None))
+    }
+}
+
+/// Stock side of a purchase line being received: add the quantity, stamp the
+/// new cost/selling prices, packaging unit, expiry and supplier onto the
+/// product. Called inside the purchase transaction only.
+fn commit_purchase_stock(
+    tx: &rusqlite::Transaction,
+    product_id: i64,
+    name: &str,
+    qty: f64,
+    unit_type: &str,
+    net: f64,
+    selling: f64,
+    expiry: &str,
+    supplier: Option<&str>,
+) -> Result<(), String> {
+    let add = qty.round() as i64;
+    let n = tx
+        .execute(
+            "UPDATE products SET
+               stock_qty = stock_qty + ?1,
+               cost_price = ?2,
+               selling_price = ?3,
+               unit = ?4,
+               expiry_date = COALESCE(NULLIF(?5, ''), expiry_date),
+               supplier = COALESCE(?6, supplier)
+             WHERE id = ?7",
+            rusqlite::params![add, net, selling, unit_type, expiry, supplier, product_id],
+        )
+        .map_err(|e| format!("Stock update failed for {}: {}", name, e))?;
+    if n == 0 {
+        return Err(format!("Unknown product: {}", name));
+    }
+    Ok(())
+}
+
+/// Server-side purchase pricing — the ONLY source of truth for what gets
+/// stored (client totals are never trusted). Returns (subtotal, net_total,
+/// per-line (net, total, margin)).
+fn compute_purchase_pricing(
+    lines: &[PurchaseLine],
+    discount_type: &str,
+    discount_amount: f64,
+) -> Result<(f64, f64, Vec<(f64, f64, Option<f64>)>), String> {
+    let mut subtotal = 0.0;
+    let mut computed: Vec<(f64, f64, Option<f64>)> = Vec::with_capacity(lines.len());
+    for l in lines {
+        if l.quantity <= 0.0 {
+            return Err(format!("Quantity for {} must be positive", l.product_name));
+        }
+        if l.unit_cost_raw < 0.0 {
+            return Err(format!("Unit cost for {} can't be negative", l.product_name));
+        }
+        if !(0.0..=100.0).contains(&l.discount_percent) {
+            return Err(format!("Discount % for {} must be 0–100", l.product_name));
+        }
+        if l.unit_selling_price < 0.0 {
+            return Err(format!("Selling price for {} can't be negative", l.product_name));
+        }
+        let net = l.unit_cost_raw * (1.0 - l.discount_percent / 100.0);
+        let total = l.quantity * net;
+        let margin = if l.unit_selling_price > 0.0 {
+            Some(((l.unit_selling_price - net) / l.unit_selling_price * 100.0 * 100.0).round() / 100.0)
+        } else {
+            None
+        };
+        subtotal += total;
+        computed.push(((net * 100.0).round() / 100.0, (total * 100.0).round() / 100.0, margin));
+    }
+    let net_total = match discount_type {
+        "Fixed" => (subtotal - discount_amount).max(0.0),
+        "Percentage" => subtotal * (1.0 - discount_amount / 100.0),
+        _ => subtotal,
+    };
+    Ok((subtotal, (net_total * 100.0).round() / 100.0, computed))
+}
+
+/// Save a purchase (supplier invoice) atomically: header + batch lines in one
+/// transaction. All pricing math is recomputed here — the client totals are
+/// never trusted. When status = 'Received' the stock lands immediately
+/// (products.stock_qty += qty, cost_price/selling_price/unit/expiry updated);
+/// Draft/Ordered just records the order for later receiving.
+#[tauri::command]
+fn save_purchase(
+    app: AppHandle,
+    supplier_id: Option<i64>,
+    supplier_name: Option<String>,
+    reference_no: Option<String>,
+    purchase_date: String,
+    pay_term: Option<String>,
+    status: String,
+    discount_type: String,
+    discount_amount: f64,
+    lines: Vec<PurchaseLine>,
+) -> Result<serde_json::Value, String> {
+    if lines.is_empty() {
+        return Err("Add at least one product".into());
+    }
+    if !matches!(status.as_str(), "Draft" | "Ordered" | "Received") {
+        return Err("Invalid status".into());
+    }
+    if !matches!(discount_type.as_str(), "None" | "Fixed" | "Percentage") {
+        return Err("Invalid discount type".into());
+    }
+    if discount_amount < 0.0 {
+        return Err("Discount can't be negative".into());
+    }
+    if discount_type == "Percentage" && discount_amount > 100.0 {
+        return Err("Percentage discount can't exceed 100%".into());
+    }
+    let purchase_date = purchase_date.trim().to_string();
+    if purchase_date.is_empty() {
+        return Err("Purchase date is required".into());
+    }
+    let pay_term = match pay_term.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(p) => p.to_string(),
+        None => "Cash".to_string(),
+    };
+
+    // Server-side math (the source of truth for what gets stored).
+    let (_subtotal, net_total, computed) =
+        compute_purchase_pricing(&lines, &discount_type, discount_amount)?;
+
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+
+    // Display number: per-day sequence, computed inside the transaction.
+    let n: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM purchases WHERE date(purchase_date) = date(?1)",
+            [&purchase_date],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let seq_date = purchase_date.replace('-', "");
+    let id = format!("PUR-{}-{:03}", seq_date, n + 1);
+
+    let (sup_id, sup_name) = resolve_supplier(&tx, supplier_id, supplier_name.as_deref())?;
+    // Blank reference → use the display number so the field is never empty.
+    let reference_no = match reference_no.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(r) => Some(r.to_string()),
+        None => Some(id.clone()),
+    };
+
+    tx.execute(
+        "INSERT INTO purchases (id, reference_no, supplier_id, supplier_name, purchase_date,
+                                pay_term, status, discount_type, discount_amount, total_amount, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now', 'localtime'))",
+        rusqlite::params![
+            id,
+            reference_no,
+            sup_id,
+            sup_name,
+            purchase_date,
+            pay_term,
+            status,
+            discount_type,
+            discount_amount,
+            net_total
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    for (i, l) in lines.iter().enumerate() {
+        let (net, total, margin) = computed[i];
+        let item_id = format!("{}-{}", id, i + 1);
+        tx.execute(
+            "INSERT INTO purchase_items (id, purchase_id, product_id, product_name, unit_type,
+                                         quantity, qty_received, unit_cost_raw, discount_percent,
+                                         unit_cost_net, line_total, profit_margin_percent,
+                                         unit_selling_price, mfg_date, expiry_date)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            rusqlite::params![
+                item_id,
+                id,
+                l.product_id,
+                l.product_name,
+                l.unit_type,
+                l.quantity,
+                if status == "Received" { l.quantity } else { 0.0 },
+                l.unit_cost_raw,
+                l.discount_percent,
+                net,
+                total,
+                margin,
+                l.unit_selling_price,
+                l.mfg_date,
+                l.expiry_date
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        if status == "Received" {
+            commit_purchase_stock(
+                &tx,
+                l.product_id,
+                &l.product_name,
+                l.quantity,
+                &l.unit_type,
+                net,
+                l.unit_selling_price,
+                &l.expiry_date,
+                sup_name.as_deref(),
+            )?;
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "id": id,
+        "total": net_total,
+        "items": lines.len(),
+        "received": status == "Received",
+    }))
+}
+
+/// Receive an Ordered/Draft purchase (partially or fully): add the received
+/// quantities to stock with the saved costs/prices, and mark the purchase
+/// 'Received' only when every line is complete. One transaction.
+#[tauri::command]
+fn receive_purchase(
+    app: AppHandle,
+    purchase_id: String,
+    lines: Vec<PurchaseReceiveLine>,
+) -> Result<serde_json::Value, String> {
+    if lines.is_empty() {
+        return Err("Nothing to receive".into());
+    }
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+
+    let (ref_no, status, cancelled): (Option<String>, String, i64) = tx
+        .query_row(
+            "SELECT reference_no, status, cancelled FROM purchases WHERE id = ?1",
+            [&purchase_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|_| "Purchase not found".to_string())?;
+    if cancelled != 0 {
+        return Err("This purchase was cancelled".into());
+    }
+    if status == "Received" {
+        return Err(format!(
+            "{} is already received",
+            ref_no.as_deref().unwrap_or(&purchase_id)
+        ));
+    }
+
+    let mut added = 0.0;
+    let mut warnings: Vec<String> = Vec::new();
+    for rl in &lines {
+        if rl.qty <= 0.0 {
+            return Err("Received quantity must be positive".into());
+        }
+        if let Some(inv) = rl.invoice_cost {
+            if inv < 0.0 {
+                return Err("Invoice cost can't be negative".into());
+            }
+        }
+        let (product_id, product_name, qty, qty_received, unit_type, net, selling, expiry): (
+            i64,
+            String,
+            f64,
+            f64,
+            String,
+            f64,
+            f64,
+            String,
+        ) = tx
+            .query_row(
+                "SELECT product_id, product_name, quantity, qty_received, unit_type,
+                        unit_cost_net, unit_selling_price, expiry_date
+                 FROM purchase_items WHERE id = ?1 AND purchase_id = ?2",
+                rusqlite::params![rl.line_id, purchase_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .map_err(|_| "Purchase line not found".to_string())?;
+        let rem = qty - qty_received;
+        if rl.qty > rem {
+            return Err(format!(
+                "Receiving {} exceeds the {} still outstanding on '{}'",
+                rl.qty, rem, product_name
+            ));
+        }
+        // Three-way match: does the supplier's invoice unit cost agree with
+        // what we ordered? Report differences (never block, never rewrite).
+        if let Some(inv) = rl.invoice_cost {
+            if (inv - net).abs() > 0.005 {
+                warnings.push(format!(
+                    "{}: invoice {:.2} vs ordered {:.2}",
+                    product_name, inv, net
+                ));
+            }
+        }
+        commit_purchase_stock(&tx, product_id, &product_name, rl.qty, &unit_type, net, selling, &expiry, None)?;
+        tx.execute(
+            "UPDATE purchase_items SET qty_received = qty_received + ?1 WHERE id = ?2",
+            rusqlite::params![rl.qty, rl.line_id],
+        )
+        .map_err(|e| e.to_string())?;
+        added += rl.qty;
+    }
+
+    let outstanding: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM purchase_items WHERE purchase_id = ?1 AND qty_received < quantity",
+            [&purchase_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let complete = outstanding == 0;
+    if complete {
+        tx.execute(
+            "UPDATE purchases SET status = 'Received' WHERE id = ?1",
+            [&purchase_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "reference_no": ref_no,
+        "added": added,
+        "complete": complete,
+        "warnings": warnings,
+    }))
+}
+
+/// Edit a Draft/Ordered purchase that hasn't had any stock received yet:
+/// header + lines replaced atomically, totals recomputed server-side. A
+/// purchase with any received quantity is locked (receive or cancel instead).
+#[tauri::command]
+fn update_purchase(
+    app: AppHandle,
+    purchase_id: String,
+    supplier_id: Option<i64>,
+    supplier_name: Option<String>,
+    reference_no: Option<String>,
+    purchase_date: String,
+    pay_term: Option<String>,
+    status: String,
+    discount_type: String,
+    discount_amount: f64,
+    lines: Vec<PurchaseLine>,
+) -> Result<serde_json::Value, String> {
+    if lines.is_empty() {
+        return Err("Add at least one product".into());
+    }
+    if !matches!(status.as_str(), "Draft" | "Ordered") {
+        return Err("Only Draft or Ordered can be edited — receive it to add stock".into());
+    }
+    if !matches!(discount_type.as_str(), "None" | "Fixed" | "Percentage") {
+        return Err("Invalid discount type".into());
+    }
+    if discount_amount < 0.0 {
+        return Err("Discount can't be negative".into());
+    }
+    if discount_type == "Percentage" && discount_amount > 100.0 {
+        return Err("Percentage discount can't exceed 100%".into());
+    }
+    let purchase_date = purchase_date.trim().to_string();
+    if purchase_date.is_empty() {
+        return Err("Purchase date is required".into());
+    }
+    let pay_term = match pay_term.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(p) => p.to_string(),
+        None => "Cash".to_string(),
+    };
+
+    let (_subtotal, net_total, computed) =
+        compute_purchase_pricing(&lines, &discount_type, discount_amount)?;
+
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+
+    let (cur_status, cancelled): (String, i64) = tx
+        .query_row(
+            "SELECT status, cancelled FROM purchases WHERE id = ?1",
+            [&purchase_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| "Purchase not found".to_string())?;
+    if cancelled != 0 {
+        return Err("A cancelled purchase can't be edited".into());
+    }
+    if cur_status == "Received" {
+        return Err("A received purchase can't be edited".into());
+    }
+    let received: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM purchase_items WHERE purchase_id = ?1 AND qty_received > 0",
+            [&purchase_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if received > 0 {
+        return Err(
+            "Can't edit — some lines were already received. Receive the rest or cancel.".into(),
+        );
+    }
+
+    let (sup_id, sup_name) = resolve_supplier(&tx, supplier_id, supplier_name.as_deref())?;
+    let reference_no = match reference_no.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(r) => Some(r.to_string()),
+        None => Some(purchase_id.clone()),
+    };
+
+    tx.execute(
+        "UPDATE purchases SET reference_no = ?1, supplier_id = ?2, supplier_name = ?3,
+                purchase_date = ?4, pay_term = ?5, status = ?6, discount_type = ?7,
+                discount_amount = ?8, total_amount = ?9
+         WHERE id = ?10",
+        rusqlite::params![
+            reference_no,
+            sup_id,
+            sup_name,
+            purchase_date,
+            pay_term,
+            status,
+            discount_type,
+            discount_amount,
+            net_total,
+            purchase_id
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "DELETE FROM purchase_items WHERE purchase_id = ?1",
+        [&purchase_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    for (i, l) in lines.iter().enumerate() {
+        let (net, total, margin) = computed[i];
+        let item_id = format!("{}-{}", purchase_id, i + 1);
+        tx.execute(
+            "INSERT INTO purchase_items (id, purchase_id, product_id, product_name, unit_type,
+                                         quantity, qty_received, unit_cost_raw, discount_percent,
+                                         unit_cost_net, line_total, profit_margin_percent,
+                                         unit_selling_price, mfg_date, expiry_date)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            rusqlite::params![
+                item_id,
+                purchase_id,
+                l.product_id,
+                l.product_name,
+                l.unit_type,
+                l.quantity,
+                l.unit_cost_raw,
+                l.discount_percent,
+                net,
+                total,
+                margin,
+                l.unit_selling_price,
+                l.mfg_date,
+                l.expiry_date
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "id": purchase_id,
+        "total": net_total,
+        "items": lines.len(),
+    }))
+}
+
+/// Cancel a Draft/Ordered purchase that won't be fulfilled. Received purchases
+/// can't be cancelled (the goods are already in stock); cancelled purchases
+/// drop out of the list and the bell.
+#[tauri::command]
+fn cancel_purchase(
+    app: AppHandle,
+    purchase_id: String,
+    reason: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let (status, cancelled, ref_no): (String, i64, Option<String>) = tx
+        .query_row(
+            "SELECT status, cancelled, reference_no FROM purchases WHERE id = ?1",
+            [&purchase_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|_| "Purchase not found".to_string())?;
+    if cancelled != 0 {
+        return Err("Already cancelled".into());
+    }
+    if status == "Received" {
+        return Err(
+            "A received purchase can't be cancelled — the goods are already in stock".into(),
+        );
+    }
+    let reason = reason.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    tx.execute(
+        "UPDATE purchases SET cancelled = 1, cancel_reason = ?1,
+                cancelled_at = datetime('now', 'localtime') WHERE id = ?2",
+        rusqlite::params![reason, purchase_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "id": purchase_id, "reference_no": ref_no }))
+}
+
+/// Record a payment against a supplier invoice. Balance = total_amount −
+/// SUM(payments); overpaying is rejected. Keeps a per-payment history so the
+/// "what do I owe" view is auditable.
+#[tauri::command]
+fn record_payment(
+    app: AppHandle,
+    purchase_id: String,
+    amount: f64,
+    method: Option<String>,
+    operator: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if amount <= 0.0 {
+        return Err("Payment amount must be positive".into());
+    }
+    let method = match method.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(m) => m.to_string(),
+        None => "Cash".to_string(),
+    };
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let (total, cancelled, ref_no): (f64, i64, Option<String>) = tx
+        .query_row(
+            "SELECT total_amount, cancelled, reference_no FROM purchases WHERE id = ?1",
+            [&purchase_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|_| "Purchase not found".to_string())?;
+    if cancelled != 0 {
+        return Err("A cancelled purchase can't be paid".into());
+    }
+    let paid: f64 = tx
+        .query_row(
+            "SELECT COALESCE(SUM(amount), 0) FROM purchase_payments WHERE purchase_id = ?1",
+            [&purchase_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let amount = (amount * 100.0).round() / 100.0;
+    if (paid + amount) - total > 0.005 {
+        return Err(format!(
+            "Payment of {} exceeds the {} balance left on this invoice",
+            amount,
+            ((total - paid) * 100.0).round() / 100.0
+        ));
+    }
+    tx.execute(
+        "INSERT INTO purchase_payments (purchase_id, amount, method, operator)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![purchase_id, amount, method, operator],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    let balance = ((total - paid - amount) * 100.0).round() / 100.0;
+    Ok(serde_json::json!({
+        "reference_no": ref_no,
+        "paid": ((paid + amount) * 100.0).round() / 100.0,
+        "balance": balance.max(0.0),
+    }))
+}
+
+/// Settle a customer's book balance — a payment against what they owe from
+/// credit sales. Over-settling is rejected; every payment is kept for audit.
+#[tauri::command]
+fn settle_credit(
+    app: AppHandle,
+    patient_name: String,
+    amount: f64,
+    method: Option<String>,
+    operator: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let name = patient_name.trim().to_string();
+    if name.is_empty() {
+        return Err("Customer name is required".into());
+    }
+    if amount <= 0.0 {
+        return Err("Payment amount must be positive".into());
+    }
+    let method = match method.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(m) => m.to_string(),
+        None => "Cash".to_string(),
+    };
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let owed: f64 = tx
+        .query_row(
+            "SELECT COALESCE(SUM(sp.amount),0) FROM sale_payments sp
+             JOIN sales s ON s.id = sp.sale_id
+             WHERE sp.method = 'Credit' AND s.patient_name = ?1 COLLATE NOCASE",
+            [&name],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let settled: f64 = tx
+        .query_row(
+            "SELECT COALESCE(SUM(amount),0) FROM credit_payments
+             WHERE patient_name = ?1 COLLATE NOCASE",
+            [&name],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let amount = (amount * 100.0).round() / 100.0;
+    if (settled + amount) - owed > 0.005 {
+        return Err(format!(
+            "Payment of {} exceeds the {} balance {} owes",
+            amount,
+            ((owed - settled) * 100.0).round() / 100.0,
+            name
+        ));
+    }
+    tx.execute(
+        "INSERT INTO credit_payments (patient_name, amount, method, operator)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![name, amount, method, operator],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "patient_name": name,
+        "paid": ((settled + amount) * 100.0).round() / 100.0,
+        "balance": ((owed - settled - amount) * 100.0).round() / 100.0,
+    }))
 }
 
 /// Refund part or all of a sale. The SALE STAYS (history integrity — reports
@@ -706,6 +1459,224 @@ fn restart_app(app: AppHandle) -> Result<(), String> {
     app.restart()
 }
 
+// ---------------------------------------------------------------------------
+// Stock import from the old system (Excel/CSV export)
+// ---------------------------------------------------------------------------
+
+/// Read a CSV file into headers + rows. Flexible: quoted fields, variable
+/// column counts, leading/trailing whitespace trimmed. Non-UTF-8 bytes fall
+/// back to lossy decoding (Ghanaian exports are often Latin-1).
+fn parse_csv(path: &str) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
+    let bytes = fs::read(path).map_err(|e| format!("Can't read {}: {}", path, e))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut rdr = csv::ReaderBuilder::new()
+        .flexible(true)
+        .trim(csv::Trim::All)
+        .from_reader(text.as_bytes());
+    let headers: Vec<String> = rdr
+        .headers()
+        .map_err(|e| format!("Bad CSV header in {}: {}", path, e))?
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for rec in rdr.records() {
+        let rec = rec.map_err(|e| format!("Bad CSV row in {}: {}", path, e))?;
+        rows.push(rec.iter().map(|s| s.to_string()).collect());
+    }
+    Ok((headers, rows))
+}
+
+/// Read the FIRST sheet of an .xlsx/.xls/.ods workbook into headers + rows.
+fn parse_spreadsheet(path: &str) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
+    use calamine::{open_workbook_auto, Reader};
+    let mut wb = open_workbook_auto(path)
+        .map_err(|e| format!("Can't open {} as a spreadsheet: {}", path, e))?;
+    let sheet = wb
+        .sheet_names()
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("{} has no sheets", path))?;
+    let range = wb
+        .worksheet_range(&sheet)
+        .map_err(|e| format!("Can't read sheet in {}: {}", path, e))?;
+    let mut it = range.rows();
+    let headers: Vec<String> = match it.next() {
+        Some(first) => first.iter().map(|c| c.to_string().trim().to_string()).collect(),
+        None => return Err(format!("{}: the sheet is empty", path)),
+    };
+    let rows: Vec<Vec<String>> = it.map(|r| r.iter().map(|c| c.to_string()).collect()).collect();
+    Ok((headers, rows))
+}
+
+/// Parse a stock export (CSV or Excel) into headers + raw string rows so the
+/// frontend can offer a column-mapping preview. Capped at 5000 rows.
+#[tauri::command]
+fn parse_stock_file(path: String) -> Result<ParsedSheet, String> {
+    const MAX_ROWS: usize = 5000;
+    let lower = path.to_lowercase();
+    let (headers, mut rows) = if lower.ends_with(".csv") {
+        parse_csv(&path)?
+    } else if lower.ends_with(".xlsx") || lower.ends_with(".xls") || lower.ends_with(".ods") {
+        parse_spreadsheet(&path)?
+    } else {
+        // Unknown extension: try spreadsheet first, then CSV.
+        match parse_spreadsheet(&path) {
+            Ok(v) => v,
+            Err(_) => parse_csv(&path)?,
+        }
+    };
+    if rows.len() > MAX_ROWS {
+        rows.truncate(MAX_ROWS);
+    }
+    Ok(ParsedSheet { headers, rows })
+}
+
+/// Commit mapped stock rows in ONE transaction. Matching rule:
+///   1. barcode (trimmed, exact) — the primary key of the old system
+///   2. otherwise product name (case-insensitive)
+/// A match updates selling/cost price and reorder level when provided, and
+/// ADDS the imported quantity to stock. No match creates a new product.
+/// Rows with no name are skipped and reported.
+#[tauri::command]
+fn commit_stock_import(
+    app: AppHandle,
+    records: Vec<StockImportRow>,
+) -> Result<ImportSummary, String> {
+    if records.is_empty() {
+        return Err("No rows to import".into());
+    }
+    if records.len() > 5000 {
+        return Err("Too many rows — max 5000 per import".into());
+    }
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let mut created = 0usize;
+    let mut updated = 0usize;
+    let mut skipped = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
+    for (i, r) in records.iter().enumerate() {
+        let row_no = i + 1;
+        let name = r.name.trim().to_string();
+        if name.is_empty() {
+            skipped += 1;
+            if errors.len() < 20 {
+                errors.push(format!("Row {}: missing product name", row_no));
+            }
+            continue;
+        }
+        let qty = r.stock_qty.unwrap_or(0.0).round() as i64;
+        if qty < 0 {
+            skipped += 1;
+            if errors.len() < 20 {
+                errors.push(format!("Row {}: quantity can't be negative", row_no));
+            }
+            continue;
+        }
+        let barcode = r.barcode.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+        let existing: Option<i64> = if let Some(bc) = barcode {
+            tx.query_row(
+                "SELECT id FROM products WHERE barcode = ?1",
+                [bc],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+        } else {
+            None
+        };
+        // Fall back to a name match (case-insensitive) when barcode is
+        // missing or didn't hit.
+        let existing = existing.or_else(|| {
+            tx.query_row(
+                "SELECT id FROM products WHERE lower(name) = lower(?1) ORDER BY id LIMIT 1",
+                [&name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+            .ok()
+            .flatten()
+        });
+
+        match existing {
+            Some(id) => {
+                let mut sets: Vec<String> = Vec::new();
+                let mut vals: Vec<rusqlite::types::Value> = Vec::new();
+                if let Some(sp) = r.selling_price {
+                    vals.push(rusqlite::types::Value::Real(sp));
+                    sets.push(format!("selling_price = ?{}", vals.len()));
+                }
+                if let Some(cp) = r.cost_price {
+                    vals.push(rusqlite::types::Value::Real(cp));
+                    sets.push(format!("cost_price = ?{}", vals.len()));
+                }
+                if let Some(rl) = r.reorder_level {
+                    vals.push(rusqlite::types::Value::Integer(rl));
+                    sets.push(format!("reorder_level = ?{}", vals.len()));
+                }
+                if qty > 0 {
+                    vals.push(rusqlite::types::Value::Integer(qty));
+                    sets.push(format!("stock_qty = stock_qty + ?{}", vals.len()));
+                }
+                if sets.is_empty() {
+                    skipped += 1;
+                    if errors.len() < 20 {
+                        errors.push(format!(
+                            "Row {}: '{}' already exists — nothing new to update",
+                            row_no, name
+                        ));
+                    }
+                    continue;
+                }
+                vals.push(rusqlite::types::Value::Integer(id));
+                let sql = format!("UPDATE products SET {} WHERE id = ?{}", sets.join(", "), vals.len());
+                tx.execute(&sql, rusqlite::params_from_iter(vals.iter()))
+                    .map_err(|e| e.to_string())?;
+                updated += 1;
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO products (name, barcode, category, manufacturer, supplier, strength, unit, rx_flag, batch_no, expiry_date, cost_price, selling_price, stock_qty, reorder_level, fda_reg_no, is_controlled, active)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1)",
+                    rusqlite::params![
+                        name,
+                        barcode,
+                        r.category.as_deref(),
+                        r.manufacturer.as_deref(),
+                        r.supplier.as_deref(),
+                        r.strength.as_deref(),
+                        r.unit.as_deref(),
+                        r.rx_flag.unwrap_or(0),
+                        r.batch_no.as_deref(),
+                        r.expiry_date.as_deref(),
+                        r.cost_price.unwrap_or(0.0),
+                        r.selling_price.unwrap_or(0.0),
+                        qty,
+                        r.reorder_level.unwrap_or(10),
+                        r.fda_reg_no.as_deref(),
+                        r.is_controlled.unwrap_or(0),
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                created += 1;
+            }
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ImportSummary {
+        created,
+        updated,
+        skipped,
+        errors,
+    })
+}
+
 const MIGRATIONS: &[(&str, &str)] = &[
     ("0001_init", include_str!("../migrations/0001_init.sql")),
     (
@@ -733,6 +1704,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0010_products_active.sql"),
     ),
     ("0011_cleanup", include_str!("../migrations/0011_cleanup.sql")),
+    ("0012_seed_catalog", include_str!("../migrations/0012_seed_catalog.sql")),
+    ("0013_purchasing", include_str!("../migrations/0013_purchasing.sql")),
+    (
+        "0014_requisition_tools",
+        include_str!("../migrations/0014_requisition_tools.sql"),
+    ),
+    ("0015_credit_ledger", include_str!("../migrations/0015_credit_ledger.sql")),
+    ("0016_sales_credit_method", include_str!("../migrations/0016_sales_credit_method.sql")),
+    ("0017_sale_payments_credit_method", include_str!("../migrations/0017_sale_payments_credit_method.sql")),
+    ("0018_patient_email", include_str!("../migrations/0018_patient_email.sql")),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.
@@ -746,6 +1727,14 @@ fn run_migrations(app: &tauri::App) -> Result<(), String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut conn = rusqlite::Connection::open(dir.join("pulse.db")).map_err(|e| e.to_string())?;
+    // Migrations rebuild parent tables (0016/0017) and were written assuming
+    // FK enforcement is OFF. SQLite's default is off, but the SQL plugin may
+    // leave foreign_keys ON on connections to the same file, so force it OFF
+    // here — before the loop, outside any transaction (the pragma is a no-op
+    // inside one). Without this, DROP TABLE sales in 0016 fails when
+    // sale_returns rows exist (that FK has no ON DELETE CASCADE).
+    conn.pragma_update(None, "foreign_keys", "OFF")
+        .map_err(|e| e.to_string())?;
     let ver: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
@@ -788,6 +1777,9 @@ fn run_migrations(app: &tauri::App) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_sql::Builder::default().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             run_migrations(app).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             Ok(())
@@ -802,7 +1794,15 @@ pub fn run() {
             adjust_stock,
             list_backups,
             restore_backup,
-            restart_app
+            restart_app,
+            parse_stock_file,
+            commit_stock_import,
+            save_purchase,
+            receive_purchase,
+            update_purchase,
+            cancel_purchase,
+            record_payment,
+            settle_credit
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

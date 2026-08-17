@@ -1,6 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { initDb, backupDb, exportReport, voidLastSale, saveCashUp as dbSaveCashUp, listCashUps } from "../db";
-import type { CashUp } from "../db";
+import { save } from "@tauri-apps/plugin-dialog";
+import {
+  initDb,
+  backupDb,
+  exportReport,
+  voidLastSale,
+  saveCashUp as dbSaveCashUp,
+  listCashUps,
+  loadControlledRegister,
+  loadCustomerCredit,
+  settleCredit,
+} from "../db";
+import type {
+  CashUp,
+  CustomerCredit,
+  ControlledSummaryRow,
+  ControlledTxn,
+} from "../db";
 import { useStore } from "../store/useStore";
 import type { PaymentLine, PaymentMethod } from "../types";
 import { fmtMoney } from "../lib/money";
@@ -8,7 +24,7 @@ import { beep } from "../lib/audio";
 import { ReceiptModal } from "../components/ReceiptModal";
 import { ReturnModal } from "../components/ReturnModal";
 
-type Range = "today" | "yesterday" | "week" | "month" | "custom";
+type Range = "today" | "yesterday" | "week7" | "month30" | "month" | "custom";
 
 interface ByRow {
   label: string;
@@ -56,9 +72,14 @@ function rangeDates(r: Range, customFrom: string, customTo: string): { from: str
     d.setDate(d.getDate() - 1);
     return { from: fmt(d), to: fmt(d) };
   }
-  if (r === "week") {
+  if (r === "week7") {
     const d = new Date(now);
     d.setDate(d.getDate() - 6);
+    return { from: fmt(d), to: fmt(now) };
+  }
+  if (r === "month30") {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 29);
     return { from: fmt(d), to: fmt(now) };
   }
   if (r === "month") {
@@ -71,13 +92,32 @@ async function fetchReport(
   from: string,
   to: string,
   op: string | null,
+  method: string | null,
 ): Promise<Report> {
   const db = await initDb();
-  // Operator filter: `operator = $3` when a specific operator is selected.
-  const opCond = op ? " AND operator = $3" : "";
-  const p = op ? [from, to, op] : [from, to];
+  const p: unknown[] = [from, to];
+  // Operator filter (position 3): every sales-based query aliases `s`, and
+  // returns alias `sr` (a refund is stamped with whoever processed it).
+  let opC = "";
+  let opRetC = "";
+  if (op) {
+    opC = " AND s.operator = $3";
+    opRetC = " AND sr.operator = $3";
+    p.push(op);
+  }
+  // Payment-type filter (last position): a sale matches when ANY of its
+  // split payment lines is that method, or — for legacy sales recorded
+  // before split payments — its primary payment_method is.
+  let mC = "";
+  if (method) {
+    const idx = p.length + 1;
+    mC = ` AND (EXISTS (SELECT 1 FROM sale_payments sp WHERE sp.sale_id = s.id AND sp.method = $${idx})
+             OR (NOT EXISTS (SELECT 1 FROM sale_payments sp2 WHERE sp2.sale_id = s.id) AND s.payment_method = $${idx}))`;
+    p.push(method);
+  }
+
   const [summary] = await db.select<{ n: number; revenue: number }[]>(
-    `SELECT COUNT(*) AS n, COALESCE(SUM(total_amount),0) AS revenue FROM sales WHERE date(timestamp) BETWEEN $1 AND $2${opCond}`,
+    `SELECT COUNT(*) AS n, COALESCE(SUM(total_amount),0) AS revenue FROM sales s WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}`,
     p,
   );
   const [vol] = await db.select<{ items: number; profit: number }[]>(
@@ -86,24 +126,24 @@ async function fetchReport(
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
      JOIN products p ON p.id = si.product_id
-     WHERE date(s.timestamp) BETWEEN $1 AND $2${opCond.replace("operator", "s.operator")}`,
+     WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}`,
     p,
   );
   const byMethod = await db.select<{ method: string; amt: number; n: number }[]>(
     `SELECT method, SUM(amount) AS amt, COUNT(*) AS n FROM (
        SELECT sp.method AS method, sp.amount AS amount
        FROM sale_payments sp JOIN sales s ON s.id = sp.sale_id
-       WHERE date(s.timestamp) BETWEEN $1 AND $2${opCond.replace("operator", "s.operator")}
+       WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}
        UNION ALL
        SELECT s.payment_method, s.total_amount FROM sales s
-       WHERE date(s.timestamp) BETWEEN $1 AND $2${opCond.replace("operator", "s.operator")}
+       WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}
          AND NOT EXISTS (SELECT 1 FROM sale_payments sp2 WHERE sp2.sale_id = s.id)
      ) GROUP BY method ORDER BY amt DESC`,
     p,
   );
   const byOperator = await db.select<{ operator: string | null; amt: number; n: number }[]>(
     `SELECT operator, COUNT(*) AS n, SUM(total_amount) AS amt
-     FROM sales WHERE date(timestamp) BETWEEN $1 AND $2${opCond}
+     FROM sales s WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}
      GROUP BY operator ORDER BY amt DESC`,
     p,
   );
@@ -117,23 +157,25 @@ async function fetchReport(
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
      JOIN products p ON p.id = si.product_id
-     WHERE date(s.timestamp) BETWEEN $1 AND $2${opCond.replace("operator", "s.operator")}
+     WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}
      GROUP BY p.category ORDER BY amt DESC`,
     p,
   );
   const top = await db.select<{ product_name: string; qty: number; amt: number }[]>(
     `SELECT si.product_name, SUM(si.quantity) AS qty, SUM(si.quantity * si.unit_price) AS amt
      FROM sale_items si JOIN sales s ON s.id = si.sale_id
-     WHERE date(s.timestamp) BETWEEN $1 AND $2${opCond.replace("operator", "s.operator")}
+     WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}
      GROUP BY si.product_name ORDER BY qty DESC LIMIT 8`,
     p,
   );
   const recent = await db.select<Report["recent"]>(
-    `SELECT id, receipt_no, total_amount, payment_method, operator, timestamp FROM sales WHERE date(timestamp) BETWEEN $1 AND $2${opCond} ORDER BY id DESC LIMIT 10`,
+    `SELECT id, receipt_no, total_amount, payment_method, operator, timestamp FROM sales s WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC} ORDER BY id DESC LIMIT 10`,
     p,
   );
   const [returns] = await db.select<{ amount: number; n: number }[]>(
-    `SELECT COALESCE(SUM(total_refunded),0) AS amount, COUNT(*) AS n FROM sale_returns WHERE date(timestamp) BETWEEN $1 AND $2${opCond}`,
+    `SELECT COALESCE(SUM(sr.total_refunded),0) AS amount, COUNT(*) AS n
+     FROM sale_returns sr JOIN sales s ON s.id = sr.sale_id
+     WHERE date(sr.timestamp) BETWEEN $1 AND $2${opRetC}${mC}`,
     p,
   );
   const [latestToday] = await db.select<{ id: number }[]>(
@@ -198,6 +240,7 @@ export function AnalyticsPage() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [opFilter, setOpFilter] = useState("All");
+  const [methodFilter, setMethodFilter] = useState("All");
   const [report, setReport] = useState<Report | null>(null);
   const [err, setErr] = useState("");
   const [backupPath, setBackupPath] = useState("");
@@ -287,6 +330,51 @@ export function AnalyticsPage() {
       setCashBusy(false);
     }
   };
+  // ---- Controlled-drug register + customer credit ledger ----
+  const [controlled, setControlled] = useState<{
+    summary: ControlledSummaryRow[];
+    txns: ControlledTxn[];
+  } | null>(null);
+  const [credit, setCredit] = useState<CustomerCredit[]>([]);
+  const [settling, setSettling] = useState<string | null>(null);
+  const [settleAmt, setSettleAmt] = useState("");
+  const [settleMethod, setSettleMethod] = useState("Cash");
+  const [settleBusy, setSettleBusy] = useState(false);
+  const [settleErr, setSettleErr] = useState("");
+
+  const SETTLE_METHODS = ["Cash", "Mobile Money", "Bank Transfer", "Cheque"];
+  const kindCls = (k: ControlledTxn["kind"]) =>
+    k === "Dispensed"
+      ? "bg-error/10 text-error"
+      : k === "Received"
+        ? "bg-primary/10 text-primary"
+        : k === "Returned"
+          ? "bg-surface-variant text-on-surface-variant"
+          : "bg-[#fef08a]/40 text-[#854d0e]";
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+
+  const doSettle = async (c: CustomerCredit) => {
+    const a = Number(settleAmt);
+    if (!Number.isFinite(a) || a <= 0) {
+      setSettleErr("Enter a positive amount.");
+      beep(false);
+      return;
+    }
+    setSettleBusy(true);
+    setSettleErr("");
+    try {
+      await settleCredit(c.name, a, settleMethod, operator || null);
+      beep(true);
+      setCredit(await loadCustomerCredit());
+      setSettling(null);
+    } catch (e) {
+      setSettleErr(String(e).replace(/^Error: /, ""));
+      beep(false);
+    } finally {
+      setSettleBusy(false);
+    }
+  };
+
   const [reprint, setReprint] = useState<{
     result: { receipt_no: string; sale_id: number; total: number; change: number };
     lines: { productId: number; name: string; unit: string | null; unitPrice: number; qty: number }[];
@@ -300,25 +388,67 @@ export function AnalyticsPage() {
     () => rangeDates(range, customFrom, customTo),
     [range, customFrom, customTo],
   );
+
+
   const rangeLabel = useMemo(() => {
-    if (range === "custom") return `${from}_to_${to}`;
-    return range;
+    switch (range) {
+      case "today":
+        return "today";
+      case "yesterday":
+        return "yesterday";
+      case "week7":
+        return "last7";
+      case "month30":
+        return "last30";
+      case "month":
+        return "this-month";
+      case "custom":
+        return `${from}_to_${to}`;
+    }
   }, [range, from, to]);
 
+  // Operator dropdown = shift roster (with windows) + any operator found on
+  // sales in the range, so you can filter by someone who has no sales yet.
   const opOptions = useMemo(() => {
-    const set = new Set<string>(operators.map((o) => o.name));
-    (report?.legacyOps ?? []).forEach((n) => set.add(n));
-    return Array.from(set).sort();
-  }, [operators, report]);
-
-  const load = useCallback(async () => {
+    const roster = new Map(operators.map((o) => [o.name, o]));
+    const names = new Set<string>([...roster.keys(), ...(report?.legacyOps ?? [])]);
+    return Array.from(names)
+      .sort()
+      .map((n) => {
+        const op = roster.get(n);
+        return op?.shift_start && op.shift_end
+          ? { name: n, label: `${n} (${op.shift_start}–${op.shift_end})` }
+          : { name: n, label: n };
+      });
+  }, [operators, report]);  const load = useCallback(async () => {
     try {
-      setReport(await fetchReport(from, to, opFilter === "All" ? null : opFilter));
+      const [rep, ctrl] = await Promise.all([
+        fetchReport(
+          from,
+          to,
+          opFilter === "All" ? null : opFilter,
+          methodFilter === "All" ? null : methodFilter,
+        ),
+        loadControlledRegister(from, to).catch((e) => {
+          setErr(String(e));
+          return null;
+        }),
+      ]);
+      setReport(rep);
       setErr("");
+      if (ctrl) setControlled(ctrl);
     } catch (e) {
       setErr(String(e));
     }
-  }, [from, to, opFilter]);
+    // Customer credit loads on its own fast path — it must never be delayed
+    // (or hidden) by the slower report/register queries, so the card below
+    // the KPIs always populates immediately.
+    loadCustomerCredit()
+      .then((cr) => setCredit(cr))
+      .catch((e) => setErr(String(e)));
+  }, [from, to, opFilter, methodFilter]);
+
+
 
   useEffect(() => {
     void load();
@@ -379,6 +509,7 @@ export function AnalyticsPage() {
     const rows: string[][] = [];
     rows.push([`Pulse Reports — ${rangeLabel}`]);
     rows.push([`Operator: ${opFilter}`]);
+    rows.push([`Payment: ${methodFilter}`]);
     rows.push([]);
     rows.push(["Summary", "Transactions", "Items Sold", "Gross Profit (GH₵)"]);
     rows.push([
@@ -417,12 +548,43 @@ export function AnalyticsPage() {
     rows.push([]);
     rows.push(["Slow Movers (no sale in 90 days)", "Stock Qty", "Stock Value (GH₵)"]);
     report.slow.forEach((s) => rows.push([s.name, String(s.stock_qty), s.value.toFixed(2)]));
+    rows.push([]);
+    rows.push(["Controlled Drugs — Register", "Stock", "Received", "Dispensed", "Returned", "Adjusted"]);
+    (controlled?.summary ?? []).forEach((c) =>
+      rows.push([
+        c.name,
+        String(c.stock_qty),
+        String(c.received),
+        String(c.dispensed),
+        String(c.returned),
+        String(c.adjusted),
+      ]),
+    );
+    rows.push([]);
+    rows.push(["Customer Credit (book)", "Owed (GH₵)", "Settled (GH₵)", "Balance (GH₵)"]);
+    credit.forEach((c) =>
+      rows.push([
+        c.name,
+        c.owed.toFixed(2),
+        c.settled.toFixed(2),
+        (c.owed - c.settled).toFixed(2),
+      ]),
+    );
     try {
       const opSuffix =
         opFilter !== "All"
           ? `-${opFilter.toLowerCase().replace(/[^a-z0-9]/g, "")}`
           : "";
-      const p = await exportReport(`sales-${rangeLabel}${opSuffix}`, rows);
+      const mSuffix = methodFilter !== "All" ? `-${methodFilter.toLowerCase()}` : "";
+      const fname = `sales-${rangeLabel}${opSuffix}${mSuffix}`
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, "-");
+      const picked = await save({
+        defaultPath: `${fname}.csv`,
+        filters: [{ name: "CSV file", extensions: ["csv"] }],
+      });
+      if (!picked) return; // dialog cancelled — nothing written
+      const p = await exportReport(picked, rows);
       setExportPath(p);
       beep(true);
     } catch (e) {
@@ -484,10 +646,13 @@ export function AnalyticsPage() {
   const RANGES: { id: Range; label: string }[] = [
     { id: "today", label: "Today" },
     { id: "yesterday", label: "Yesterday" },
-    { id: "week", label: "This Week" },
+    { id: "week7", label: "Last 7 days" },
+    { id: "month30", label: "Last 30 days" },
     { id: "month", label: "This Month" },
-    { id: "custom", label: "Custom" },
+    { id: "custom", label: "Custom…" },
   ];
+
+  const PAY_METHODS = ["Cash", "Card", "MoMo", "Credit"];
 
   const gross = report ? report.summary.revenue : 0;
   const returns = report ? report.returns.amount : 0;
@@ -514,21 +679,18 @@ export function AnalyticsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex overflow-hidden rounded border border-outline-variant">
+          <select
+            value={range}
+            onChange={(e) => setRange(e.target.value as Range)}
+            title="Report period"
+            className="h-8 rounded border border-outline-variant bg-surface px-2 text-label-md font-label-md text-on-surface focus:border-primary focus:outline-none"
+          >
             {RANGES.map((r) => (
-              <button
-                key={r.id}
-                onClick={() => setRange(r.id)}
-                className={`px-3 py-1.5 text-label-md font-label-md transition-colors ${
-                  range === r.id
-                    ? "bg-primary text-on-primary"
-                    : "bg-surface text-on-surface hover:bg-surface-container-low"
-                }`}
-              >
+              <option key={r.id} value={r.id}>
                 {r.label}
-              </button>
+              </option>
             ))}
-          </div>
+          </select>
           {range === "custom" && (
             <>
               <input
@@ -553,9 +715,22 @@ export function AnalyticsPage() {
             className="h-8 rounded border border-outline-variant bg-surface px-2 text-label-md font-label-md text-on-surface focus:border-primary focus:outline-none"
           >
             <option value="All">Operator: All</option>
-            {opOptions.map((n) => (
-              <option key={n} value={n}>
-                {n}
+            {opOptions.map((o) => (
+              <option key={o.name} value={o.name}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={methodFilter}
+            onChange={(e) => setMethodFilter(e.target.value)}
+            title="Filter every report section by payment type"
+            className="h-8 rounded border border-outline-variant bg-surface px-2 text-label-md font-label-md text-on-surface focus:border-primary focus:outline-none"
+          >
+            <option value="All">Payment: All</option>
+            {PAY_METHODS.map((m) => (
+              <option key={m} value={m}>
+                {m}
               </option>
             ))}
           </select>
@@ -605,7 +780,7 @@ export function AnalyticsPage() {
         </p>
       )}
 
-      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="mb-4 grid min-h-[88px] grid-cols-2 gap-3 lg:grid-cols-4">
         {kpis.map((k) => (
           <div key={k.label} className={`rounded border border-outline-variant bg-surface p-3 ${k.negative ? "border-error/30 bg-error/5" : ""}`}>
             <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
@@ -618,8 +793,89 @@ export function AnalyticsPage() {
         ))}
       </div>
 
+      <div className="mb-4 overflow-clip rounded border border-[#f59e0b]/60 bg-surface">
+        <h3 className="flex items-center justify-between border-b border-outline-variant bg-[#fef08a]/30 px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
+          <span>Customer Credit (book) — what customers owe</span>
+          {credit.length > 0 && (
+            <span className="rounded-full bg-[#b45309] px-2 py-0.5 text-[10px] font-bold text-white">
+              {credit.length} customer{credit.length === 1 ? "" : "s"} ·{" "}
+              {fmtMoney(credit.reduce((s, c) => s + c.owed - c.settled, 0))}
+            </span>
+          )}
+        </h3>
+        {credit.length > 0 ? (
+          <div className="divide-y divide-outline-variant/50">
+            {credit.map((c) => (
+              <div key={c.name} className="flex items-center justify-between gap-3 px-3 py-1.5">
+                <div className="min-w-0">
+                  <p className="truncate text-body-sm font-semibold text-on-surface">{c.name}</p>
+                  <p className="font-data-mono text-[11px] text-on-surface-variant">
+                    owes {fmtMoney(c.owed - c.settled)}
+                    {c.settled > 0 ? ` · settled ${fmtMoney(c.settled)}` : ""}
+                  </p>
+                </div>
+                {settling === c.name ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={settleAmt}
+                      onChange={(e) => setSettleAmt(e.target.value)}
+                      placeholder="0.00"
+                      className="h-7 w-20 rounded border border-outline-variant bg-surface-container-lowest px-1 text-right font-data-mono text-data-mono focus:border-primary focus:outline-none"
+                    />
+                    <select
+                      value={settleMethod}
+                      onChange={(e) => setSettleMethod(e.target.value)}
+                      className="h-7 rounded border border-outline-variant bg-surface-container-lowest px-1 text-body-sm focus:border-primary focus:outline-none"
+                    >
+                      {SETTLE_METHODS.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => void doSettle(c)}
+                      disabled={settleBusy}
+                      className="rounded bg-primary px-2 py-1 text-label-md font-label-md text-on-primary hover:bg-on-primary-fixed-variant disabled:opacity-50"
+                    >
+                      {settleBusy ? "…" : "Record"}
+                    </button>
+                    <button
+                      onClick={() => setSettling(null)}
+                      className="rounded border border-outline px-2 py-1 text-label-md font-label-md text-on-surface hover:bg-surface-variant"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setSettling(c.name);
+                      setSettleAmt(String(round2(c.owed - c.settled)));
+                      setSettleErr("");
+                    }}
+                    className="flex items-center gap-1 rounded border border-primary/40 bg-primary/5 px-2 py-1 text-label-md font-label-md text-primary hover:bg-primary/10"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">payments</span>
+                    Settle
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="px-3 py-2 text-body-sm text-on-surface-variant">
+            No outstanding balances — everyone has settled.
+          </p>
+        )}
+        {settleErr && <p className="px-3 py-2 text-body-sm text-error">{settleErr}</p>}
+      </div>
+
       <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <div className="overflow-hidden rounded border border-outline-variant bg-surface">
+        <div className="overflow-clip rounded border border-outline-variant bg-surface">
           <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
             By Payment
           </h3>
@@ -636,7 +892,7 @@ export function AnalyticsPage() {
           ))}
         </div>
 
-        <div className="overflow-hidden rounded border border-outline-variant bg-surface">
+        <div className="overflow-clip rounded border border-outline-variant bg-surface">
           <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
             By Operator
           </h3>
@@ -655,7 +911,7 @@ export function AnalyticsPage() {
           ))}
         </div>
 
-        <div className="overflow-hidden rounded border border-outline-variant bg-surface">
+        <div className="overflow-clip rounded border border-outline-variant bg-surface">
           <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
             By Category
           </h3>
@@ -679,7 +935,7 @@ export function AnalyticsPage() {
       </div>
 
       <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <div className="overflow-hidden rounded border border-outline-variant bg-surface">
+        <div className="overflow-clip rounded border border-outline-variant bg-surface">
           <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
             Top Products
           </h3>
@@ -699,7 +955,7 @@ export function AnalyticsPage() {
           ))}
         </div>
 
-        <div className="overflow-hidden rounded border border-outline-variant bg-surface">
+        <div className="overflow-clip rounded border border-outline-variant bg-surface">
           <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
             Recent Sales{" "}
             <span className="font-normal normal-case text-on-surface-variant">(click to reprint)</span>
@@ -755,7 +1011,7 @@ export function AnalyticsPage() {
         </div>
       </div>
 
-      <div className="mb-4 overflow-hidden rounded border border-outline-variant bg-surface">
+      <div className="mb-4 overflow-clip rounded border border-outline-variant bg-surface">
         <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
           Recent Stock Adjustments
         </h3>
@@ -784,7 +1040,7 @@ export function AnalyticsPage() {
         ))}
       </div>
 
-      <div className="mb-4 overflow-hidden rounded border border-outline-variant bg-surface">
+      <div className="mb-4 overflow-clip rounded border border-outline-variant bg-surface">
         <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
           Daily Cash-up
         </h3>
@@ -903,7 +1159,7 @@ export function AnalyticsPage() {
           { title: "Expiring ≤ 60 days", rows: expiring, hint: (p: (typeof products)[number]) => `Expires ${p.expiry_date}` },
           { title: "Expired", rows: expired, hint: (p: (typeof products)[number]) => `Expired ${p.expiry_date}` },
         ].map((s) => (
-          <div key={s.title} className="overflow-hidden rounded border border-outline-variant bg-surface">
+          <div key={s.title} className="overflow-clip rounded border border-outline-variant bg-surface">
             <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
               {s.title}
             </h3>
@@ -925,7 +1181,7 @@ export function AnalyticsPage() {
         ))}
       </div>
 
-      <div className="overflow-hidden rounded border border-outline-variant bg-surface">
+      <div className="overflow-clip rounded border border-outline-variant bg-surface">
         <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
           Slow Movers — no sale in 90 days (cash tied up on the shelf)
         </h3>
@@ -944,6 +1200,78 @@ export function AnalyticsPage() {
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      <div className="overflow-clip rounded border border-outline-variant bg-surface">
+        <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
+          Controlled Drug Register — {rangeLabel}
+        </h3>
+        {!controlled || controlled.summary.length === 0 ? (
+          <p className="px-3 py-4 text-body-sm text-on-surface-variant">
+            {controlled
+              ? "No controlled products on file — mark an item 'Controlled drug' on import or in the catalog."
+              : "Loading…"}
+          </p>
+        ) : (
+          <>
+            <div className="flex items-center gap-2 border-b border-outline-variant/50 bg-surface-container-lowest px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">
+              <span className="flex-1">Product</span>
+              <span className="w-14 text-right">Stock</span>
+              <span className="w-14 text-right">In</span>
+              <span className="w-14 text-right">Out</span>
+              <span className="w-14 text-right">Ret</span>
+              <span className="w-14 text-right">Adj</span>
+            </div>
+            {controlled.summary.map((c) => (
+              <div key={c.name} className="flex items-center gap-2 border-b border-outline-variant/40 px-3 py-1.5 last:border-0">
+                <span className={`min-w-0 flex-1 truncate ${td}`}>{c.name}</span>
+                <span className="w-14 text-right font-data-mono text-data-mono font-bold text-on-surface">
+                  {c.stock_qty}
+                </span>
+                <span className="w-14 text-right font-data-mono text-data-mono text-primary">
+                  {c.received || "—"}
+                </span>
+                <span className="w-14 text-right font-data-mono text-data-mono text-error">
+                  {c.dispensed || "—"}
+                </span>
+                <span className="w-14 text-right font-data-mono text-data-mono">
+                  {c.returned || "—"}
+                </span>
+                <span className="w-14 text-right font-data-mono text-data-mono">
+                  {c.adjusted || "—"}
+                </span>
+              </div>
+            ))}
+            {controlled.txns.length > 0 && (
+              <div className="max-h-64 overflow-y-auto border-t border-outline-variant">
+                {controlled.txns.slice(0, 80).map((t, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-2 border-b border-outline-variant/40 px-3 py-1 last:border-0"
+                  >
+                    <span className="w-32 shrink-0 font-data-mono text-[11px] text-on-surface-variant">
+                      {t.ts.slice(0, 16)}
+                    </span>
+                    <span
+                      className={`w-20 shrink-0 rounded px-1 text-center text-[10px] font-bold ${kindCls(t.kind)}`}
+                    >
+                      {t.kind}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-body-sm text-on-surface">
+                      {t.product}
+                    </span>
+                    <span className="w-16 shrink-0 text-right font-data-mono text-data-mono font-bold">
+                      {t.qty > 0 ? `+${t.qty}` : t.qty}
+                    </span>
+                    <span className="w-28 shrink-0 truncate text-right text-[11px] text-on-surface-variant">
+                      {t.ref ?? t.operator ?? ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 

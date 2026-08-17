@@ -1,9 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { initDb, getSettings } from "./db";
 import { useStore } from "./store/useStore";
 import { initScanner } from "./lib/scanner";
 import { beep } from "./lib/audio";
 import { activeOperatorAt } from "./lib/shift";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { QuickAddModal } from "./components/QuickAddModal";
@@ -12,10 +14,50 @@ import { PosPage } from "./pages/PosPage";
 import { InventoryPage } from "./pages/InventoryPage";
 import { RestockPage } from "./pages/RestockPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
+import { SupportPage } from "./pages/SupportPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
 export default function App() {
   const page = useStore((s) => s.page);
+  const [updating, setUpdating] = useState<{
+    version: string;
+    pct: number | null;
+    note: string;
+  } | null>(null);
+
+  // Auto-update: installed builds check for a newer release on launch, download
+  // it (with a small progress overlay), install, and restart. The dev app never
+  // checks — you don't want the dev server pulling a release build.
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const update = await check();
+        if (cancelled || !update) return;
+        setUpdating({ version: update.version, pct: 0, note: "Downloading…" });
+        await update.downloadAndInstall((event) => {
+          if (cancelled) return;
+          if (event.event === "Progress") {
+            const progress = (event.data as { progress?: number }).progress;
+            setUpdating((u) =>
+              u ? { ...u, pct: Math.round((progress ?? 0) * 100) } : u,
+            );
+          } else if (event.event === "Finished") {
+            setUpdating((u) => (u ? { ...u, pct: 100, note: "Installing…" } : u));
+          }
+        });
+        await relaunch();
+      } catch (e) {
+        // No release yet, offline, or install hiccup — never block the app.
+        console.error("auto-update:", e);
+        setUpdating(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -96,11 +138,34 @@ export default function App() {
           {page === "inventory" && <InventoryPage />}
           {page === "restock" && <RestockPage />}
           {page === "analytics" && <AnalyticsPage />}
+          {page === "support" && <SupportPage />}
           {page === "settings" && <SettingsPage />}
         </main>
       </div>
       <QuickAddModal />
       <IntakeModal />
+
+      {updating && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-on-background/40 p-4">
+          <div className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface p-5 shadow-lg">
+            <h3 className="flex items-center gap-2 text-headline-md font-headline-md text-on-surface">
+              <span className="material-symbols-outlined text-[20px]">system_update</span>
+              Updating Pulse to v{updating.version}
+            </h3>
+            <p className="mt-1 text-body-sm font-body-sm text-on-surface-variant">
+              {updating.note}
+              {updating.pct !== null ? ` ${updating.pct}%` : ""} — the app will restart
+              automatically.
+            </p>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-variant">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: `${updating.pct ?? 0}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
-import { initDb, loadPurchaseOrders } from "../db";
-import type { PurchaseOrder } from "../db";
+import { initDb, loadPurchases } from "../db";
+import type { Purchase } from "../db";
 import type { Product } from "../types";
 import { Tip } from "./Tip";
 import { PatientModal } from "./PatientModal";
@@ -22,7 +22,7 @@ export function TopBar() {
   const products = useStore((s) => s.products);
 
   const [notifOpen, setNotifOpen] = useState(false);
-  const [pos, setPos] = useState<PurchaseOrder[]>([]);
+  const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [searchText, setSearchText] = useState("");
   const [matches, setMatches] = useState<{ products: Product[]; patients: PatientHit[] }>({
     products: [],
@@ -83,13 +83,13 @@ export function TopBar() {
     }
   };
 
-  const refreshPos = () => {
-    loadPurchaseOrders()
-      .then(setPos)
+  const refreshPurchases = () => {
+    loadPurchases()
+      .then(setPurchases)
       .catch(() => {});
   };
   useEffect(() => {
-    refreshPos();
+    refreshPurchases();
   }, []);
 
   const today = fmt(new Date());
@@ -100,9 +100,9 @@ export function TopBar() {
     (p) => p.expiry_date && p.expiry_date > today && p.expiry_date <= in60,
   );
   const expired = products.filter((p) => p.expiry_date && p.expiry_date < today);
-  const openPos = pos.filter((po) => po.status === "open");
+  const openPurchases = purchases.filter((p) => p.status === "Ordered" || p.status === "Draft");
 
-  const alertCount = low.length + expiring.length + expired.length + openPos.length;
+  const alertCount = low.length + expiring.length + expired.length + openPurchases.length;
   const tipLabel = alertCount > 0 ? `${alertCount} alert${alertCount === 1 ? "" : "s"} — tap to view` : "No alerts — all good";
 
   const Section = ({
@@ -255,7 +255,7 @@ export function TopBar() {
           <Tip label={tipLabel} dir="bottom">
             <button
               onClick={() => {
-                refreshPos();
+                refreshPurchases();
                 setNotifOpen((o) => !o);
               }}
               className="relative flex h-8 w-8 items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-container-low"
@@ -296,10 +296,10 @@ export function TopBar() {
                     hint="Go to Inventory"
                   />
                   <Section
-                    title="Open requisitions"
-                    items={openPos.map((po) => ({
-                      name: po.po_no,
-                      hint: po.supplier ?? "no supplier",
+                    title="Open purchases"
+                    items={openPurchases.map((p) => ({
+                      name: p.reference_no ?? p.id,
+                      hint: p.supplier_name ?? "no supplier",
                     }))}
                     to="restock"
                     hint="Go to Requisitions"

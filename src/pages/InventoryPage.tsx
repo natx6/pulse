@@ -5,6 +5,7 @@ import { fmtMoney } from "../lib/money";
 import { adjustStock, loadProductsAll, setProductActive } from "../db";
 import { beep } from "../lib/audio";
 import { LabelModal } from "../components/LabelModal";
+import { ImportStockModal } from "../components/ImportStockModal";
 import type { Product } from "../types";
 
 function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reorder_level"> }) {
@@ -41,6 +42,7 @@ export function InventoryPage() {
   const [adjustErr, setAdjustErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [archived, setArchived] = useState<Product[]>([]);
   const [archiveArmed, setArchiveArmed] = useState<number | null>(null);
@@ -178,6 +180,14 @@ export function InventoryPage() {
             </span>
           </button>
           <button
+            onClick={() => setImportOpen(true)}
+            className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
+            title="Bulk-load stock from an Excel or CSV export of your old system"
+          >
+            <span className="material-symbols-outlined text-[16px]">upload_file</span>
+            <span className="text-label-md font-label-md">Import Stock</span>
+          </button>
+          <button
             onClick={() => setLabelOpen(true)}
             className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
             title="Print a scannable Code39 shelf label"
@@ -242,8 +252,18 @@ export function InventoryPage() {
                 }`}
                 style={{ height: 36 }}
               >
-                <div className="flex-1 truncate pr-4 text-body-sm font-medium text-on-surface">
-                  {p.name}
+                <div className="flex min-w-0 flex-1 items-center gap-2 pr-4">
+                  <span className="truncate text-body-sm font-medium text-on-surface">
+                    {p.name}
+                  </span>
+                  {p.is_controlled ? (
+                    <span
+                      className="shrink-0 rounded bg-[#7f1d1d] px-1.5 py-0.5 text-[10px] font-bold text-white"
+                      title="Controlled drug — see the register in Reports"
+                    >
+                      C
+                    </span>
+                  ) : null}
                 </div>
                 <div className="w-28 truncate font-data-mono text-data-mono text-on-surface-variant">
                   {p.batch_no ?? "—"}
@@ -395,6 +415,12 @@ export function InventoryPage() {
       )}
 
       {labelOpen && <LabelModal onClose={() => setLabelOpen(false)} />}
+      {importOpen && (
+        <ImportStockModal
+          onClose={() => setImportOpen(false)}
+          onDone={() => void refreshProducts()}
+        />
+      )}
     </div>
   );
 }

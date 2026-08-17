@@ -18,6 +18,7 @@ const METHODS: { id: PaymentMethod; icon: string; label: string; key: string }[]
   { id: "Cash", icon: "payments", label: "Cash", key: "F9" },
   { id: "Card", icon: "credit_card", label: "Card", key: "F10" },
   { id: "MoMo", icon: "send_to_mobile", label: "Mobile Money", key: "F11" },
+  { id: "Credit", icon: "book", label: "Book", key: "" },
 ];
 
 const QUICK_TENDER = [20, 50, 100, 200];
@@ -32,6 +33,7 @@ interface SplitRow {
 export function PaymentModal({ total, lines, initialMethod, onClose, onComplete }: Props) {
   const operator = useStore((s) => s.operator);
   const patient = useStore((s) => s.patient);
+  const momoNumber = useStore((s) => s.momoNumber);
   const [method, setMethod] = useState<PaymentMethod>(initialMethod ?? "Cash");
   const [tendered, setTendered] = useState<number | null>(null);
   const [custom, setCustom] = useState("");
@@ -117,6 +119,12 @@ export function PaymentModal({ total, lines, initialMethod, onClose, onComplete 
           reference: reference.trim() || null,
         },
       ];
+    }
+    // Book (credit) must be tied to a customer — the ledger needs a name.
+    if (payments.some((p) => p.method === "Credit") && !patient?.name?.trim()) {
+      setError("Book (credit) needs a customer name — attach one at the counter.");
+      beep(false);
+      return;
     }
     setBusy(true);
     setError("");
@@ -207,7 +215,7 @@ export function PaymentModal({ total, lines, initialMethod, onClose, onComplete 
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 {METHODS.map((m) => {
                   const active = method === m.id;
                   return (
@@ -290,7 +298,22 @@ export function PaymentModal({ total, lines, initialMethod, onClose, onComplete 
                 </div>
               )}
 
-              {method !== "Cash" && (
+              {method === "Credit" && (
+                <div className="rounded border border-[#b45309]/40 bg-[#fef08a]/20 px-3 py-2 text-body-sm text-[#854d0e]">
+                  {patient?.name?.trim()
+                    ? `On the book for ${patient.name.trim()} — you can settle it later under Reports → Customer credit.`
+                    : "Put it on a customer's book — attach a customer name at the counter first."}
+                </div>
+              )}
+
+              {method === "MoMo" && momoNumber && (
+                <div className="rounded border border-primary/30 bg-primary/5 px-3 py-2 text-body-sm text-primary">
+                  Customer pays to Mobile Money{" "}
+                  <span className="font-bold">{momoNumber}</span> — enter their payment ID below.
+                </div>
+              )}
+
+              {method !== "Cash" && method !== "Credit" && (
                 <label className="block">
                   <span className="mb-1 block text-label-md font-label-md text-on-surface">
                     Transaction reference {method === "MoMo" ? "(MoMo ID)" : ""} — optional
@@ -335,7 +358,9 @@ export function PaymentModal({ total, lines, initialMethod, onClose, onComplete 
                     ? `Take ${fmtMoney(splitPaid)}`
                     : method === "Cash"
                       ? `Take ${fmtMoney(tendered ?? 0)}`
-                      : `Charge ${fmtMoney(total)}`}
+                      : method === "Credit"
+                        ? `Put on book`
+                        : `Charge ${fmtMoney(total)}`}
               </span>
             </button>
           </div>

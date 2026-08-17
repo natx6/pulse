@@ -15,6 +15,8 @@ interface AppState {
   receiptFooter: string;
   autoOperator: boolean;
   operators: Operator[];
+  supportEmail: string;
+  momoNumber: string;
   heldCart: CartLine[] | null;
   searchQuery: string;
   quickAdd: { barcode: string | null } | null;
@@ -41,6 +43,8 @@ interface AppState {
     operator: string;
     receiptFooter: string;
     autoOperator: boolean;
+    supportEmail: string;
+    momoNumber: string;
   }>): void;
 }
 
@@ -56,6 +60,8 @@ export const useStore = create<AppState>((set, get) => ({
   receiptFooter: "",
   autoOperator: false,
   operators: [],
+  supportEmail: "",
+  momoNumber: "",
   heldCart: null,
   searchQuery: "",
   quickAdd: null,

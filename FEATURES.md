@@ -53,6 +53,11 @@ the app works fully offline (power cuts and flaky internet are assumed).
   - **Split payments** — a "Split" toggle settles one sale across methods
     (e.g. GH₵ 50 Cash + GH₵ 70 MoMo): per-method amounts with optional
     references, remainder auto-fill, change only from the last method.
+  - **Book (credit)** — sell on the customer's book (requires a customer
+    name); the balance lands in Reports → Customer credit, where it can be
+    settled later. Works in splits too (e.g. GH₵ 30 Cash + rest on book).
+  - **MoMo number** — when Mobile Money is selected and a number is set in
+    Settings, the payment screen and receipt show where the customer pays.
   - Every payment line (method, amount, reference) is stored per sale and
     printed on the receipt.
 - **Receipt**: on-screen receipt preview after every sale, printable via the
@@ -68,6 +73,9 @@ the app works fully offline (power cuts and flaky internet are assumed).
   barcode, expiry date, live quantity, color-coded status.
 - Status logic: green = stock above reorder level; yellow = at/below reorder
   level; red = out of stock, expired, or expiring within 30 days.
+- **Controlled drugs**: products marked "Controlled drug" (via import or the
+  catalog) carry a red **C** badge in Inventory and on the POS grid, and feed
+  the Controlled Drug Register on Reports.
 - **Receive Stock** (F2 from anywhere): scan or enter a barcode, quantity,
   batch/lot, expiry date, supplier, unit of measure, unit cost, retail price.
   Existing product = stock added; unknown barcode = new product created.
@@ -93,15 +101,29 @@ Two clear stock surfaces, no overlap: **Inventory = see + receive**
 order** (what you've asked suppliers for). The notifications bell covers
 what needs attention.
 
-- Create a requisition (REQ-YYYYMMDD-NNN) from any catalog product — search,
-  pick, set quantity and optional unit cost, optional supplier. Open
-  requisitions list with status.
-- **Receive (partial or full)**: open a requisition, enter what actually
-  arrived per line (suppliers often deliver half an order in Ghana), one tap
-  adds it to stock atomically and updates unit cost. Statuses: Open →
-  Partially Received (x/y) → Received when every line is complete. Outstanding
-  quantities stay tracked on the open requisition.
-- Requisitions can be created from the POS via the one-tap Order button on
+- **New Purchase** (PUR-YYYYMMDD-NNN): supplier master (add on the fly),
+  reference # (waybill/invoice), pay term, per-line unit cost, discount %,
+  selling price + live margin, expiry/mfg dates, order-level discount. Status:
+  Draft → Ordered → Received; saving as **Received** lands stock in one
+  atomic transaction.
+- **Reorder helper**: "Add low & out-of-stock" pulls every item at or below
+  its reorder level into the order in one click; scanning a barcode adds the
+  line directly.
+- **Print order**: A4 purchase order form (pharmacy name from Settings,
+  supplier contact, lines, totals, signature blocks) — the artifact to read
+  out or send to the supplier.
+- **Edit / Cancel**: Draft/Ordered orders can be edited (lines replaced,
+  totals recomputed server-side) until any stock is received; unwanted orders
+  cancel with a two-tap confirm and drop out of the list and the bell.
+- **Receive (partial or full)**: open an order, enter what actually arrived
+  per line (suppliers often deliver half an order in Ghana) plus the
+  supplier's **invoice cost** — mismatches vs the ordered price are flagged
+  as a three-way-match warning. One tap adds it to stock atomically; status
+  becomes Partially Received (x/y) then Received when every line is complete.
+- **Payments**: record payments per invoice (Cash / Mobile Money / Bank /
+  Cheque) with history; the list shows each order's outstanding **Balance**
+  (overpaying is rejected server-side).
+- Orders can be created from the POS via the one-tap Order button on
   low/out-of-stock cards.
 
 ## 5. Reports (Analytics)
@@ -130,6 +152,12 @@ what needs attention.
 - Stock health: low stock, expiring ≤ 60 days, expired, and **slow movers**
   (products with no sale in 90 days, ranked by cost value — cash tied up on
   the shelf).
+- **Controlled Drug Register**: per-product summary (stock on hand, received,
+  dispensed, returned, adjusted in the range) plus a chronological transaction
+  log — the record a Ghana pharmacy must keep for controlled substances.
+- **Customer Credit (book)**: every customer's outstanding balance from
+  credit sales, with one-tap Settle (amount + method, overpaying rejected);
+  a per-payment history is kept.
 - Export CSV: one file with all sections, written to `exports/` next to the
   database (path shown in the UI).
 - Backup button: WAL-safe copy of the database to `backups/` (path shown).
@@ -146,7 +174,8 @@ what needs attention.
 ## 7. Settings & operations
 
 - Pharmacy name (shown in the top bar and on receipts), tax rate, receipt
-  footer, operator name.
+  footer, operator name, **Mobile Money number** (shown at MoMo checkout and
+  printed on receipts).
 - Operator chip in the sidebar: tap to change who is on duty; the operator's
   name is stamped on every sale and feeds the per-operator report. No login,
   no passwords — the data exists, the flow forces nothing.
@@ -173,16 +202,21 @@ what needs attention.
   newest 20 backups are kept (timestamped names); restores are two-tap with a
   pre-restore safety snapshot.
 - Schema: products (name, barcode unique+indexed, category, manufacturer,
-  supplier, strength, unit, Rx flag, batch, expiry, cost, retail, stock,
-  reorder level, active flag), sales (receipt no, total, primary payment
-  method, operator, patient name/phone snapshot, timestamp),
-  sale_payments (per-method amount + optional reference), sale_items
-  (snapshot of name/unit/price, quantity), sale_returns + sale_return_items,
-  stock_adjustments (audit log), cash_ups (per-day till records), patients
-  (search index), purchase orders + items, settings key/value.
+  supplier, strength, unit, Rx flag, FDA reg no, controlled flag, batch,
+  expiry, cost, retail, stock, reorder level, active flag), sales (receipt
+  no, total, primary payment method, operator, patient name/phone snapshot,
+  timestamp), sale_payments (per-method amount + optional reference),
+  sale_items (snapshot of name/unit/price, quantity), sale_returns +
+  sale_return_items, stock_adjustments (audit log), cash_ups (per-day till
+  records), patients (search index), suppliers, purchases + purchase_items
+  (orders with qty_received, cancelled flag), purchase_payments (supplier
+  invoice payments), credit_payments (customer book settlements), settings
+  key/value.
 - Migrations run through an in-app runner keyed by PRAGMA user_version
-  (currently v11) — the plugin's own runner and its leftover
+  (currently v18) — the plugin's own runner and its leftover
   `_sqlx_migrations` table were dropped.
+- Fonts (Inter + Material Symbols) are self-hosted in `public/fonts/` — no
+  Google Fonts at runtime.
 - Demo seed catalog ships with the first migration (Coartem, Amoxicillin,
   Paracetamol, Ibuprofen, Lisinopril, Amlodipine, Metformin, ORS) with real
   expiry/status variety — deletable.
@@ -190,9 +224,9 @@ what needs attention.
 ## 10. Deliberately NOT included (v1 scope decisions)
 
 - No login / passwords / user roles (operator name only).
-- No credit sales ledger (planned add-on).
 - No NHIS/insurance claims or e-invoicing.
-- No live MoMo API integration (merchant number display planned).
+- No live MoMo API integration (the merchant number is displayed; Pulse
+  doesn't move money itself).
 - No thermal-printer direct driver (browser print only).
 - No prescriptions lifecycle / dosing regimens (patient history only).
 - No multi-branch sync, no cloud.
@@ -206,3 +240,14 @@ what needs attention.
   librsvg2-devel, libxdo-devel, patchelf, Rust toolchain.
 - Bundle is ~76 KB gzipped JS + ~7 KB CSS; release binary is a few MB
   (opt-level=s, lto, strip).
+- **Auto-update (tauri-plugin-updater)**: installed builds check
+  `releases/latest/download/latest.json` on launch (production only — the
+  dev app never checks). A newer release is downloaded, installed and the
+  app restarts, with a small progress overlay. Releases are signed with an
+  ed25519 keypair (`~/.pulse-updater.key` + password); the private key lives
+  in the GitHub secrets `TAURI_SIGNING_PRIVATE_KEY` /
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and the public key is baked into
+  `tauri.conf.json`. The release workflow signs artifacts and assembles
+  `latest.json` only when the secret is set; publish the draft GitHub
+  Release to roll the update out. macOS needs notarization (Apple
+  credentials) before Gatekeeper will accept updates.

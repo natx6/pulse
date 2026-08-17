@@ -26,6 +26,14 @@ export async function initDb(): Promise<Database> {
   return db;
 }
 
+/** Random 128-bit hex install identity. Generated once, lives in settings:
+ * the future phone-home/server integration keys every machine off this. */
+function genDeviceId(): string {
+  const arr = new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function seedSettings() {
   const d = await initDb();
   const rows = await d.select<{ key: string }[]>("SELECT key FROM settings");
@@ -36,12 +44,30 @@ async function seedSettings() {
     operator: "",
     receipt_footer: "Thank you. Get well soon.",
     auto_operator: "0",
+    support_email: "",
+    momo_number: "",
   };
   for (const [k, v] of Object.entries(defaults)) {
     if (!have.has(k)) {
       await d.execute("INSERT INTO settings (key, value) VALUES ($1, $2)", [k, v]);
     }
   }
+  if (!have.has("device_id")) {
+    await d.execute("INSERT INTO settings (key, value) VALUES ($1, $2)", [
+      "device_id",
+      genDeviceId(),
+    ]);
+  }
+}
+
+/** The install's permanent random ID (for support tickets and the future
+ * server channel). Falls back to a placeholder if never seeded. */
+export async function getDeviceId(): Promise<string> {
+  const d = await initDb();
+  const rows = await d.select<{ value: string }[]>(
+    "SELECT value FROM settings WHERE key = 'device_id'",
+  );
+  return rows[0]?.value ?? "not-set";
 }
 
 export interface AppSettings {
@@ -50,6 +76,8 @@ export interface AppSettings {
   operator: string;
   receiptFooter: string;
   autoOperator: boolean;
+  supportEmail: string;
+  momoNumber: string;
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -64,6 +92,8 @@ export async function getSettings(): Promise<AppSettings> {
     operator: map.operator ?? "",
     receiptFooter: map.receipt_footer ?? "",
     autoOperator: map.auto_operator === "1",
+    supportEmail: map.support_email ?? "",
+    momoNumber: map.momo_number ?? "",
   };
 }
 
@@ -73,6 +103,35 @@ export async function saveSetting(key: string, value: string) {
     "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     [key, value],
   );
+}
+
+/** Create a customer record from the Add Customer modal. Email is optional. */
+export async function addPatient(
+  name: string,
+  email: string | null,
+  phone: string | null,
+): Promise<void> {
+  const d = await initDb();
+  const trimmed = name.trim();
+  const em = email?.trim() || null;
+  const ph = phone?.trim() || null;
+  const existing: { id: number }[] = await d.select(
+    "SELECT id FROM patients WHERE name = $1 COLLATE NOCASE LIMIT 1",
+    [trimmed],
+  );
+  if (existing.length > 0) {
+    // Same name → top up contact details rather than duplicating the customer.
+    await d.execute(
+      "UPDATE patients SET email = COALESCE($1, email), phone = COALESCE($2, phone) WHERE id = $3",
+      [em, ph, existing[0].id],
+    );
+  } else {
+    await d.execute("INSERT INTO patients (name, email, phone) VALUES ($1, $2, $3)", [
+      trimmed,
+      em,
+      ph,
+    ]);
+  }
 }
 
 export interface Operator {
@@ -330,9 +389,56 @@ export async function listCashUps(day: string): Promise<CashUp[]> {
   );
 }
 
-/** Write CSV rows (client-rendered) to an exports/ file; returns its path. */
-export async function exportReport(name: string, rows: string[][]): Promise<string> {
-  return await invoke("export_report", { name, rows });
+/** Write CSV rows (client-rendered) to the path the user chose in the
+ * native Save dialog; returns the written path. */
+export async function exportReport(path: string, rows: string[][]): Promise<string> {
+  return await invoke("export_report", { path, rows });
+}
+
+// ---- Stock import from the old system (Excel/CSV) ----
+
+export interface ParsedSheet {
+  headers: string[];
+  rows: string[][];
+}
+
+export interface StockImportRow {
+  name: string;
+  barcode?: string | null;
+  category?: string | null;
+  manufacturer?: string | null;
+  supplier?: string | null;
+  strength?: string | null;
+  unit?: string | null;
+  rx_flag?: number | null;
+  batch_no?: string | null;
+  expiry_date?: string | null;
+  cost_price?: number | null;
+  selling_price?: number | null;
+  stock_qty?: number | null;
+  reorder_level?: number | null;
+  fda_reg_no?: string | null;
+  is_controlled?: number | null;
+}
+
+export interface ImportSummary {
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+}
+
+/** Parse an .xlsx/.xls/.ods/.csv export into headers + raw string rows. */
+export async function parseStockFile(path: string): Promise<ParsedSheet> {
+  return await invoke("parse_stock_file", { path });
+}
+
+/** Commit mapped rows in one transaction. Barcode match → name match →
+ * create. A match updates prices/qty; a new row inserts a product. */
+export async function commitStockImport(
+  records: StockImportRow[],
+): Promise<ImportSummary> {
+  return await invoke("commit_stock_import", { records });
 }
 
 export interface PurchaseOrder {
@@ -407,4 +513,326 @@ export async function receivePo(
   items: { po_item_id: number; qty: number }[],
 ): Promise<{ po_no: string; added: number; complete: boolean }> {
   return await invoke("receive_po", { poId, items });
+}
+
+// ---- Requisitions (orders + supplier invoices) ----
+
+export interface Supplier {
+  id: number;
+  name: string;
+  phone: string | null;
+  location: string | null;
+}
+
+export async function loadSuppliers(): Promise<Supplier[]> {
+  const d = await initDb();
+  return await d.select<Supplier[]>("SELECT id, name, phone, location FROM suppliers ORDER BY name");
+}
+
+/** Find-or-insert a supplier by name (case-insensitive); returns its id. */
+export async function addSupplier(
+  name: string,
+  phone?: string,
+  location?: string,
+): Promise<number> {
+  const d = await initDb();
+  await d.execute(
+    "INSERT INTO suppliers (name, phone, location) VALUES ($1, $2, $3) ON CONFLICT(name) DO UPDATE SET phone = COALESCE($2, suppliers.phone), location = COALESCE($3, suppliers.location)",
+    [name.trim(), phone?.trim() || null, location?.trim() || null],
+  );
+  const rows = await d.select<{ id: number }[]>(
+    "SELECT id FROM suppliers WHERE name = $1 COLLATE NOCASE",
+    [name.trim()],
+  );
+  return rows[0]?.id ?? 0;
+}
+
+export interface Purchase {
+  id: string;
+  reference_no: string | null;
+  supplier_id: number | null;
+  supplier_name: string | null;
+  supplier_phone: string | null;
+  supplier_location: string | null;
+  purchase_date: string;
+  pay_term: string | null;
+  status: "Draft" | "Ordered" | "Received";
+  discount_type: "None" | "Fixed" | "Percentage";
+  discount_amount: number;
+  total_amount: number;
+  created_at: string;
+  item_count: number;
+  total_qty: number;
+  received_qty: number;
+  paid_amount: number;
+  cancelled: number;
+}
+
+export interface PurchaseItem {
+  id: string;
+  purchase_id: string;
+  product_id: number;
+  product_name: string;
+  unit_type: string;
+  quantity: number;
+  qty_received: number;
+  unit_cost_raw: number;
+  discount_percent: number;
+  unit_cost_net: number;
+  line_total: number;
+  profit_margin_percent: number | null;
+  unit_selling_price: number;
+  mfg_date: string | null;
+  expiry_date: string;
+  batch_no: string | null;
+}
+
+export async function loadPurchases(): Promise<Purchase[]> {
+  const d = await initDb();
+  return await d.select<Purchase[]>(
+    `SELECT pu.id, pu.reference_no, pu.supplier_id, pu.supplier_name, pu.purchase_date,
+            pu.pay_term, pu.status, pu.discount_type, pu.discount_amount, pu.total_amount, pu.created_at,
+            s.phone AS supplier_phone, s.location AS supplier_location,
+            (SELECT COUNT(*) FROM purchase_items pi WHERE pi.purchase_id = pu.id) AS item_count,
+            (SELECT COALESCE(SUM(pi.quantity), 0) FROM purchase_items pi WHERE pi.purchase_id = pu.id) AS total_qty,
+            (SELECT COALESCE(SUM(pi.qty_received), 0) FROM purchase_items pi WHERE pi.purchase_id = pu.id) AS received_qty,
+            (SELECT COALESCE(SUM(pp.amount), 0) FROM purchase_payments pp WHERE pp.purchase_id = pu.id) AS paid_amount,
+            pu.cancelled
+     FROM purchases pu
+     LEFT JOIN suppliers s ON s.id = pu.supplier_id
+     WHERE pu.cancelled = 0
+     ORDER BY pu.created_at DESC, pu.id DESC`,
+  );
+}
+
+export async function loadPurchaseItems(purchaseId: string): Promise<PurchaseItem[]> {
+  const d = await initDb();
+  return await d.select<PurchaseItem[]>(
+    "SELECT * FROM purchase_items WHERE purchase_id = $1 ORDER BY id",
+    [purchaseId],
+  );
+}
+
+export interface PurchaseLineInput {
+  product_id: number;
+  product_name: string;
+  unit_type: string;
+  quantity: number;
+  unit_cost_raw: number;
+  discount_percent: number;
+  unit_selling_price: number;
+  mfg_date: string | null;
+  expiry_date: string;
+}
+
+export interface SavePurchaseInput {
+  supplier_id: number | null;
+  supplier_name: string | null;
+  reference_no: string | null;
+  purchase_date: string;
+  pay_term: string | null;
+  status: string;
+  discount_type: string;
+  discount_amount: number;
+  lines: PurchaseLineInput[];
+}
+
+/** Save a purchase atomically in Rust: header + lines + (when status is
+ * 'Received') the stock commit. All pricing math is recomputed there. */
+export async function savePurchase(
+  input: SavePurchaseInput,
+): Promise<{ id: string; total: number; items: number; received: boolean }> {
+  // Tauri v2 commands expect camelCase keys for top-level args; the nested
+  // line objects keep snake_case (plain serde structs).
+  return await invoke("save_purchase", {
+    supplierId: input.supplier_id,
+    supplierName: input.supplier_name,
+    referenceNo: input.reference_no,
+    purchaseDate: input.purchase_date,
+    payTerm: input.pay_term,
+    status: input.status,
+    discountType: input.discount_type,
+    discountAmount: input.discount_amount,
+    lines: input.lines,
+  });
+}
+
+/** Receive an Ordered/Draft purchase (partially or fully) atomically in Rust.
+ * invoice_cost per line = the unit cost on the supplier's invoice; the Rust
+ * side compares it against the ordered cost and returns warnings on mismatch. */
+export async function receivePurchase(
+  purchaseId: string,
+  lines: { line_id: string; qty: number; invoice_cost?: number | null }[],
+): Promise<{ reference_no: string | null; added: number; complete: boolean; warnings: string[] }> {
+  return await invoke("receive_purchase", { purchaseId, lines });
+}
+
+export interface UpdatePurchaseInput {
+  purchase_id: string;
+  supplier_id: number | null;
+  supplier_name: string | null;
+  reference_no: string | null;
+  purchase_date: string;
+  pay_term: string | null;
+  status: string;
+  discount_type: string;
+  discount_amount: number;
+  lines: PurchaseLineInput[];
+}
+
+/** Edit a Draft/Ordered purchase before any stock is received (atomic in Rust). */
+export async function updatePurchase(
+  input: UpdatePurchaseInput,
+): Promise<{ id: string; total: number; items: number }> {
+  return await invoke("update_purchase", {
+    purchaseId: input.purchase_id,
+    supplierId: input.supplier_id,
+    supplierName: input.supplier_name,
+    referenceNo: input.reference_no,
+    purchaseDate: input.purchase_date,
+    payTerm: input.pay_term,
+    status: input.status,
+    discountType: input.discount_type,
+    discountAmount: input.discount_amount,
+    lines: input.lines,
+  });
+}
+
+/** Cancel a Draft/Ordered purchase that won't be fulfilled (atomic in Rust). */
+export async function cancelPurchase(
+  purchaseId: string,
+  reason: string | null,
+): Promise<{ id: string; reference_no: string | null }> {
+  return await invoke("cancel_purchase", { purchaseId, reason });
+}
+
+/** Settle a customer's book balance — a payment against outstanding credit. */
+export async function settleCredit(
+  patientName: string,
+  amount: number,
+  method: string,
+  operator: string | null,
+): Promise<{ patient_name: string; paid: number; balance: number }> {
+  return await invoke("settle_credit", { patientName, amount, method, operator });
+}
+
+/** Outstanding customer credit (book) balances: what each customer owes. */
+export interface CustomerCredit {
+  name: string;
+  owed: number;
+  settled: number;
+}
+
+export async function loadCustomerCredit(): Promise<CustomerCredit[]> {
+  const d = await initDb();
+  const rows = await d.select<{ name: string; owed: number; settled: number }[]>(
+    `SELECT s.patient_name AS name,
+            SUM(sp.amount) AS owed,
+            COALESCE((SELECT SUM(cp.amount) FROM credit_payments cp
+                      WHERE cp.patient_name = s.patient_name COLLATE NOCASE), 0) AS settled
+     FROM sales s
+     JOIN sale_payments sp ON sp.sale_id = s.id
+     WHERE sp.method = 'Credit' AND s.patient_name IS NOT NULL AND s.patient_name != ''
+     GROUP BY s.patient_name
+     ORDER BY s.patient_name`,
+  );
+  return rows
+    .map((r) => ({ name: r.name, owed: Number(r.owed), settled: Number(r.settled) }))
+    .filter((r) => r.owed - r.settled > 0.005);
+}
+
+/** Controlled-drug register for the selected range: per-product summary +
+ * a chronological transaction log (received / dispensed / returned / adjusted). */
+export interface ControlledSummaryRow {
+  name: string;
+  strength: string | null;
+  stock_qty: number;
+  received: number;
+  dispensed: number;
+  returned: number;
+  adjusted: number;
+}
+
+export interface ControlledTxn {
+  ts: string;
+  kind: "Received" | "Dispensed" | "Returned" | "Adjusted";
+  product: string;
+  qty: number;
+  ref: string | null;
+  operator: string | null;
+}
+
+export async function loadControlledRegister(
+  from: string,
+  to: string,
+): Promise<{ summary: ControlledSummaryRow[]; txns: ControlledTxn[] }> {
+  const d = await initDb();
+  const summary = await d.select<
+    {
+      name: string;
+      strength: string | null;
+      stock_qty: number;
+      received: number;
+      dispensed: number;
+      returned: number;
+      adjusted: number;
+    }[]
+  >(
+    `SELECT p.name, p.strength, p.stock_qty,
+       COALESCE((SELECT SUM(pi.qty_received) FROM purchase_items pi
+                 JOIN purchases pu ON pu.id = pi.purchase_id
+                 WHERE pi.product_id = p.id AND pi.qty_received > 0 AND date(pu.purchase_date) BETWEEN $1 AND $2),0) AS received,
+       COALESCE((SELECT SUM(si.quantity) FROM sale_items si JOIN sales s ON s.id = si.sale_id
+                 WHERE si.product_id = p.id AND date(s.timestamp) BETWEEN $1 AND $2),0) AS dispensed,
+       COALESCE((SELECT SUM(sri.quantity) FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
+                 WHERE sri.product_id = p.id AND date(sr.timestamp) BETWEEN $1 AND $2),0) AS returned,
+       COALESCE((SELECT SUM(sa.delta) FROM stock_adjustments sa
+                 WHERE sa.product_id = p.id AND date(sa.timestamp) BETWEEN $1 AND $2),0) AS adjusted
+     FROM products p WHERE p.is_controlled = 1 AND p.active = 1 ORDER BY p.name`,
+    [from, to],
+  );
+  const txns = await d.select<
+    { ts: string; kind: ControlledTxn["kind"]; product: string; qty: number; ref: string | null; operator: string | null }[]
+  >(
+    `SELECT ts, kind, product, qty, ref, operator FROM (
+       SELECT s.timestamp AS ts, 'Dispensed' AS kind, si.product_name AS product,
+              -si.quantity AS qty, s.receipt_no AS ref, s.operator AS operator
+       FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
+       WHERE p.is_controlled = 1 AND date(s.timestamp) BETWEEN $1 AND $2
+       UNION ALL
+       SELECT pu.purchase_date || ' 00:00:00', 'Received', pi.product_name, pi.qty_received, pu.reference_no, NULL
+       FROM purchase_items pi JOIN purchases pu ON pu.id = pi.purchase_id JOIN products p ON p.id = pi.product_id
+       WHERE p.is_controlled = 1 AND pi.qty_received > 0 AND date(pu.purchase_date) BETWEEN $1 AND $2
+       UNION ALL
+       SELECT sr.timestamp, 'Returned', sri.product_name, sri.quantity, sr.receipt_no, NULL
+       FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id JOIN products p ON p.id = sri.product_id
+       WHERE p.is_controlled = 1 AND date(sr.timestamp) BETWEEN $1 AND $2
+       UNION ALL
+       SELECT sa.timestamp, 'Adjusted', sa.product_name, sa.delta, sa.reason, sa.operator
+       FROM stock_adjustments sa JOIN products p ON p.id = sa.product_id
+       WHERE p.is_controlled = 1 AND date(sa.timestamp) BETWEEN $1 AND $2
+     ) ORDER BY ts DESC LIMIT 300`,
+    [from, to],
+  );
+  return {
+    summary: summary.map((s) => ({
+      ...s,
+      stock_qty: Number(s.stock_qty),
+      received: Number(s.received),
+      dispensed: Number(s.dispensed),
+      returned: Number(s.returned),
+      adjusted: Number(s.adjusted),
+    })),
+    txns: txns.map((t) => ({ ...t, qty: Number(t.qty) })),
+  };
+}
+
+/** Record a payment against a supplier invoice (atomic in Rust). */
+export async function recordPayment(
+  purchaseId: string,
+  amount: number,
+  method: string,
+  operator: string | null,
+): Promise<{ reference_no: string | null; paid: number; balance: number }> {
+  return await invoke("record_payment", { purchaseId, amount, method, operator });
 }

@@ -11,6 +11,8 @@ export function SettingsPage() {
   const operators = useStore((s) => s.operators);
   const receiptFooter = useStore((s) => s.receiptFooter);
   const autoOperator = useStore((s) => s.autoOperator);
+  const supportEmail = useStore((s) => s.supportEmail);
+  const momoNumber = useStore((s) => s.momoNumber);
   const applySettings = useStore((s) => s.applySettings);
   const setOperator = useStore((s) => s.setOperator);
   const loadOperators = useStore((s) => s.loadOperators);
@@ -18,6 +20,8 @@ export function SettingsPage() {
   const [name, setName] = useState(pharmacyName);
   const [tax, setTax] = useState(String(taxRate));
   const [footer, setFooter] = useState(receiptFooter);
+  const [support, setSupport] = useState(supportEmail);
+  const [momo, setMomo] = useState(momoNumber);
   const [saved, setSaved] = useState(false);
 
   const [rows, setRows] = useState<Operator[]>([]);
@@ -79,10 +83,14 @@ export function SettingsPage() {
     await saveSetting("pharmacy_name", name.trim() || "Pulse Pharmacy");
     await saveSetting("tax_rate", tax.trim() || "0");
     await saveSetting("receipt_footer", footer.trim());
+    await saveSetting("support_email", support.trim());
+    await saveSetting("momo_number", momo.trim());
     applySettings({
       pharmacyName: name.trim() || "Pulse Pharmacy",
       taxRate: Number(tax) || 0,
       receiptFooter: footer.trim(),
+      supportEmail: support.trim(),
+      momoNumber: momo.trim(),
     });
     beep(true);
     setSaved(true);
@@ -158,6 +166,31 @@ export function SettingsPage() {
           <input
             value={footer}
             onChange={(e) => setFooter(e.target.value)}
+            className={field}
+          />
+        </label>
+
+        <label className="mb-6 block">
+          <span className="mb-1 block text-body-md font-body-md text-on-surface">
+            Support email — where the Support page sends problem reports
+          </span>
+          <input
+            value={support}
+            onChange={(e) => setSupport(e.target.value)}
+            type="email"
+            placeholder="support@example.com"
+            className={field}
+          />
+        </label>
+        <label className="mb-6 block">
+          <span className="mb-1 block text-body-md font-body-md text-on-surface">
+            Mobile Money number — shown on the payment screen and receipts so
+            customers know where to pay
+          </span>
+          <input
+            value={momo}
+            onChange={(e) => setMomo(e.target.value)}
+            placeholder="e.g. 024 000 0000"
             className={field}
           />
         </label>
