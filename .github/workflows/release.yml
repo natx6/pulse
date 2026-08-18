@@ -109,7 +109,8 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.sig
             src-tauri/target/release/bundle/deb/*.sig
             src-tauri/target/release/bundle/rpm/*.sig
-            src-tauri/target/release/bundle/**/*.tar.gz
+            # macOS updater bundle only — NOT deb internals (control/data.tar.gz)
+            src-tauri/target/release/bundle/macos/*.tar.gz
           if-no-files-found: error
 
   release:
