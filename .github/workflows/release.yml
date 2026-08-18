@@ -142,6 +142,10 @@ jobs:
                   return "windows-x86_64"
               if "x64.app.tar.gz" in n:
                   return "darwin-x86_64"
+              # Tauri names the macOS updater bundle just "Pulse.app.tar.gz" (no
+              # arch). macos-latest is Apple Silicon, so map it to darwin-aarch64.
+              if ".app.tar.gz" in n:
+                  return "darwin-aarch64"
               if "aarch64" in n or "arm64" in n:
                   if "appimage" in n:
                       return "linux-arm64"
@@ -192,7 +196,8 @@ jobs:
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
           ASSETS=$(find artifacts -type f \
             \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \
-               -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \))
+               -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
+               -o -name '*.tar.gz' \))
           if [ -f latest.json ]; then
             ASSETS="$ASSETS latest.json"
           fi
