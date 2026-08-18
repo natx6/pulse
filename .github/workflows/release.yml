@@ -1,6 +1,8 @@
 name: Build installers
 
-# Builds Windows (.exe/.msi), macOS (.dmg) and Linux (AppImage/.deb) installers.
+# Builds Windows (.exe/.msi), macOS (.dmg, Apple Silicon) and Linux (AppImage/.deb)
+# installers. Intel (x64) macOS is intentionally not built: GitHub retired the
+# macos-13 Intel runners (Dec 2025) and their replacement has the same fate.
 # Trigger manually from the Actions tab and download the installers from the
 # run's artifacts; or push a tag like v0.2.0 to also create a draft GitHub
 # Release with everything attached.
@@ -34,8 +36,6 @@ jobs:
             bundles: msi,nsis
           - platform: ubuntu-22.04
             bundles: appimage,deb
-          - platform: macos-13
-            bundles: dmg
           - platform: macos-latest
             bundles: dmg
     runs-on: ${{ matrix.platform }}
