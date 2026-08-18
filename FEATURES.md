@@ -158,8 +158,8 @@ what needs attention.
 - **Customer Credit (book)**: every customer's outstanding balance from
   credit sales, with one-tap Settle (amount + method, overpaying rejected);
   a per-payment history is kept.
-- Export CSV: one file with all sections, written to `exports/` next to the
-  database (path shown in the UI).
+- Export CSV: one file with all sections, saved wherever you pick in the
+  native Save dialog (path shown in the UI after export).
 - Backup button: WAL-safe copy of the database to `backups/` (path shown).
 
 ## 6. Patient history
@@ -248,6 +248,7 @@ what needs attention.
   in the GitHub secrets `TAURI_SIGNING_PRIVATE_KEY` /
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and the public key is baked into
   `tauri.conf.json`. The release workflow signs artifacts and assembles
-  `latest.json` only when the secret is set; publish the draft GitHub
-  Release to roll the update out. macOS needs notarization (Apple
-  credentials) before Gatekeeper will accept updates.
+  `latest.json`; publish the draft GitHub Release to roll the update out
+  (the repo must be public — private repos return 404 to the app's
+  anonymous update check). macOS needs notarization (Apple credentials)
+  before Gatekeeper will accept updates.
