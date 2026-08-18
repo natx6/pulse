@@ -36,8 +36,10 @@ jobs:
             bundles: msi,nsis
           - platform: ubuntu-22.04
             bundles: appimage,deb
+          # 'app' is what produces the signed .app.tar.gz the updater needs on
+          # macOS ('dmg' alone is not an updater target — the build warns about it).
           - platform: macos-latest
-            bundles: dmg
+            bundles: app,dmg
     runs-on: ${{ matrix.platform }}
     env:
       # createUpdaterArtifacts is on permanently in tauri.conf.json, so every
