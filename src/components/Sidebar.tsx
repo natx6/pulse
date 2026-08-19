@@ -9,6 +9,7 @@ const NAV: { id: PageId; icon: string; label: string }[] = [
   { id: "inventory", icon: "inventory_2", label: "Inventory" },
   { id: "restock", icon: "shopping_cart", label: "Requisitions" },
   { id: "analytics", icon: "bar_chart", label: "Reports" },
+  { id: "expenses", icon: "receipt_long", label: "Expenses" },
   { id: "support", icon: "support_agent", label: "Support" },
 ];
 
@@ -37,16 +38,16 @@ export function Sidebar() {
         : "Tap to set operator";
 
   return (
-    <nav className="fixed left-0 top-0 z-30 flex h-screen w-64 flex-col bg-inverse-surface px-gutter py-density-medium text-primary-fixed">
+    <nav className="fixed left-0 top-0 z-30 flex h-screen w-64 flex-col bg-[#191c20] px-gutter py-density-medium text-primary-fixed">
       <div className="mb-8 mt-2 flex items-center gap-3 px-2">
-        <div className="flex h-10 w-10 items-center justify-center rounded bg-primary-container text-headline-md font-bold text-on-primary-container">
+        <div className="flex h-10 w-10 items-center justify-center rounded bg-primary text-headline-md font-bold text-on-primary">
           P
         </div>
         <div>
           <h1 className="text-headline-lg font-headline-lg leading-none tracking-tight">
             Pulse
           </h1>
-          <p className="mt-1 text-[10px] uppercase tracking-wider text-surface-variant opacity-80">
+          <p className="mt-1 text-[10px] uppercase tracking-wider text-white/50">
             Pharmacy MS
           </p>
         </div>
@@ -55,7 +56,7 @@ export function Sidebar() {
       <Tip label="Fresh sale — holds the current order and clears the counter">
         <button
           onClick={newSale}
-          className="mb-6 flex w-full items-center justify-center gap-2 rounded bg-primary-fixed px-4 py-2 text-on-primary-fixed transition-colors hover:bg-primary-fixed-dim active:opacity-80"
+          className="mb-6 flex w-full items-center justify-center gap-2 rounded bg-primary px-4 py-2 text-on-primary transition-colors hover:opacity-90 active:opacity-80"
         >
           <span className="material-symbols-outlined filled text-[18px]">add_circle</span>
           <span className="text-label-md font-label-md">New Prescription</span>
@@ -71,8 +72,8 @@ export function Sidebar() {
               onClick={() => setPage(n.id)}
               className={`group flex items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors duration-150 ${
                 active
-                  ? "bg-on-primary-fixed-variant text-primary-fixed"
-                  : "text-surface-variant hover:bg-white/10 hover:text-white"
+                  ? "bg-white/15 text-white"
+                  : "text-white/60 hover:bg-white/10 hover:text-white"
               }`}
             >
               <span
@@ -91,7 +92,7 @@ export function Sidebar() {
       <div className="mt-auto flex flex-col gap-1 border-t border-outline/30 pt-4">
         <button
           onClick={() => setPage("settings")}
-          className="group flex items-center gap-3 rounded-xl px-3 py-2 text-left text-surface-variant transition-colors duration-150 hover:bg-white/10 hover:text-white"
+          className="group flex items-center gap-3 rounded-xl px-3 py-2 text-left text-white/60 transition-colors duration-150 hover:bg-white/10 hover:text-white"
         >
           <span className="material-symbols-outlined text-[20px] transition-transform group-hover:scale-110">
             settings
@@ -104,16 +105,16 @@ export function Sidebar() {
               onClick={() => setPickerOpen((o) => !o)}
               className="flex w-full items-center gap-3 rounded p-0 text-left transition-colors hover:bg-white/5"
             >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-outline bg-surface-variant text-xs font-bold text-on-surface">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-white/20 bg-white/10 text-xs font-bold text-white">
                 {operator ? operator.charAt(0).toUpperCase() : "?"}
               </div>
               <div className="min-w-0">
                 <span className="block truncate text-[12px] font-semibold text-white">
                   {operator || "No operator set"}
                 </span>
-                <span className="block text-[10px] text-surface-variant">{sub}</span>
+                <span className="block text-[10px] text-white/50">{sub}</span>
               </div>
-              <span className="material-symbols-outlined ml-auto text-[14px] text-surface-variant">
+              <span className="material-symbols-outlined ml-auto text-[14px] text-white/50">
                 expand_more
               </span>
             </button>

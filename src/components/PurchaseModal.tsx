@@ -471,7 +471,7 @@ export function PurchaseModal({
             {lowItems.length > 0 && (
               <button
                 onClick={addLowStock}
-                className="mt-4 flex items-center gap-2 rounded border border-[#fef08a]/60 bg-[#fef08a]/15 px-3 py-1.5 text-label-md font-label-md text-[#854d0e] transition-colors hover:bg-[#fef08a]/25"
+                className="mt-4 flex items-center gap-2 rounded border border-warn/60 bg-warn-subtle px-3 py-1.5 text-label-md font-label-md text-warn transition-colors hover:bg-warn-muted"
                 title="Add every item at or below its reorder level — then type how many you need"
               >
                 <span className="material-symbols-outlined text-[16px]">inventory_2</span>
@@ -610,7 +610,7 @@ export function PurchaseModal({
                               : l.margin < 0
                                 ? "text-error"
                                 : l.margin < 10
-                                  ? "text-[#b45309]"
+                                  ? "text-[#b45309] dark:text-[#d97706]"
                                   : "text-primary"
                           }`}
                           title={l.margin === null ? "Set a selling price to see the margin" : "Profit margin on selling price"}
@@ -656,7 +656,7 @@ export function PurchaseModal({
           )}
 
           {missingExpiry > 0 && (
-            <p className="mt-2 text-body-sm text-[#b45309]">
+            <p className="mt-2 text-body-sm text-[#b45309] dark:text-[#d97706]">
               {missingExpiry} line{missingExpiry === 1 ? "" : "s"} ha{missingExpiry === 1 ? "s" : "ve"} no
               expiry date — you can still save.
             </p>

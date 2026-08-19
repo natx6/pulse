@@ -22,6 +22,7 @@ export function SettingsPage() {
   const [footer, setFooter] = useState(receiptFooter);
   const [support, setSupport] = useState(supportEmail);
   const [momo, setMomo] = useState(momoNumber);
+  const isDark = useStore((s) => s.isDark);
   const [saved, setSaved] = useState(false);
 
   const [rows, setRows] = useState<Operator[]>([]);
@@ -127,6 +128,12 @@ export function SettingsPage() {
     await saveSetting("auto_operator", v ? "1" : "0");
     applySettings({ autoOperator: v });
     beep(true);
+  };
+
+  const toggleDark = async () => {
+    const next = !isDark;
+    await saveSetting("is_dark", next ? "1" : "0");
+    applySettings({ isDark: next });
   };
 
   const field =
@@ -342,6 +349,7 @@ export function SettingsPage() {
               No backups yet — hit Backup on the Reports page.
             </p>
           )}
+          <div className="max-h-[240px] overflow-y-auto">
           {backups.slice(0, 10).map((b) => (
             <div key={b.name} className="flex items-center gap-2 border-b border-outline-variant/50 py-1.5 last:border-0">
               <span className="material-symbols-outlined text-[16px] text-on-surface-variant">
@@ -373,6 +381,7 @@ export function SettingsPage() {
               </button>
             </div>
           ))}
+          </div>
           {backups.length > 10 && (
             <p className="pt-2 text-[11px] text-on-surface-variant">
               +{backups.length - 10} older backups (kept, newest 20 shown)
@@ -380,12 +389,38 @@ export function SettingsPage() {
           )}
         </div>
 
+        <div className="mb-6 rounded-xl border border-outline-variant bg-surface p-4">
+          <h3 className="mb-3 text-headline-md font-headline-md text-on-surface">Appearance</h3>
+          <label className="flex items-center gap-3">
+            <button
+              onClick={() => void toggleDark()}
+              className={`relative h-6 w-11 rounded-full transition-colors ${
+                isDark ? "bg-primary" : "bg-surface-variant"
+              }`}
+              role="switch"
+              aria-checked={isDark}
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                  isDark ? "translate-x-5" : ""
+                }`}
+              />
+            </button>
+            <span className="text-body-md font-body-md text-on-surface">
+              Dark mode
+            </span>
+            <span className="material-symbols-outlined text-[18px] text-on-surface-variant">
+              {isDark ? "dark_mode" : "light_mode"}
+            </span>
+          </label>
+        </div>
+
         <button
           onClick={() => void save()}
           className="rounded bg-primary px-6 py-2 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant"
         >
           <span className="text-label-md font-label-md">
-            {saved ? "Saved ✓" : "Save receipt details"}
+            {saved ? "Saved ✓" : "Save"}
           </span>
         </button>
       </div>

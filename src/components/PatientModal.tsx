@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { initDb } from "../db";
+import { initDb, updatePatientDiscount, getPatientDiscount } from "../db";
 import { fmtMoney } from "../lib/money";
 import { ReceiptModal } from "./ReceiptModal";
 import { beep } from "../lib/audio";
@@ -25,6 +25,8 @@ export function PatientModal({ name, phone, onClose }: Props) {
   const [totalVisits, setTotalVisits] = useState<number | null>(null);
   const [lastVisit, setLastVisit] = useState<string | null>(null);
   const [err, setErr] = useState("");
+  const [discountInput, setDiscountInput] = useState("");
+  const [discountSaved, setDiscountSaved] = useState(false);
   const [reprint, setReprint] = useState<{
     result: SaleResult;
     lines: CartLine[];
@@ -50,11 +52,21 @@ export function PatientModal({ name, phone, onClose }: Props) {
         );
         setTotalVisits(sum ? Number(sum.n) : 0);
         setLastVisit(sum?.last ?? null);
+        const disc = await getPatientDiscount(name);
+        setDiscountInput(disc > 0 ? String(disc) : "");
       } catch (e) {
         setErr(String(e));
       }
     })();
   }, [name]);
+
+  const saveDiscount = async () => {
+    const v = Math.min(100, Math.max(0, Number(discountInput) || 0));
+    setDiscountInput(v > 0 ? String(v) : "");
+    await updatePatientDiscount(name, v);
+    setDiscountSaved(true);
+    setTimeout(() => setDiscountSaved(false), 1500);
+  };
 
   const doReprint = async (receiptNo: string) => {
     try {
@@ -140,6 +152,34 @@ export function PatientModal({ name, phone, onClose }: Props) {
             <p className="pt-1 text-body-sm font-body-sm text-on-surface">
               {lastVisit ? new Date(lastVisit).toLocaleString() : "—"}
             </p>
+          </div>
+          <div className="flex items-center gap-2 rounded border border-outline-variant/50 bg-surface-container-low px-3 py-2">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
+                Discount
+              </p>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={discountInput}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "" || (Number(v) >= 0 && Number(v) <= 100)) setDiscountInput(v);
+                  }}
+                  placeholder="0"
+                  className="h-7 w-12 rounded border border-outline-variant bg-surface-container-lowest px-1 text-center font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
+                />
+                <span className="text-body-sm text-on-surface-variant">%</span>
+                <button
+                  onClick={() => void saveDiscount()}
+                  className="h-7 rounded bg-primary/10 px-2 text-[10px] font-bold text-primary hover:bg-primary/20"
+                >
+                  {discountSaved ? "✓" : "Set"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 

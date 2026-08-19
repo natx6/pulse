@@ -18,13 +18,13 @@ import {
 function StatusPill({ p }: { p: Purchase }) {
   if (p.status === "Received")
     return (
-      <span className="rounded bg-[#dcfce7]/60 px-2 py-0.5 text-[11px] font-bold text-[#166534]">
+      <span className="rounded bg-success-subtle px-2 py-0.5 text-[11px] font-bold text-success">
         Received
       </span>
     );
   if (p.received_qty > 0)
     return (
-      <span className="rounded bg-[#fef08a]/40 px-2 py-0.5 text-[11px] font-bold text-[#854d0e]">
+      <span className="rounded bg-warn-muted px-2 py-0.5 text-[11px] font-bold text-warn">
         Partially Received ({p.received_qty}/{p.total_qty})
       </span>
     );
@@ -169,7 +169,7 @@ export function RestockPage() {
         </p>
       )}
       {warn && (
-        <p className="mb-3 rounded border border-[#f59e0b]/50 bg-[#fef08a]/20 px-3 py-2 text-body-sm font-body-sm text-[#854d0e]">
+        <p className="mb-3 rounded border border-warn/50 bg-warn-subtle px-3 py-2 text-body-sm font-body-sm text-warn">
           {warn}
         </p>
       )}
@@ -220,7 +220,7 @@ export function RestockPage() {
               <div className="w-24 pr-4 text-right font-data-mono text-data-mono">
                 {p.status === "Received" || p.paid_amount > 0 ? (
                   p.paid_amount >= p.total_amount ? (
-                    <span className="text-[#166534]">Paid</span>
+                    <span className="text-success">Paid</span>
                   ) : (
                     fmtMoney(p.total_amount - p.paid_amount)
                   )

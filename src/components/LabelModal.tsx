@@ -100,25 +100,35 @@ export function LabelModal({ onClose }: Props) {
               className="mx-auto w-full rounded border border-outline-variant bg-white p-4"
               style={{ width: 60 * 3.78 }} // ~60mm at 96dpi
             >
-              <p className="mb-1 text-center text-[13px] font-bold leading-tight text-black">
+              <p className="mb-0.5 text-center text-[12px] font-bold leading-tight text-black">
                 {selected?.name ?? (manual.trim() ? "Pulse Pharmacy" : "")}
               </p>
+              {selected?.strength && (
+                <p className="text-center text-[10px] font-semibold text-black/70">
+                  {selected.strength}{selected.unit ? ` · ${selected.unit}` : ""}
+                </p>
+              )}
+              {!selected?.strength && selected?.unit && (
+                <p className="text-center text-[10px] font-semibold text-black/70">
+                  {selected.unit}
+                </p>
+              )}
               <svg
                 width={width * NARROW}
-                height={80}
-                viewBox={`0 0 ${width} 80`}
-                className="mx-auto block"
+                height={60}
+                viewBox={`0 0 ${width} 60`}
+                className="mx-auto mt-1 block"
                 preserveAspectRatio="none"
               >
                 {bars.map((b, i) => (
-                  <rect key={i} x={b.x} y={0} width={b.width} height={62} fill="#000" />
+                  <rect key={i} x={b.x} y={0} width={b.width} height={50} fill="#000" />
                 ))}
               </svg>
-              <p className="mt-1 text-center font-data-mono text-[13px] font-semibold tracking-widest text-black">
+              <p className="mt-0.5 text-center font-data-mono text-[11px] font-semibold tracking-widest text-black">
                 {code}
               </p>
               {selected && (
-                <p className="text-center text-[15px] font-bold text-black">
+                <p className="text-center text-[16px] font-black text-black">
                   {fmtMoney(selected.selling_price)}
                 </p>
               )}

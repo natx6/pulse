@@ -18,8 +18,8 @@ function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reo
     );
   if (st === "low")
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-[#fef08a] bg-[#fef08a]/20 px-2 py-0.5 text-[10px] font-bold leading-tight text-[#854d0e]">
-        <span className="h-1.5 w-1.5 rounded-full bg-[#eab308]" /> Reorder Soon
+      <span className="inline-flex items-center gap-1 rounded-full border border-warn bg-warn-subtle px-2 py-0.5 text-[10px] font-bold leading-tight text-warn">
+        <span className="h-1.5 w-1.5 rounded-full bg-[#eab308] dark:bg-[#fbbf24]" /> Reorder Soon
       </span>
     );
   return (
@@ -46,6 +46,8 @@ export function InventoryPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [archived, setArchived] = useState<Product[]>([]);
   const [archiveArmed, setArchiveArmed] = useState<number | null>(null);
+  const [sortKey, setSortKey] = useState<"name" | "batch" | "supplier" | "barcode" | "expiry" | "qty">("name");
+  const [sortAsc, setSortAsc] = useState(true);
 
   // Load archived products when the toggle is on (active ones come from the store).
   useEffect(() => {
@@ -63,14 +65,34 @@ export function InventoryPage() {
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return list;
-    return list.filter(
-      (p) =>
-        p.name.toLowerCase().includes(s) ||
-        (p.barcode ?? "").includes(s) ||
-        (p.supplier ?? "").toLowerCase().includes(s),
-    );
-  }, [list, q]);
+    let rows = list;
+    if (s) {
+      rows = rows.filter(
+        (p) =>
+          p.name.toLowerCase().includes(s) ||
+          (p.barcode ?? "").includes(s) ||
+          (p.supplier ?? "").toLowerCase().includes(s),
+      );
+    }
+    const key = sortKey;
+    const dir = sortAsc ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      let cmp = 0;
+      if (key === "name") cmp = a.name.localeCompare(b.name);
+      else if (key === "batch") cmp = (a.batch_no ?? "").localeCompare(b.batch_no ?? "");
+      else if (key === "supplier") cmp = (a.supplier ?? "").localeCompare(b.supplier ?? "");
+      else if (key === "barcode") cmp = (a.barcode ?? "").localeCompare(b.barcode ?? "");
+      else if (key === "expiry") cmp = (a.expiry_date ?? "zzz").localeCompare(b.expiry_date ?? "zzz");
+      else if (key === "qty") cmp = a.stock_qty - b.stock_qty;
+      return cmp * dir;
+    });
+  }, [list, q, sortKey, sortAsc]);
+
+  const toggleSort = (key: typeof sortKey) => {
+    if (sortKey === key) setSortAsc(!sortAsc);
+    else { setSortKey(key); setSortAsc(true); }
+  };
+  const arrow = (key: typeof sortKey) => sortKey === key ? (sortAsc ? " ▲" : " ▼") : "";
 
   /** Two-step archive (mirrors operator delete): tap once to arm, again to run. */
   const armArchive = async (p: Product) => {
@@ -210,24 +232,22 @@ export function InventoryPage() {
 
       <div className="flex h-[calc(100vh-14rem)] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface-container-lowest">
         <div className="flex items-center border-b border-outline-variant bg-surface-container-low px-4 py-2">
-          <div className="flex-1 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
-            Item Name
-          </div>
-          <div className="w-28 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
-            Batch
-          </div>
-          <div className="w-36 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
-            Supplier
-          </div>
-          <div className="w-40 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
-            Barcode ID
-          </div>
-          <div className="w-28 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
-            Expiry
-          </div>
-          <div className="w-20 text-right pr-2 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
-            Qty
-          </div>
+          {([
+            ["name", "flex-1", "Item Name"],
+            ["batch", "w-28", "Batch"],
+            ["supplier", "w-36", "Supplier"],
+            ["barcode", "w-40", "Barcode ID"],
+            ["expiry", "w-28", "Expiry"],
+            ["qty", "w-20 text-right pr-2", "Qty"],
+          ] as const).map(([key, cls, label]) => (
+            <button
+              key={key}
+              onClick={() => toggleSort(key)}
+              className={`${cls} font-label-md font-label-md uppercase tracking-wider text-on-surface-variant cursor-pointer hover:text-on-surface select-none transition-colors`}
+            >
+              {label}{arrow(key)}
+            </button>
+          ))}
           <div className="w-28 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
             Status
           </div>
@@ -258,7 +278,7 @@ export function InventoryPage() {
                   </span>
                   {p.is_controlled ? (
                     <span
-                      className="shrink-0 rounded bg-[#7f1d1d] px-1.5 py-0.5 text-[10px] font-bold text-white"
+                      className="shrink-0 rounded bg-danger-deep px-1.5 py-0.5 text-[10px] font-bold text-white"
                       title="Controlled drug — see the register in Reports"
                     >
                       C

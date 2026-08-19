@@ -78,6 +78,7 @@ export interface AppSettings {
   autoOperator: boolean;
   supportEmail: string;
   momoNumber: string;
+  isDark: boolean;
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -94,6 +95,7 @@ export async function getSettings(): Promise<AppSettings> {
     autoOperator: map.auto_operator === "1",
     supportEmail: map.support_email ?? "",
     momoNumber: map.momo_number ?? "",
+    isDark: map.is_dark === "1",
   };
 }
 
@@ -290,6 +292,7 @@ export async function completeSale(
   payments: PaymentLine[],
   operator: string | null,
   patient: { name: string; phone: string } | null = null,
+  discountPct: number = 0,
 ): Promise<SaleResult> {
   return await invoke("complete_sale", {
     payments,
@@ -297,6 +300,7 @@ export async function completeSale(
     operator,
     patientName: patient?.name?.trim() || null,
     patientPhone: patient?.phone?.trim() || null,
+    discountPct: discountPct || null,
   });
 }
 
@@ -835,4 +839,120 @@ export async function recordPayment(
   operator: string | null,
 ): Promise<{ reference_no: string | null; paid: number; balance: number }> {
   return await invoke("record_payment", { purchaseId, amount, method, operator });
+}
+
+// ---- Expenses (petty cash) ----
+
+export interface Expense {
+  id: number;
+  category: string;
+  description: string | null;
+  amount: number;
+  operator: string | null;
+  timestamp: string;
+}
+
+const EXPENSE_CATEGORIES = [
+  "Rent", "Utilities", "Staff", "Transport", "Maintenance",
+  "Supplies", "Licenses", "Tax", "Other",
+];
+export { EXPENSE_CATEGORIES };
+
+export async function addExpense(e: {
+  category: string;
+  description: string;
+  amount: number;
+  operator: string;
+}): Promise<void> {
+  const d = await initDb();
+  await d.execute(
+    "INSERT INTO expenses (category, description, amount, operator) VALUES ($1, $2, $3, $4)",
+    [e.category, e.description || null, e.amount, e.operator || null],
+  );
+}
+
+export async function listExpenses(from: string, to: string): Promise<Expense[]> {
+  const d = await initDb();
+  return d.select<Expense[]>(
+    "SELECT id, category, description, amount, operator, timestamp FROM expenses WHERE date(timestamp) BETWEEN $1 AND $2 ORDER BY id DESC",
+    [from, to],
+  );
+}
+
+export async function expenseSummary(from: string, to: string): Promise<{ total: number; byCategory: { category: string; total: number }[] }> {
+  const d = await initDb();
+  const [tot] = await d.select<{ v: number }[]>(
+    "SELECT COALESCE(SUM(amount),0) AS v FROM expenses WHERE date(timestamp) BETWEEN $1 AND $2",
+    [from, to],
+  );
+  const byCat = await d.select<{ category: string; total: number }[]>(
+    "SELECT category, SUM(amount) AS total FROM expenses WHERE date(timestamp) BETWEEN $1 AND $2 GROUP BY category ORDER BY total DESC",
+    [from, to],
+  );
+  return { total: Number(tot?.v ?? 0), byCategory: byCat.map((c) => ({ ...c, total: Number(c.total) })) };
+}
+
+export async function deleteExpense(id: number): Promise<void> {
+  const d = await initDb();
+  await d.execute("DELETE FROM expenses WHERE id = $1", [id]);
+}
+
+// ---- Supplier balances ----
+
+export interface SupplierBalance {
+  supplier_name: string;
+  total_purchased: number;
+  total_paid: number;
+  balance: number;
+  invoice_count: number;
+  oldest_date: string | null;
+}
+
+export async function supplierBalances(): Promise<SupplierBalance[]> {
+  const d = await initDb();
+  return d.select<SupplierBalance[]>(
+    `WITH pay AS (
+       SELECT purchase_id, SUM(amount) AS paid FROM purchase_payments GROUP BY purchase_id
+     )
+     SELECT
+       p.supplier_name,
+       COALESCE(SUM(p.total_amount), 0) AS total_purchased,
+       COALESCE(SUM(py.paid), 0) AS total_paid,
+       COALESCE(SUM(p.total_amount), 0) - COALESCE(SUM(py.paid), 0) AS balance,
+       COUNT(*) AS invoice_count,
+       MIN(p.purchase_date) AS oldest_date
+     FROM purchases p
+     LEFT JOIN pay py ON py.purchase_id = p.id
+     WHERE p.supplier_name IS NOT NULL AND p.supplier_name != ''
+     GROUP BY p.supplier_name
+     ORDER BY balance DESC`,
+  );
+}
+
+// ---- Patient discount tier ----
+
+export async function updatePatientDiscount(name: string, discountPct: number): Promise<void> {
+  try {
+    const d = await initDb();
+    await d.execute(
+      "UPDATE patients SET discount_tier = $1 WHERE name = $2",
+      [discountPct, name],
+    );
+  } catch {
+    // Column may not exist yet if migration hasn't run.
+  }
+}
+
+export async function getPatientDiscount(name: string): Promise<number> {
+  try {
+    const d = await initDb();
+    const [row] = await d.select<{ discount_tier: number | null }[]>(
+      "SELECT discount_tier FROM patients WHERE name = $1",
+      [name],
+    );
+    return Number(row?.discount_tier ?? 0);
+  } catch {
+    // Column may not exist yet if migration hasn't run.
+    return 0;
+  }
 }

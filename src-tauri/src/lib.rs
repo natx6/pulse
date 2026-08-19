@@ -101,6 +101,7 @@ fn complete_sale(
     operator: Option<String>,
     patient_name: Option<String>,
     patient_phone: Option<String>,
+    discount_pct: Option<f64>,
 ) -> Result<SaleResult, String> {
     if lines.is_empty() {
         return Err("Cart is empty".into());
@@ -160,7 +161,10 @@ fn complete_sale(
         .map_err(|e| e.to_string())?;
     let receipt_no = format!("RCPT-{}-{:03}", date, n + 1);
 
-    let total: f64 = lines.iter().map(|l| l.unit_price * l.quantity as f64).sum();
+    let subtotal: f64 = lines.iter().map(|l| l.unit_price * l.quantity as f64).sum();
+    let disc = discount_pct.unwrap_or(0.0).clamp(0.0, 100.0);
+    let discount_amount = subtotal * disc / 100.0;
+    let total = (subtotal - discount_amount).max(0.0);
     if paid < total - 0.005 {
         return Err(format!(
             "Payments (GH₵ {:.2}) don't cover the total (GH₵ {:.2})",
@@ -1714,6 +1718,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("0016_sales_credit_method", include_str!("../migrations/0016_sales_credit_method.sql")),
     ("0017_sale_payments_credit_method", include_str!("../migrations/0017_sale_payments_credit_method.sql")),
     ("0018_patient_email", include_str!("../migrations/0018_patient_email.sql")),
+    (
+        "0019_expenses_discount_tier",
+        include_str!("../migrations/0019_expenses_discount_tier.sql"),
+    ),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.

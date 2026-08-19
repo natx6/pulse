@@ -16,6 +16,9 @@ import { RestockPage } from "./pages/RestockPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { SupportPage } from "./pages/SupportPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { ExpensesPage } from "./pages/ExpensesPage";
+import { ToastContainer } from "./components/ToastContainer";
+import { useToast } from "./store/toast";
 
 export default function App() {
   const page = useStore((s) => s.page);
@@ -71,16 +74,20 @@ export default function App() {
         await useStore.getState().loadOperators();
         initScanner((code) => {
           const st = useStore.getState();
+          const toast = useToast.getState();
           const p = st.products.find((x) => x.barcode === code);
           if (p) {
             if (p.stock_qty <= 0) {
               beep(false);
+              toast.show(`${p.name} is out of stock`, "error");
               return;
             }
             st.addToCart(p);
             beep(true);
+            toast.show(`${p.name} added`, "success", { duration: 1500 });
           } else {
             beep(false);
+            toast.show(`Unknown barcode ${code} — quick add`, "info");
             st.setQuickAdd({ barcode: code });
           }
         });
@@ -105,13 +112,18 @@ export default function App() {
         document.getElementById("global-search")?.focus();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
   // Optional shift auto-switch: when enabled, keep the operator matching the
   // current time. Re-evaluates immediately when the toggle or the operator
   // list changes, then every 30s. Handles overnight shifts.
+  const isDark = useStore((s) => s.isDark);
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", isDark);
+  }, [isDark]);
+
   const autoOperator = useStore((s) => s.autoOperator);
   const operators = useStore((s) => s.operators);
   useEffect(() => {
@@ -139,11 +151,13 @@ export default function App() {
           {page === "restock" && <RestockPage />}
           {page === "analytics" && <AnalyticsPage />}
           {page === "support" && <SupportPage />}
+          {page === "expenses" && <ExpensesPage />}
           {page === "settings" && <SettingsPage />}
         </main>
       </div>
       <QuickAddModal />
       <IntakeModal />
+      <ToastContainer />
 
       {updating && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-on-background/40 p-4">

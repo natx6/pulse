@@ -116,6 +116,78 @@
   --radius-full: 0.75rem;
 }
 
+/* Dark mode: neutral gray surfaces, green only for accents. */
+.dark {
+  --color-primary: #6ee7a0;
+  --color-on-primary: #003920;
+  --color-primary-container: #005236;
+  --color-on-primary-container: #8cf5ba;
+  --color-primary-fixed: #8cf5ba;
+  --color-primary-fixed-dim: #6ee7a0;
+  --color-on-primary-fixed: #00150b;
+  /* Hover for primary buttons: lighter green, not darker. */
+  --color-on-primary-fixed-variant: #8cf5ba;
+
+  --color-secondary: #bfc9d4;
+  --color-on-secondary: #283139;
+  --color-secondary-container: #3e4750;
+  --color-on-secondary-container: #dbe4f0;
+  --color-secondary-fixed: #dbe4f0;
+  --color-secondary-fixed-dim: #bfc9d4;
+  --color-on-secondary-fixed: #101c24;
+  --color-on-secondary-fixed-variant: #3e4750;
+
+  --color-tertiary: #debcbb;
+  --color-on-tertiary: #442626;
+  --color-tertiary-container: #5d3c3b;
+  --color-on-tertiary-container: #fdd9d7;
+  --color-tertiary-fixed: #fdd9d7;
+  --color-tertiary-fixed-dim: #debcbb;
+  --color-on-tertiary-fixed: #2d1111;
+  --color-on-tertiary-fixed-variant: #5d3c3b;
+
+  --color-error: #ffb4ab;
+  --color-on-error: #690005;
+  --color-error-container: #93000a;
+  --color-on-error-container: #ffdad6;
+
+  /* Surfaces: neutral grays — no green tint. */
+  --color-surface: #111318;
+  --color-on-surface: #e1e3e8;
+  --color-surface-variant: #43474e;
+  --color-on-surface-variant: #c3c7cf;
+  --color-surface-container-lowest: #0c0e13;
+  --color-surface-container-low: #191c20;
+  --color-surface-container: #1d2024;
+  --color-surface-container-high: #282a2f;
+  --color-surface-container-highest: #33353a;
+  --color-surface-bright: #3b3d42;
+  --color-surface-dim: #111318;
+  --color-surface-tint: #6ee7a0;
+
+  --color-background: #111318;
+  --color-on-background: #e1e3e8;
+
+  --color-outline: #8d9199;
+  --color-outline-variant: #43474e;
+
+  --color-inverse-surface: #e1e3e8;
+  --color-inverse-on-surface: #2e3036;
+  --color-inverse-primary: #006c49;
+}
+
+/* Dark-mode-aware semantic colors — use these instead of hardcoded hex. */
+@utility bg-warn-subtle { @apply bg-[#fef08a]/20 dark:bg-[#fbbf24]/15; }
+@utility bg-warn-muted { @apply bg-[#fef08a]/40 dark:bg-[#fbbf24]/20; }
+@utility bg-warn-soft { @apply bg-[#fef08a]/60 dark:bg-[#fbbf24]/25; }
+@utility text-warn { @apply text-[#854d0e] dark:text-[#fbbf24]; }
+@utility border-warn { @apply border-[#fef08a] dark:border-[#fbbf24]/40; }
+@utility bg-success-subtle { @apply bg-[#dcfce7]/60 dark:bg-[#22c55e]/15; }
+@utility text-success { @apply text-[#166534] dark:text-[#4ade80]; }
+@utility bg-danger-deep { @apply bg-[#7f1d1d] dark:bg-[#dc2626]/30; }
+@utility bg-surface-select { @apply bg-surface-container-lowest dark:bg-surface-container-high; }
+@utility text-surface-select { @apply text-on-surface dark:text-on-surface; }
+
 html,
 body,
 #root {
@@ -124,6 +196,12 @@ body,
 
 body {
   overflow: hidden;
+}
+
+/* Make native <select> and <option> readable in dark mode. */
+.dark select,
+.dark select option {
+  color-scheme: dark;
 }
 
 .material-symbols-outlined {
@@ -178,16 +256,24 @@ body {
     left: 0;
     top: 0;
     width: 80mm;
+    max-width: 80mm;
+    padding: 4mm;
     background: #fff;
     color: #000;
+    font-size: 12px;
+    line-height: 1.4;
   }
   #label-area {
     position: absolute;
     left: 0;
     top: 0;
     width: 60mm;
+    max-width: 60mm;
+    padding: 3mm;
     background: #fff;
     color: #000;
+    font-size: 11px;
+    line-height: 1.3;
   }
   #po-area {
     position: absolute;
@@ -196,5 +282,14 @@ body {
     width: 190mm;
     background: #fff;
     color: #000;
+  }
+  /* Thermal printer: set paper width and margins. */
+  @page {
+    size: 80mm auto;
+    margin: 2mm;
+  }
+  /* Hide browser UI when printing receipts. */
+  @page:first {
+    margin: 2mm;
   }
 }

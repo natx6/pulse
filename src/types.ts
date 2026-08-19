@@ -44,7 +44,7 @@ export interface PaymentLine {
 
 export type PaymentMethod = "Cash" | "Card" | "MoMo" | "Credit";
 
-export type PageId = "pos" | "inventory" | "restock" | "analytics" | "support" | "settings";
+export type PageId = "pos" | "inventory" | "restock" | "analytics" | "support" | "settings" | "expenses";
 
 export interface SaleResult {
   receipt_no: string;

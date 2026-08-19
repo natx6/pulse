@@ -6,13 +6,15 @@ interface Props {
   result: SaleResult;
   lines: CartLine[];
   subtotal: number;
+  discountPct?: number;
+  discountAmt?: number;
   tax: number;
   paymentMethod: string;
   payments?: PaymentLine[];
   onClose(): void;
 }
 
-export function ReceiptModal({ result, lines, subtotal, tax, paymentMethod, payments, onClose }: Props) {
+export function ReceiptModal({ result, lines, subtotal, discountPct, discountAmt, tax, paymentMethod, payments, onClose }: Props) {
   const pharmacyName = useStore((s) => s.pharmacyName);
   const footer = useStore((s) => s.receiptFooter);
   const momoNumber = useStore((s) => s.momoNumber);
@@ -59,16 +61,28 @@ export function ReceiptModal({ result, lines, subtotal, tax, paymentMethod, paym
               <span>Subtotal</span>
               <span>{fmtMoney(subtotal)}</span>
             </div>
+            {discountPct && discountPct > 0 && discountAmt && discountAmt > 0 && (
+              <div className="flex justify-between text-primary">
+                <span>Discount ({discountPct}%)</span>
+                <span>−{fmtMoney(discountAmt)}</span>
+              </div>
+            )}
             {tax > 0 && (
               <div className="flex justify-between text-on-surface-variant">
                 <span>Tax</span>
                 <span>{fmtMoney(tax)}</span>
               </div>
             )}
-            <div className="flex justify-between pt-1 text-headline-md font-headline-md font-bold text-on-surface">
-              <span>Total</span>
-              <span>{fmtMoney(result.total)}</span>
+            <div className="flex justify-between pt-1 border-t border-outline-variant pt-2">
+              <span className="text-headline-md font-headline-md font-bold text-on-surface">Total</span>
+              <span className="text-headline-md font-headline-md font-bold text-on-surface">{fmtMoney(result.total)}</span>
             </div>
+            {payments && payments.length > 0 && (
+              <div className="flex justify-between text-on-surface-variant">
+                <span>Amount Paid</span>
+                <span className="font-bold">{fmtMoney(payments.reduce((s, p) => s + p.amount, 0))}</span>
+              </div>
+            )}
             <div className="flex justify-between text-on-surface-variant">
               <span>Payment</span>
               <span>{paymentMethod}</span>
@@ -96,9 +110,9 @@ export function ReceiptModal({ result, lines, subtotal, tax, paymentMethod, paym
               </div>
             )}
             {result.change > 0 && (
-              <div className="flex justify-between text-primary">
-                <span>Change</span>
-                <span>{fmtMoney(result.change)}</span>
+              <div className="flex items-center justify-between rounded-lg bg-primary/10 px-3 py-2 -mx-3">
+                <span className="text-headline-md font-headline-md font-bold text-primary">Give back</span>
+                <span className="text-headline-lg font-headline-lg font-black text-primary">{fmtMoney(result.change)}</span>
               </div>
             )}
           </div>

@@ -9,6 +9,7 @@ import { Tip } from "./Tip";
 interface Props {
   total: number;
   lines: CartLine[];
+  discountPct?: number;
   initialMethod?: PaymentMethod;
   onClose(): void;
   onComplete(r: SaleResult, payments: PaymentLine[]): void;
@@ -30,7 +31,7 @@ interface SplitRow {
   reference: string;
 }
 
-export function PaymentModal({ total, lines, initialMethod, onClose, onComplete }: Props) {
+export function PaymentModal({ total, lines, discountPct, initialMethod, onClose, onComplete }: Props) {
   const operator = useStore((s) => s.operator);
   const patient = useStore((s) => s.patient);
   const momoNumber = useStore((s) => s.momoNumber);
@@ -45,6 +46,15 @@ export function PaymentModal({ total, lines, initialMethod, onClose, onComplete 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  // Clear stale errors when total or split mode changes.
+  const [lastTotal, setLastTotal] = useState(total);
+  const [lastSplit, setLastSplit] = useState(split);
+  if (total !== lastTotal || split !== lastSplit) {
+    setLastTotal(total);
+    setLastSplit(split);
+    setError("");
+  }
+
   // Cash defaults to Exact: tendered = total, no extra click to complete.
   useEffect(() => {
     if (!split && method === "Cash" && tendered === null) setTendered(total);
@@ -52,12 +62,20 @@ export function PaymentModal({ total, lines, initialMethod, onClose, onComplete 
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (split) return; // in split mode the method grid is an editor, not a picker
+      if (e.key === "Escape") { onClose(); return; }
+      if (split) {
+        // In split mode, only Enter from a non-input (or the confirm button) submits.
+        const tag = (e.target as HTMLElement | null)?.tagName;
+        if (e.key === "Enter" && tag !== "INPUT") {
+          e.preventDefault();
+          void confirm();
+        }
+        return;
+      }
       if (e.key === "F9") setMethod("Cash");
       if (e.key === "F10") setMethod("Card");
       if (e.key === "F11") setMethod("MoMo");
-      if (e.key === "Escape") onClose();
-      if (e.key === "Enter") void confirm();
+      if (e.key === "Enter") { e.preventDefault(); void confirm(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -100,8 +118,9 @@ export function PaymentModal({ total, lines, initialMethod, onClose, onComplete 
         beep(false);
         return;
       }
-      if (ps.reduce((s, p) => s + p.amount, 0) < total - 0.005) {
-        setError(`Payments (${fmtMoney(splitPaid)}) don't cover ${fmtMoney(total)}.`);
+      const psTotal = ps.reduce((s, p) => s + p.amount, 0);
+      if (psTotal < total - 0.005) {
+        setError(`Payments (${fmtMoney(psTotal)}) don't cover ${fmtMoney(total)}.`);
         beep(false);
         return;
       }
@@ -140,6 +159,7 @@ export function PaymentModal({ total, lines, initialMethod, onClose, onComplete 
         payments,
         operator,
         patient,
+        discountPct ?? 0,
       );
       beep(true);
       onComplete(result, payments);
@@ -299,7 +319,7 @@ export function PaymentModal({ total, lines, initialMethod, onClose, onComplete 
               )}
 
               {method === "Credit" && (
-                <div className="rounded border border-[#b45309]/40 bg-[#fef08a]/20 px-3 py-2 text-body-sm text-[#854d0e]">
+                <div className="rounded border border-warn/40 bg-warn-subtle px-3 py-2 text-body-sm text-warn">
                   {patient?.name?.trim()
                     ? `On the book for ${patient.name.trim()} — you can settle it later under Reports → Customer credit.`
                     : "Put it on a customer's book — attach a customer name at the counter first."}

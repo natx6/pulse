@@ -17,6 +17,7 @@ interface AppState {
   operators: Operator[];
   supportEmail: string;
   momoNumber: string;
+  isDark: boolean;
   heldCart: CartLine[] | null;
   searchQuery: string;
   quickAdd: { barcode: string | null } | null;
@@ -45,6 +46,7 @@ interface AppState {
     autoOperator: boolean;
     supportEmail: string;
     momoNumber: string;
+    isDark: boolean;
   }>): void;
 }
 
@@ -62,6 +64,7 @@ export const useStore = create<AppState>((set, get) => ({
   operators: [],
   supportEmail: "",
   momoNumber: "",
+  isDark: false,
   heldCart: null,
   searchQuery: "",
   quickAdd: null,

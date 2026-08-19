@@ -9,6 +9,8 @@ import { PaymentModal } from "../components/PaymentModal";
 import { ReceiptModal } from "../components/ReceiptModal";
 import { AddCustomerModal } from "../components/AddCustomerModal";
 import { Tip } from "../components/Tip";
+import { useToast } from "../store/toast";
+import { getPatientDiscount } from "../db";
 
 function StatusBadge({ p }: { p: Product }) {
   const st = stockStatus(p);
@@ -20,12 +22,12 @@ function StatusBadge({ p }: { p: Product }) {
     );
   if (st === "low")
     return (
-      <span className="rounded border border-yellow-200 bg-yellow-100 px-1.5 text-[10px] font-bold text-yellow-800">
+      <span className="rounded border border-warn bg-warn-muted px-1.5 text-[10px] font-bold text-warn">
         Stock: {p.stock_qty}
       </span>
     );
   return (
-    <span className="rounded border border-emerald-200 bg-surface-container px-1.5 text-[10px] text-emerald-700">
+    <span className="rounded border border-primary/30 bg-primary/10 px-1.5 text-[10px] text-primary">
       Stock: {p.stock_qty}
     </span>
   );
@@ -37,7 +39,6 @@ export function PosPage() {
   const addToCart = useStore((s) => s.addToCart);
   const setQty = useStore((s) => s.setQty);
   const removeLine = useStore((s) => s.removeLine);
-  const clearCart = useStore((s) => s.clearCart);
   const setPatient = useStore((s) => s.setPatient);
   const patient = useStore((s) => s.patient);
   const searchQuery = useStore((s) => s.searchQuery);
@@ -57,10 +58,14 @@ export function PosPage() {
   const [orderBusy, setOrderBusy] = useState(false);
   const [orderErr, setOrderErr] = useState("");
   const [flash, setFlash] = useState("");
+  const [lastMethod, setLastMethod] = useState<PaymentMethod | null>(null);
+  const [selectedPay, setSelectedPay] = useState<PaymentMethod | null>(null);
   const [lastSale, setLastSale] = useState<{
     result: SaleResult;
     lines: { productId: number; name: string; unit: string | null; unitPrice: number; qty: number }[];
     subtotal: number;
+    discountPct: number;
+    discountAmt: number;
     tax: number;
     method: string;
     payments: PaymentLine[];
@@ -112,26 +117,47 @@ export function PosPage() {
     });
   }, [products, searchQuery, category]);
 
+  const [discountPct, setDiscountPct] = useState(0);
+
+  // Fetch patient discount tier when patient changes.
+  useEffect(() => {
+    if (!patient?.name) { setDiscountPct(0); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const d = await getPatientDiscount(patient.name);
+        if (!cancelled) setDiscountPct(d);
+      } catch { if (!cancelled) setDiscountPct(0); }
+    })();
+    return () => { cancelled = true; };
+  }, [patient?.name]);
+
   const subtotal = cart.reduce((s, l) => s + l.unitPrice * l.qty, 0);
-  const tax = (subtotal * taxRate) / 100;
-  const total = subtotal + tax;
+  const discountAmt = subtotal * (discountPct / 100);
+  const afterDiscount = subtotal - discountAmt;
+  const tax = (afterDiscount * taxRate) / 100;
+  const total = afterDiscount + tax;
 
   const onSearchEnter = () => {
     const q = searchQuery.trim();
     if (!q) return;
     const st = useStore.getState();
+    const toast = useToast.getState();
     const p = st.products.find((x) => x.barcode === q);
     if (p) {
       if (p.stock_qty <= 0) {
         beep(false);
+        toast.show(`${p.name} is out of stock`, "error");
         return;
       }
       st.addToCart(p);
       beep(true);
+      toast.show(`${p.name} added`, "success", { duration: 1500 });
       setSearch("");
     } else if (q.length >= 6 && /^[0-9]+$/.test(q)) {
       // looks like an unknown barcode → quick add
       beep(false);
+      toast.show(`Unknown barcode ${q} — quick add`, "info");
       st.setQuickAdd({ barcode: q });
       setSearch("");
     }
@@ -142,27 +168,37 @@ export function PosPage() {
       result: r,
       lines: [...cart],
       subtotal,
+      discountPct,
+      discountAmt,
       tax,
       method: payments.map((p) => p.method).join(" + "),
       payments,
     });
     setPayMethod(null);
+    // Remember the primary method so the next "Complete Sale" opens the same one.
+    const used = payments[0]?.method ?? null;
+    setLastMethod(used);
+    setSelectedPay(used);
     useStore.getState().clearCart();
+    useStore.getState().setPatient(null);
     await refreshProducts();
   };
 
   const tryAdd = (p: Product) => {
     if (p.stock_qty <= 0) {
       beep(false);
+      useToast.getState().show(`${p.name} is out of stock`, "error");
       return;
     }
     const line = cart.find((l) => l.productId === p.id);
     if (line && line.qty >= p.stock_qty) {
       beep(false);
+      useToast.getState().show(`Max stock reached for ${p.name}`, "error");
       return;
     }
     addToCart(p);
     beep(true);
+    useToast.getState().show(`${p.name} added`, "success", { duration: 1500 });
   };
 
   // F9/F10/F11: quick checkout from the POS screen (no-op while a modal is open)
@@ -212,7 +248,20 @@ export function PosPage() {
     }
     const st = useStore.getState();
     if (st.quickAdd || st.intakeOpen) return;
+    setSelectedPay(m);
     setPayMethod(m);
+  };
+
+  const doClearCart = () => {
+    if (cart.length === 0) return;
+    const snapshot = [...cart];
+    useStore.getState().clearCart();
+    useToast.getState().show("Cart cleared", "info", {
+      duration: 5000,
+      undo: () => {
+        useStore.setState({ cart: snapshot });
+      },
+    });
   };
 
   useEffect(() => {
@@ -231,10 +280,15 @@ export function PosPage() {
       } else if (e.key === "F11") {
         e.preventDefault();
         startCheckout("MoMo");
+      } else if (e.key === "F8") {
+        e.preventDefault();
+        if (useStore.getState().cart.length === 0) return;
+        holdOrder();
+        useToast.getState().show("Order held", "info");
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payMethod, cart.length]);
 
@@ -308,7 +362,7 @@ export function PosPage() {
                         </span>
                         {p.is_controlled ? (
                           <span
-                            className="whitespace-nowrap rounded bg-[#7f1d1d] px-1.5 py-0.5 text-[10px] font-bold text-white"
+                            className="whitespace-nowrap rounded bg-danger-deep px-1.5 py-0.5 text-[10px] font-bold text-white"
                             title="Controlled drug — see the register in Reports"
                           >
                             C
@@ -343,7 +397,7 @@ export function PosPage() {
                               setOrderQty(p.reorder_level > 0 ? p.reorder_level : 10);
                               setOrderErr("");
                             }}
-                            className="flex h-6 items-center gap-1 rounded bg-[#fef08a]/60 px-2 text-[10px] font-bold text-[#854d0e] transition-colors hover:bg-[#fef08a]"
+                            className="flex h-6 items-center gap-1 rounded bg-warn-soft px-2 text-[10px] font-bold text-warn transition-colors hover:bg-warn-soft"
                           >
                             <span className="material-symbols-outlined text-[13px]">add_shopping_cart</span>
                             Order
@@ -379,7 +433,7 @@ export function PosPage() {
             ) : (
               <>
                 <span className="material-symbols-outlined text-[16px]">info</span>
-                {filtered.length} item{filtered.length === 1 ? "" : "s"} shown. F9/F10/F11 = quick checkout.
+                {filtered.length} item{filtered.length === 1 ? "" : "s"} shown. F8 = hold · F9/F10/F11 = checkout.
               </>
             )}
           </span>
@@ -479,7 +533,7 @@ export function PosPage() {
           {cart.length > 0 && (
             <Tip label="Empty the whole cart">
               <button
-                onClick={clearCart}
+                onClick={doClearCart}
                 className="text-[11px] text-error hover:underline"
               >
                 Clear All
@@ -519,24 +573,27 @@ export function PosPage() {
                   <Tip label="Fewer">
                     <button
                       onClick={() => setQty(l.productId, l.qty - 1)}
-                      className="flex h-6 w-6 items-center justify-center rounded-l text-on-surface hover:bg-surface-variant"
+                      className="flex h-8 w-8 items-center justify-center rounded-l text-on-surface hover:bg-surface-variant"
                     >
-                      <span className="material-symbols-outlined text-[14px]">remove</span>
+                      <span className="material-symbols-outlined text-[16px]">remove</span>
                     </button>
                   </Tip>
                   <input
+                    type="number"
+                    min={1}
                     value={l.qty}
+                    onFocus={(e) => e.target.select()}
                     onChange={(e) =>
                       setQty(l.productId, Number(e.target.value) || 1)
                     }
-                    className="h-6 w-8 border-x border-outline-variant/50 bg-transparent p-0 text-center font-data-mono text-data-mono focus:outline-none"
+                    className="h-8 w-10 border-x border-outline-variant/50 bg-transparent p-0 text-center font-data-mono text-data-mono focus:outline-none"
                   />
                   <Tip label="More">
                     <button
                       onClick={() => setQty(l.productId, l.qty + 1)}
-                      className="flex h-6 w-6 items-center justify-center rounded-r text-on-surface hover:bg-surface-variant"
+                      className="flex h-8 w-8 items-center justify-center rounded-r text-on-surface hover:bg-surface-variant"
                     >
-                      <span className="material-symbols-outlined text-[14px]">add</span>
+                      <span className="material-symbols-outlined text-[16px]">add</span>
                     </button>
                   </Tip>
                 </div>
@@ -579,6 +636,12 @@ export function PosPage() {
               <span>Subtotal</span>
               <span>{fmtMoney(subtotal)}</span>
             </div>
+            {discountPct > 0 && (
+              <div className="flex justify-between font-data-mono text-body-sm text-primary">
+                <span>Discount ({discountPct}%)</span>
+                <span>−{fmtMoney(discountAmt)}</span>
+              </div>
+            )}
             {taxRate > 0 && (
               <div className="flex justify-between font-data-mono text-body-sm text-on-surface-variant">
                 <span>Tax ({taxRate}%)</span>
@@ -596,64 +659,58 @@ export function PosPage() {
           </div>
 
           <div className="grid grid-cols-3 gap-2">
-            <Tip label="Cash (F9)">
+            {([
+              { id: "Cash" as PaymentMethod, icon: "payments", label: "Cash", key: "F9" },
+              { id: "Card" as PaymentMethod, icon: "credit_card", label: "Card", key: "F10" },
+              { id: "MoMo" as PaymentMethod, icon: "send_to_mobile", label: "Mobile\nMoney", key: "F11" },
+            ]).map((m) => {
+              const active = selectedPay === m.id;
+              return (
+                <Tip key={m.id} label={`${m.label} (${m.key})`}>
+                  <button
+                    onClick={() => startCheckout(m.id)}
+                    className={`flex w-full flex-col items-center gap-1 rounded py-2 shadow-sm transition-all active:scale-95 ${
+                      active
+                        ? "bg-primary text-on-primary border border-transparent"
+                        : "border border-outline-variant bg-surface text-on-surface hover:border-outline hover:bg-surface-variant"
+                    }`}
+                  >
+                    <span className={`material-symbols-outlined ${active ? "text-on-primary/80" : "text-outline"}`}>{m.icon}</span>
+                    <span className="text-[11px] font-bold whitespace-pre-line text-center leading-tight">{m.label}</span>
+                    <span className={`mt-1 rounded px-1 text-[9px] ${
+                      active ? "bg-black/20 opacity-80" : "border border-outline-variant/50 bg-surface-container opacity-70"
+                    }`}>{m.key}</span>
+                  </button>
+                </Tip>
+              );
+            })}
+          </div>            <Tip label={lastMethod ? `Opens ${lastMethod} checkout (F9/F10/F11 to switch)` : "Opens Cash checkout (F9/F10/F11 to switch)"}>
               <button
-                onClick={() => startCheckout("Cash")}
-                className="flex w-full flex-col items-center gap-1 rounded border border-transparent bg-primary py-2 text-on-primary shadow-sm transition-all hover:bg-on-primary-fixed-variant active:scale-95"
+                onClick={() => startCheckout(lastMethod ?? "Cash")}
+                disabled={cart.length === 0}
+                className="w-full rounded bg-primary py-2.5 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant disabled:opacity-40"
               >
-                <span className="material-symbols-outlined text-on-primary/80">payments</span>
-                <span className="text-[11px] font-bold">Cash</span>
-                <span className="mt-1 rounded bg-black/20 px-1 text-[9px] opacity-80">F9</span>
-              </button>
-            </Tip>
-            <Tip label="Card (F10)">
-              <button
-                onClick={() => startCheckout("Card")}
-                className="flex w-full flex-col items-center gap-1 rounded border border-outline-variant bg-surface py-2 shadow-sm transition-all hover:border-outline hover:bg-surface-variant active:scale-95"
-              >
-                <span className="material-symbols-outlined text-outline">credit_card</span>
-                <span className="text-[11px] font-bold">Card</span>
-                <span className="mt-1 rounded border border-outline-variant/50 bg-surface-container px-1 text-[9px] opacity-70">F10</span>
-              </button>
-            </Tip>
-            <Tip label="Mobile Money (F11)">
-              <button
-                onClick={() => startCheckout("MoMo")}
-                className="flex w-full flex-col items-center gap-1 rounded border border-outline-variant bg-surface py-2 shadow-sm transition-all hover:border-outline hover:bg-surface-variant active:scale-95"
-              >
-                <span className="material-symbols-outlined text-outline">send_to_mobile</span>
-                <span className="text-center text-[11px] font-bold leading-tight">
-                  Mobile
-                  <br />
-                  Money
+                <span className="text-headline-md font-headline-md">
+                  Complete Sale {cart.length > 0 ? `— ${fmtMoney(total)}` : ""}
                 </span>
-                <span className="mt-0.5 rounded border border-outline-variant/50 bg-surface-container px-1 text-[9px] opacity-70">
-                  F11
-                </span>
               </button>
             </Tip>
-          </div>
-
-          <Tip label="Sell and show the receipt">
-            <button
-              onClick={() => startCheckout("Cash")}
-              disabled={cart.length === 0}
-              className="w-full rounded bg-primary py-2.5 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant disabled:opacity-40"
-            >
-              <span className="text-headline-md font-headline-md">
-                Complete Sale {cart.length > 0 ? `— ${fmtMoney(total)}` : ""}
-              </span>
-            </button>
-          </Tip>
 
           <div className="mt-1 flex gap-2">
-            <Tip label="Save this order — restore it later">
+            <Tip label="Save this order — restore it later (F8)">
               <button
-                onClick={holdOrder}
+                onClick={() => {
+                  if (useStore.getState().cart.length === 0) return;
+                  holdOrder();
+                  useToast.getState().show("Order held", "info");
+                }}
                 className="flex w-full items-center justify-center gap-1 rounded border border-outline-variant py-1.5 text-[11px] text-on-surface-variant transition-colors hover:bg-surface"
               >
                 <span className="material-symbols-outlined text-[14px]">pause_circle</span>
                 Hold Order
+                <span className="ml-1 rounded border border-outline-variant/50 bg-surface-container px-1 text-[9px] opacity-70">
+                  F8
+                </span>
               </button>
             </Tip>
           </div>
@@ -664,6 +721,7 @@ export function PosPage() {
         <PaymentModal
           total={total}
           lines={cart}
+          discountPct={discountPct}
           initialMethod={payMethod}
           onClose={() => setPayMethod(null)}
           onComplete={(r, payments) => void onSaleComplete(r, payments)}
@@ -674,6 +732,8 @@ export function PosPage() {
           result={lastSale.result}
           lines={lastSale.lines}
           subtotal={lastSale.subtotal}
+          discountPct={lastSale.discountPct}
+          discountAmt={lastSale.discountAmt}
           tax={lastSale.tax}
           paymentMethod={lastSale.method}
           payments={lastSale.payments}

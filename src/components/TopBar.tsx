@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import { initDb, loadPurchases } from "../db";
 import type { Purchase } from "../db";
@@ -29,14 +29,17 @@ export function TopBar() {
     patients: [],
   });
   const [patientModal, setPatientModal] = useState<PatientHit | null>(null);
+  const [highlight, setHighlight] = useState(-1);
 
   // Live product + patient matches as the user types.
   useEffect(() => {
     const q = searchText.trim().toLowerCase();
     if (!q) {
       setMatches({ products: [], patients: [] });
+      setHighlight(-1);
       return;
     }
+    setHighlight(-1);
     let cancelled = false;
     void (async () => {
       try {
@@ -68,15 +71,37 @@ export function TopBar() {
     setPage("pos");
     setSearchText("");
     setMatches({ products: [], patients: [] });
+    setHighlight(-1);
   };
 
+  // Build a flat list of all searchable hits for arrow navigation.
+  const allHits = useMemo(() => {
+    const items: { kind: "product" | "patient"; data: Product | PatientHit }[] = [];
+    matches.products.forEach((p) => items.push({ kind: "product", data: p }));
+    matches.patients.forEach((p) => items.push({ kind: "patient", data: p }));
+    return items;
+  }, [matches]);
+
   const onEnter = () => {
+    if (highlight >= 0 && highlight < allHits.length) {
+      const hit = allHits[highlight];
+      if (hit.kind === "product") {
+        goToPosSearch((hit.data as Product).name);
+      } else {
+        setSearchText("");
+        setMatches({ products: [], patients: [] });
+        setHighlight(-1);
+        setPatientModal(hit.data as PatientHit);
+      }
+      return;
+    }
     const q = searchText.trim();
     if (!q) return;
     const exact = matches.patients.find((p) => p.name.toLowerCase() === q.toLowerCase());
     if (exact) {
       setSearchText("");
       setMatches({ products: [], patients: [] });
+      setHighlight(-1);
       setPatientModal(exact);
     } else {
       goToPosSearch(q);
@@ -159,10 +184,17 @@ export function TopBar() {
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") onEnter();
-            if (e.key === "Escape") {
+            if (e.key === "Enter") { e.preventDefault(); onEnter(); }
+            else if (e.key === "Escape") {
               setSearchText("");
               setMatches({ products: [], patients: [] });
+              setHighlight(-1);
+            } else if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setHighlight((h) => (h < allHits.length - 1 ? h + 1 : 0));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setHighlight((h) => (h > 0 ? h - 1 : allHits.length - 1));
             }
           }}
           placeholder="Search products, patients..."
@@ -175,9 +207,7 @@ export function TopBar() {
           <span className="rounded border border-outline-variant bg-surface px-1 text-shortcut-hint font-shortcut-hint text-on-surface-variant">
             K
           </span>
-        </div>
-
-        {searchText.trim() && (
+        </div>            {searchText.trim() && (
           <>
             <div className="fixed inset-0 z-40" onClick={() => setSearchText("")} />
             <div className="absolute left-0 right-0 top-10 z-50 overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
@@ -186,11 +216,13 @@ export function TopBar() {
                   Products
                 </div>
               )}
-              {matches.products.map((p) => (
+              {matches.products.map((p, i) => (
                 <button
                   key={`p${p.id}`}
                   onClick={() => goToPosSearch(p.name)}
-                  className="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-surface-container-low"
+                  className={`flex w-full items-center justify-between px-3 py-1.5 text-left transition-colors ${
+                    highlight === i ? "bg-primary/10 text-primary" : "hover:bg-surface-container-low"
+                  }`}
                 >
                   <span className="min-w-0 truncate text-body-sm text-on-surface">{p.name}</span>
                   <span className="ml-2 shrink-0 font-data-mono text-data-mono text-on-surface-variant">
@@ -203,22 +235,28 @@ export function TopBar() {
                   Patients
                 </div>
               )}
-              {matches.patients.map((pt) => (
-                <button
-                  key={`pt${pt.name}`}
-                  onClick={() => {
-                    setSearchText("");
-                    setMatches({ products: [], patients: [] });
-                    setPatientModal(pt);
-                  }}
-                  className="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-surface-container-low"
-                >
-                  <span className="min-w-0 truncate text-body-sm text-on-surface">{pt.name}</span>
-                  <span className="ml-2 shrink-0 font-data-mono text-data-mono text-on-surface-variant">
-                    {pt.phone ?? "—"}
-                  </span>
-                </button>
-              ))}
+              {matches.patients.map((pt, i) => {
+                const idx = matches.products.length + i;
+                return (
+                  <button
+                    key={`pt${pt.name}`}
+                    onClick={() => {
+                      setSearchText("");
+                      setMatches({ products: [], patients: [] });
+                      setHighlight(-1);
+                      setPatientModal(pt);
+                    }}
+                    className={`flex w-full items-center justify-between px-3 py-1.5 text-left transition-colors ${
+                      highlight === idx ? "bg-primary/10 text-primary" : "hover:bg-surface-container-low"
+                    }`}
+                  >
+                    <span className="min-w-0 truncate text-body-sm text-on-surface">{pt.name}</span>
+                    <span className="ml-2 shrink-0 font-data-mono text-data-mono text-on-surface-variant">
+                      {pt.phone ?? "—"}
+                    </span>
+                  </button>
+                );
+              })}
               {matches.products.length === 0 && matches.patients.length === 0 && (
                 <p className="px-3 py-3 text-body-sm text-on-surface-variant">
                   No matches — Enter searches the counter.

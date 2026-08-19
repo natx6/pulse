@@ -23,6 +23,7 @@ import { fmtMoney } from "../lib/money";
 import { beep } from "../lib/audio";
 import { ReceiptModal } from "../components/ReceiptModal";
 import { ReturnModal } from "../components/ReturnModal";
+import { supplierBalances, expenseSummary, type SupplierBalance } from "../db";
 
 type Range = "today" | "yesterday" | "week7" | "month30" | "month" | "custom";
 
@@ -252,13 +253,15 @@ export function AnalyticsPage() {
   } | null>(null);
   const [voidArmed, setVoidArmed] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const [suppliers, setSuppliers] = useState<SupplierBalance[]>([]);
+  const [expenses, setExpenses] = useState<{ total: number; byCategory: { category: string; total: number }[] } | null>(null);
 
   // ---- Daily cash-up ----
   const [cashDay, setCashDay] = useState(fmt(new Date()));
   const [cashFloat, setCashFloat] = useState("");
   const [cashCounted, setCashCounted] = useState("");
   const [cashUps, setCashUps] = useState<CashUp[]>([]);
-  const [cashData, setCashData] = useState({ sales: 0, refunds: 0 });
+  const [cashData, setCashData] = useState({ sales: 0, refunds: 0, expenses: 0 });
   const [cashErr, setCashErr] = useState("");
   const [cashBusy, setCashBusy] = useState(false);
   const [cashSaved, setCashSaved] = useState(false);
@@ -282,9 +285,19 @@ export function AnalyticsPage() {
            WHERE s.payment_method = 'Cash' AND date(sr.timestamp) = $1${opCond}`,
           p,
         );
+        // Cash expenses for the day (paid from till). May fail if migration hasn't run.
+        let dayExpenses = 0;
+        try {
+          const [expRow] = await db.select<{ v: number }[]>(
+            "SELECT COALESCE(SUM(amount),0) AS v FROM expenses WHERE date(timestamp) = $1",
+            [cashDay],
+          );
+          dayExpenses = Number(expRow?.v ?? 0);
+        } catch { /* expenses table may not exist yet */ }
         setCashData({
           sales: Number(sales?.v ?? 0),
           refunds: Number(refunds?.v ?? 0),
+          expenses: dayExpenses,
         });
         const ups = await listCashUps(cashDay);
         setCashUps(ups);
@@ -299,7 +312,7 @@ export function AnalyticsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cashDay, cashOp]);
 
-  const cashExpected = (Number(cashFloat) || 0) + cashData.sales - cashData.refunds;
+  const cashExpected = (Number(cashFloat) || 0) + cashData.sales - cashData.refunds - cashData.expenses;
   const cashVariance = Math.round(((Number(cashCounted) || 0) - cashExpected) * 100) / 100;
 
   const doCashUp = async () => {
@@ -350,7 +363,7 @@ export function AnalyticsPage() {
         ? "bg-primary/10 text-primary"
         : k === "Returned"
           ? "bg-surface-variant text-on-surface-variant"
-          : "bg-[#fef08a]/40 text-[#854d0e]";
+          : "bg-warn-muted text-warn";
   const round2 = (n: number) => Math.round(n * 100) / 100;
 
   const doSettle = async (c: CustomerCredit) => {
@@ -446,6 +459,12 @@ export function AnalyticsPage() {
     loadCustomerCredit()
       .then((cr) => setCredit(cr))
       .catch((e) => setErr(String(e)));
+    supplierBalances()
+      .then((sb) => setSuppliers(sb))
+      .catch(() => setSuppliers([]));
+    expenseSummary(from, to)
+      .then((es) => setExpenses(es))
+      .catch(() => setExpenses({ total: 0, byCategory: [] }));
   }, [from, to, opFilter, methodFilter]);
 
 
@@ -663,6 +682,8 @@ export function AnalyticsPage() {
     { label: "Transactions", value: report ? String(report.summary.n) : "—" },
     { label: "Items Sold", value: report ? String(report.summary.items) : "—" },
     { label: "Gross Profit", value: report ? fmtMoney(report.summary.profit) : "—" },
+    { label: "Expenses", value: expenses ? fmtMoney(expenses.total) : "—", negative: expenses && expenses.total > 0 },
+    { label: "Net Profit", value: report && expenses ? fmtMoney(report.summary.profit - expenses.total) : "—" },
   ];
 
   const td = "px-3 py-1 text-body-sm text-on-surface";
@@ -780,7 +801,7 @@ export function AnalyticsPage() {
         </p>
       )}
 
-      <div className="mb-4 grid min-h-[88px] grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         {kpis.map((k) => (
           <div key={k.label} className={`rounded border border-outline-variant bg-surface p-3 ${k.negative ? "border-error/30 bg-error/5" : ""}`}>
             <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
@@ -793,11 +814,11 @@ export function AnalyticsPage() {
         ))}
       </div>
 
-      <div className="mb-4 overflow-clip rounded border border-[#f59e0b]/60 bg-surface">
-        <h3 className="flex items-center justify-between border-b border-outline-variant bg-[#fef08a]/30 px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
+      <div className="mb-4 overflow-clip rounded border border-warn/60 bg-surface">
+        <h3 className="flex items-center justify-between border-b border-outline-variant bg-warn-subtle px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
           <span>Customer Credit (book) — what customers owe</span>
           {credit.length > 0 && (
-            <span className="rounded-full bg-[#b45309] px-2 py-0.5 text-[10px] font-bold text-white">
+            <span className="rounded-full bg-[#b45309] dark:bg-[#d97706] px-2 py-0.5 text-[10px] font-bold text-white">
               {credit.length} customer{credit.length === 1 ? "" : "s"} ·{" "}
               {fmtMoney(credit.reduce((s, c) => s + c.owed - c.settled, 0))}
             </span>
@@ -873,6 +894,34 @@ export function AnalyticsPage() {
         )}
         {settleErr && <p className="px-3 py-2 text-body-sm text-error">{settleErr}</p>}
       </div>
+
+      {suppliers.length > 0 && (
+        <div className="mb-4 overflow-clip rounded border border-outline-variant bg-surface">
+          <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
+            Supplier Balances
+          </h3>
+          <div className="divide-y divide-outline-variant/50">
+            {suppliers.map((s) => (
+              <div key={s.supplier_name} className="flex items-center justify-between px-3 py-1.5">
+                <div className="min-w-0">
+                  <p className="truncate text-body-sm font-semibold text-on-surface">{s.supplier_name}</p>
+                  <p className="font-data-mono text-[11px] text-on-surface-variant">
+                    {s.invoice_count} invoice{s.invoice_count === 1 ? "" : "s"} · oldest {s.oldest_date ?? "—"}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="font-data-mono text-data-mono text-on-surface-variant">
+                    purchased {fmtMoney(s.total_purchased)} · paid {fmtMoney(s.total_paid)}
+                  </p>
+                  <p className={`font-data-mono text-data-mono font-bold ${s.balance > 0 ? "text-error" : "text-success"}`}>
+                    {s.balance > 0 ? `owes ${fmtMoney(s.balance)}` : "settled"}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
         <div className="overflow-clip rounded border border-outline-variant bg-surface">
@@ -1088,6 +1137,14 @@ export function AnalyticsPage() {
                 −{fmtMoney(cashData.refunds)}
               </span>
             </div>
+            {cashData.expenses > 0 && (
+              <div className="rounded border border-outline-variant/50 bg-surface-container-low p-2">
+                <span className="block text-label-md font-label-md text-on-surface-variant">Expenses paid</span>
+                <span className="font-data-mono text-data-mono font-bold text-error">
+                  −{fmtMoney(cashData.expenses)}
+                </span>
+              </div>
+            )}
             <div className="rounded border border-primary/20 bg-primary/5 p-2">
               <span className="block text-label-md font-label-md text-primary">Expected in till</span>
               <span className="font-data-mono text-data-mono font-bold text-primary">
