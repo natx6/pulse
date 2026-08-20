@@ -48,6 +48,7 @@ Demo seed products ship with the first migration — delete the rows to start cl
   checkout pre-selected (with an item in the cart); inside the payment
   screen they switch the method
 - F2 — open Inventory Intake from anywhere
+- F8 — hold the current order (POS screen only; no-op with an empty cart)
 - Ctrl+K — focus the global search
 - Esc — close modals
 - Enter — confirm in modals / add barcode in the POS search
