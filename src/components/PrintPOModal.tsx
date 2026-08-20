@@ -26,7 +26,15 @@ export function PrintPOModal({ p, items, onClose }: Props) {
         : "Draft — not yet sent";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
         <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
           <div>
@@ -96,7 +104,7 @@ export function PrintPOModal({ p, items, onClose }: Props) {
                     <td className={td}>{it.product_name}</td>
                     <td className={td}>{it.unit_type}</td>
                     <td className={`${td} text-right`}>{it.quantity}</td>
-                    <td className={`${td} text-right`}>{fmtMoney(it.unit_cost_net)}</td>
+                    <td className={`${td} text-right`}>{fmtMoney(it.unit_cost_raw)}</td>
                     <td className={`${td} text-right`}>
                       {it.discount_percent > 0 ? `${it.discount_percent}%` : "—"}
                     </td>
@@ -130,7 +138,12 @@ export function PrintPOModal({ p, items, onClose }: Props) {
                         : ` (${p.discount_amount}%)`}
                     </span>
                     <span>
-                      {p.discount_type === "Fixed" ? `− ${fmtMoney(p.discount_amount)}` : "—"}
+                      −{" "}
+                      {fmtMoney(
+                        p.discount_type === "Fixed"
+                          ? p.discount_amount
+                          : (subtotal * p.discount_amount) / 100,
+                      )}
                     </span>
                   </div>
                 )}
