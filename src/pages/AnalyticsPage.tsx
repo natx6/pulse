@@ -827,7 +827,7 @@ export function AnalyticsPage() {
         <h3 className="flex items-center justify-between border-b border-outline-variant bg-warn-subtle px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
           <span>Customer Credit (book) — what customers owe</span>
           {credit.length > 0 && (
-            <span className="rounded-full bg-[#b45309] dark:bg-[#d97706] px-2 py-0.5 text-[10px] font-bold text-white">
+            <span className="rounded-full bg-warn-deep px-2 py-0.5 text-[10px] font-bold text-white">
               {credit.length} customer{credit.length === 1 ? "" : "s"} ·{" "}
               {fmtMoney(credit.reduce((s, c) => s + c.owed - c.settled, 0))}
             </span>

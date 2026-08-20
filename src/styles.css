@@ -182,6 +182,7 @@
 @utility bg-warn-soft { @apply bg-[#fef08a]/60 dark:bg-[#fbbf24]/25; }
 @utility text-warn { @apply text-[#854d0e] dark:text-[#fbbf24]; }
 @utility border-warn { @apply border-[#fef08a] dark:border-[#fbbf24]/40; }
+@utility bg-warn-deep { @apply bg-[#b45309] dark:bg-[#d97706]; }
 @utility bg-success-subtle { @apply bg-[#dcfce7]/60 dark:bg-[#22c55e]/15; }
 @utility text-success { @apply text-[#166534] dark:text-[#4ade80]; }
 @utility bg-danger-deep { @apply bg-[#7f1d1d] dark:bg-[#dc2626]/30; }
