@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import { fmtMoney } from "../lib/money";
-import { code39Bars, code39Width } from "../lib/barcode39";
+import { code39Bars, code39Valid, code39Width } from "../lib/barcode39";
 import type { Product } from "../types";
 
 interface Props {
@@ -27,10 +27,19 @@ export function LabelModal({ onClose }: Props) {
   const code = manual.trim() || selected?.barcode?.trim() || "";
   const bars = useMemo(() => code39Bars(code), [code]);
   const width = code39Width(code);
+  const valid = code39Valid(code);
   const NARROW = 3; // px per narrow unit at display size
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <div className="w-full max-w-md rounded-xl border border-outline-variant bg-surface shadow-lg">
         <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
           <div>
@@ -94,7 +103,7 @@ export function LabelModal({ onClose }: Props) {
             />
           </label>
 
-          {code && width > 0 ? (
+          {code && width > 0 && valid ? (
             <div
               id="label-area"
               className="mx-auto w-full rounded border border-outline-variant bg-white p-4"
@@ -151,7 +160,7 @@ export function LabelModal({ onClose }: Props) {
           </button>
           <button
             onClick={() => window.print()}
-            disabled={width === 0}
+            disabled={width === 0 || !valid}
             className="flex flex-1 items-center justify-center gap-2 rounded bg-primary px-4 py-2 text-label-md font-label-md text-on-primary shadow-sm hover:bg-on-primary-fixed-variant disabled:opacity-50"
           >
             <span className="material-symbols-outlined text-[18px]">print</span>

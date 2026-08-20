@@ -42,7 +42,7 @@ export function QuickAddModal() {
       beep(true);
       close();
     } catch (e) {
-      setError(String(e));
+      setError(String(e).replace(/^Error: /, ""));
       beep(false);
     } finally {
       setBusy(false);

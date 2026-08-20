@@ -22,7 +22,18 @@ export function ReceiptModal({ result, lines, subtotal, discountPct, discountAmt
     paymentMethod === "MoMo" || (payments ?? []).some((p) => p.method === "MoMo");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      onKeyDown={(e) => {
+        // stopPropagation matters here specifically: this modal is sometimes
+        // rendered nested inside another (e.g. PatientModal's reprint), and
+        // without it one Escape press would bubble up and close both at once.
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <div className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface shadow-lg">
         <div id="receipt-area" className="p-6">
           <div className="text-center">

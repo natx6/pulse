@@ -44,7 +44,15 @@ export function AddCustomerModal({ onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <div className="w-full max-w-md rounded-xl border border-outline-variant bg-surface shadow-lg">
         <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
           <div className="flex items-center gap-3">

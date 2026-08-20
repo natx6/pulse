@@ -18,6 +18,8 @@ export function IntakeModal() {
   const [batch, setBatch] = useState("");
   const [expiry, setExpiry] = useState("");
   const [supplier, setSupplier] = useState("");
+  const [manufacturer, setManufacturer] = useState("");
+  const [category, setCategory] = useState("");
   const [unit, setUnit] = useState("");
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -33,6 +35,8 @@ export function IntakeModal() {
       setBatch("");
       setExpiry("");
       setSupplier("");
+      setManufacturer("");
+      setCategory("");
       setUnit("");
       setMessage(null);
       setTimeout(() => scanRef.current?.focus(), 50);
@@ -52,6 +56,8 @@ export function IntakeModal() {
       setBatch(p.batch_no ?? "");
       setExpiry(p.expiry_date ?? "");
       setSupplier(p.supplier ?? "");
+      setManufacturer(p.manufacturer ?? "");
+      setCategory(p.category ?? "");
       setUnit(p.unit ?? "");
       setMessage({ ok: true, text: `${p.name} — adding to existing stock.` });
     } else {
@@ -62,8 +68,13 @@ export function IntakeModal() {
   const submit = async () => {
     const nm = name.trim();
     const n = Number(qty);
+    const p = Number(price);
     if (!nm || !(n > 0)) {
       setMessage({ ok: false, text: "Name and quantity are required." });
+      return;
+    }
+    if (!(p > 0)) {
+      setMessage({ ok: false, text: "Retail price is required." });
       return;
     }
     setBusy(true);
@@ -73,12 +84,12 @@ export function IntakeModal() {
         name: nm,
         quantity: n,
         costPrice: cost ? Number(cost) : null,
-        sellingPrice: price ? Number(price) : 0,
+        sellingPrice: p,
         batchNo: batch.trim() || null,
         expiryDate: expiry || null,
         supplier: supplier.trim() || null,
-        manufacturer: null,
-        category: null,
+        manufacturer: manufacturer.trim() || null,
+        category: category.trim() || null,
         unit: unit.trim() || null,
       });
       await refreshProducts();
@@ -94,7 +105,7 @@ export function IntakeModal() {
         setMessage(null);
       }, 900);
     } catch (e) {
-      setMessage({ ok: false, text: String(e) });
+      setMessage({ ok: false, text: String(e).replace(/^Error: /, "") });
       beep(false);
     } finally {
       setBusy(false);
@@ -198,6 +209,28 @@ export function IntakeModal() {
                 value={supplier}
                 onChange={(e) => setSupplier(e.target.value)}
                 placeholder="e.g. McKesson"
+                className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-label-md font-label-md text-on-surface">
+                Manufacturer
+              </span>
+              <input
+                value={manufacturer}
+                onChange={(e) => setManufacturer(e.target.value)}
+                placeholder="e.g. GSK"
+                className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-label-md font-label-md text-on-surface">
+                Category
+              </span>
+              <input
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                placeholder="e.g. Antibiotics"
                 className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               />
             </label>

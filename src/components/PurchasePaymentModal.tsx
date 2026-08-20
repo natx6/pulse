@@ -51,7 +51,15 @@ export function PurchasePaymentModal({ p, onClose, onPaid }: Props) {
     "h-8 w-full rounded border border-outline-variant bg-surface-container-lowest px-2 text-body-sm text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <div className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface shadow-lg">
         <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
           <div>

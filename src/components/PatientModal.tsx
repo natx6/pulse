@@ -55,7 +55,7 @@ export function PatientModal({ name, phone, onClose }: Props) {
         const disc = await getPatientDiscount(name);
         setDiscountInput(disc > 0 ? String(disc) : "");
       } catch (e) {
-        setErr(String(e));
+        setErr(String(e).replace(/^Error: /, ""));
       }
     })();
   }, [name]);
@@ -113,13 +113,21 @@ export function PatientModal({ name, phone, onClose }: Props) {
           : undefined,
       });
     } catch (e) {
-      setErr(String(e));
+      setErr(String(e).replace(/^Error: /, ""));
       beep(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <div className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
         <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
           <div>

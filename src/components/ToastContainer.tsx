@@ -9,7 +9,7 @@ const icons: Record<string, string> = {
 const colors: Record<string, string> = {
   success: "bg-primary text-on-primary shadow-xl",
   error: "bg-error text-on-error shadow-xl",
-  info: "bg-[#2b322d] text-[#ebf3eb] shadow-xl",
+  info: "bg-inverse-surface text-inverse-on-surface shadow-xl",
 };
 
 export function ToastContainer() {
