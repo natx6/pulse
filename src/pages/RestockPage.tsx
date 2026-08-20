@@ -453,6 +453,7 @@ export function RestockPage() {
           onClose={() => setNewOpen(false)}
           onSaved={async (r) => {
             setNewOpen(false);
+            await refreshProducts();
             await load();
             setMsg(
               r.received

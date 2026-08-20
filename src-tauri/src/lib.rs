@@ -82,9 +82,9 @@ pub struct ImportSummary {
 
 /// MUST match tauri-plugin-sql's resolution of "sqlite:pulse.db": the plugin
 /// resolves relative sqlite paths against the app CONFIG dir on Linux
-/// (~/.config/<identifier>/pulse.db), NOT the app data dir. Verified via lsof
-/// on a running instance. Getting this wrong silently creates a second,
-/// empty database and every sale fails with "no such table".
+/// app_config_dir is the canonical home for pulse.db — all Rust commands
+/// and the plugin-sql frontend resolve against this same directory.
+/// (plugin-sql is pointed here via an absolute sqlite:// URL from db.ts.)
 fn db_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     Ok(dir.join("pulse.db"))
@@ -365,6 +365,8 @@ pub struct PurchaseLine {
     #[serde(default)]
     mfg_date: Option<String>,
     expiry_date: String,
+    #[serde(default)]
+    batch_no: Option<String>,
 }
 
 /// A receive request against an existing (Ordered/Draft) purchase line.
@@ -528,6 +530,7 @@ fn commit_purchase_stock(
     selling: f64,
     expiry: &str,
     supplier: Option<&str>,
+    batch_no: Option<&str>,
 ) -> Result<(), String> {
     let add = qty.round() as i64;
     let n = tx
@@ -538,9 +541,10 @@ fn commit_purchase_stock(
                selling_price = ?3,
                unit = ?4,
                expiry_date = COALESCE(NULLIF(?5, ''), expiry_date),
-               supplier = COALESCE(?6, supplier)
+               supplier = COALESCE(?6, supplier),
+               batch_no = COALESCE(NULLIF(?8, ''), batch_no)
              WHERE id = ?7",
-            rusqlite::params![add, net, selling, unit_type, expiry, supplier, product_id],
+            rusqlite::params![add, net, selling, unit_type, expiry, supplier, product_id, batch_no],
         )
         .map_err(|e| format!("Stock update failed for {}: {}", name, e))?;
     if n == 0 {
@@ -685,8 +689,8 @@ fn save_purchase(
             "INSERT INTO purchase_items (id, purchase_id, product_id, product_name, unit_type,
                                          quantity, qty_received, unit_cost_raw, discount_percent,
                                          unit_cost_net, line_total, profit_margin_percent,
-                                         unit_selling_price, mfg_date, expiry_date)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                                         unit_selling_price, mfg_date, expiry_date, batch_no)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             rusqlite::params![
                 item_id,
                 id,
@@ -702,7 +706,8 @@ fn save_purchase(
                 margin,
                 l.unit_selling_price,
                 l.mfg_date,
-                l.expiry_date
+                l.expiry_date,
+                l.batch_no,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -717,6 +722,7 @@ fn save_purchase(
                 l.unit_selling_price,
                 &l.expiry_date,
                 sup_name.as_deref(),
+                l.batch_no.as_deref(),
             )?;
         }
     }
@@ -775,7 +781,7 @@ fn receive_purchase(
                 return Err("Invoice cost can't be negative".into());
             }
         }
-        let (product_id, product_name, qty, qty_received, unit_type, net, selling, expiry): (
+        let (product_id, product_name, qty, qty_received, unit_type, net, selling, expiry, batch_no): (
             i64,
             String,
             f64,
@@ -784,10 +790,11 @@ fn receive_purchase(
             f64,
             f64,
             String,
+            Option<String>,
         ) = tx
             .query_row(
                 "SELECT product_id, product_name, quantity, qty_received, unit_type,
-                        unit_cost_net, unit_selling_price, expiry_date
+                        unit_cost_net, unit_selling_price, expiry_date, batch_no
                  FROM purchase_items WHERE id = ?1 AND purchase_id = ?2",
                 rusqlite::params![rl.line_id, purchase_id],
                 |r| {
@@ -800,6 +807,7 @@ fn receive_purchase(
                         r.get(5)?,
                         r.get(6)?,
                         r.get(7)?,
+                        r.get(8)?,
                     ))
                 },
             )
@@ -821,7 +829,7 @@ fn receive_purchase(
                 ));
             }
         }
-        commit_purchase_stock(&tx, product_id, &product_name, rl.qty, &unit_type, net, selling, &expiry, None)?;
+        commit_purchase_stock(&tx, product_id, &product_name, rl.qty, &unit_type, net, selling, &expiry, None, batch_no.as_deref())?;
         tx.execute(
             "UPDATE purchase_items SET qty_received = qty_received + ?1 WHERE id = ?2",
             rusqlite::params![rl.qty, rl.line_id],
@@ -969,8 +977,8 @@ fn update_purchase(
             "INSERT INTO purchase_items (id, purchase_id, product_id, product_name, unit_type,
                                          quantity, qty_received, unit_cost_raw, discount_percent,
                                          unit_cost_net, line_total, profit_margin_percent,
-                                         unit_selling_price, mfg_date, expiry_date)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                         unit_selling_price, mfg_date, expiry_date, batch_no)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             rusqlite::params![
                 item_id,
                 purchase_id,
@@ -985,7 +993,8 @@ fn update_purchase(
                 margin,
                 l.unit_selling_price,
                 l.mfg_date,
-                l.expiry_date
+                l.expiry_date,
+                l.batch_no,
             ],
         )
         .map_err(|e| e.to_string())?;

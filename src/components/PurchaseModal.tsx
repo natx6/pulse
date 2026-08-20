@@ -23,11 +23,21 @@ interface Line {
   unit_cost_raw: string;
   discount_percent: string;
   unit_selling_price: string;
-  mfg_date: string;
+  batch_no: string;
   expiry_date: string;
 }
 
-const UNIT_TYPES = ["Pack", "Box", "Strip", "Bottle", "Sachet"] as const;
+const UNIT_TYPES = [
+  "Pack", "Box", "Strip", "Bottle", "Sachet",
+  "Tube", "Vial", "Ampoule", "Blister", "Container",
+  "Carton", "Case", "Pair", "Each", "Roll",
+  "Pcs", "Set", "Kit", "Bag", "Jar",
+  "Can", "Pouch", "Dragee", "Tablet", "Capsule",
+  "Syrup", "Drops", "Inhaler", "Cream", "Ointment",
+  "Solution", "Suspension", "Powder", "Granules",
+  "Suppository", "Patch", "Ring", "Sponge",
+  "Pen", "Spray", "Gel", "Lotion",
+] as const;
 const PAY_TERMS = ["Cash", "Credit", "30 Days", "60 Days"] as const;
 
 /** Map a product's free-text unit (e.g. "strip (6 tabs)") to a dropdown preset. */
@@ -47,7 +57,7 @@ function newLine(p: { id: number; name: string; unit: string | null; cost_price:
     unit_cost_raw: p.cost_price > 0 ? String(p.cost_price) : "",
     discount_percent: "0",
     unit_selling_price: p.selling_price > 0 ? String(p.selling_price) : "",
-    mfg_date: "",
+    batch_no: "",
     expiry_date: p.expiry_date ?? "",
   };
 }
@@ -96,7 +106,7 @@ export function PurchaseModal({
       unit_cost_raw: it.unit_cost_raw > 0 ? String(it.unit_cost_raw) : "",
       discount_percent: it.discount_percent > 0 ? String(it.discount_percent) : "0",
       unit_selling_price: it.unit_selling_price > 0 ? String(it.unit_selling_price) : "",
-      mfg_date: it.mfg_date ?? "",
+      batch_no: it.batch_no ?? "",
       expiry_date: it.expiry_date,
     })),
   );
@@ -271,7 +281,7 @@ export function PurchaseModal({
           unit_cost_raw: l.unit_cost_raw ? Number(l.unit_cost_raw) : 0,
           discount_percent: l.discount_percent ? Number(l.discount_percent) : 0,
           unit_selling_price: l.unit_selling_price ? Number(l.unit_selling_price) : 0,
-          mfg_date: l.mfg_date || null,
+          batch_no: l.batch_no || null,
           expiry_date: l.expiry_date,
         })),
       };
@@ -524,7 +534,7 @@ export function PurchaseModal({
                     <th className="w-16 px-1 py-1.5 text-right">Margin</th>
                     <th className="w-24 px-1 py-1.5 text-right">Line total</th>
                     <th className="w-32 px-1 py-1.5">Expiry</th>
-                    <th className="w-32 px-1 py-1.5">Mfg date</th>
+                    <th className="w-32 px-1 py-1.5">Batch no</th>
                     <th className="w-8 px-1 py-1.5" />
                   </tr>
                 </thead>
@@ -537,17 +547,12 @@ export function PurchaseModal({
                         </p>
                       </td>
                       <td className="px-1 py-1">
-                        <select
+                        <input
+                          list="unit-types"
                           value={l.unit_type}
                           onChange={(e) => updLine(l.key, { unit_type: e.target.value })}
                           className="h-7 w-full rounded border border-outline-variant bg-surface-container-lowest px-1 text-body-sm text-on-surface focus:border-primary focus:outline-none"
-                        >
-                          {UNIT_TYPES.map((u) => (
-                            <option key={u} value={u}>
-                              {u}
-                            </option>
-                          ))}
-                        </select>
+                        />
                       </td>
                       <td className="px-1 py-1">
                         <input
@@ -633,9 +638,10 @@ export function PurchaseModal({
                       </td>
                       <td className="px-1 py-1">
                         <input
-                          type="date"
-                          value={l.mfg_date}
-                          onChange={(e) => updLine(l.key, { mfg_date: e.target.value })}
+                          type="text"
+                          value={l.batch_no}
+                          onChange={(e) => updLine(l.key, { batch_no: e.target.value })}
+                          placeholder="Batch #"
                           className="h-7 w-full rounded border border-outline-variant bg-surface-container-lowest px-1 text-body-sm text-on-surface focus:border-primary focus:outline-none"
                         />
                       </td>
@@ -654,6 +660,12 @@ export function PurchaseModal({
               </table>
             </div>
           )}
+
+          <datalist id="unit-types">
+            {UNIT_TYPES.map((u) => (
+              <option key={u} value={u} />
+            ))}
+          </datalist>
 
           {missingExpiry > 0 && (
             <p className="mt-2 text-body-sm text-[#b45309] dark:text-[#d97706]">

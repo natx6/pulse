@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import { stockStatus } from "../lib/stock";
 import { fmtMoney } from "../lib/money";
-import { adjustStock, loadProductsAll, setProductActive } from "../db";
+import { adjustStock, loadProductsAll, saveReorderLevel, setProductActive } from "../db";
 import { beep } from "../lib/audio";
 import { LabelModal } from "../components/LabelModal";
 import { ImportStockModal } from "../components/ImportStockModal";
@@ -46,8 +46,10 @@ export function InventoryPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [archived, setArchived] = useState<Product[]>([]);
   const [archiveArmed, setArchiveArmed] = useState<number | null>(null);
-  const [sortKey, setSortKey] = useState<"name" | "batch" | "supplier" | "barcode" | "expiry" | "qty">("name");
+  const [sortKey, setSortKey] = useState<"name" | "batch" | "supplier" | "barcode" | "expiry" | "qty" | "reorder">("name");
   const [sortAsc, setSortAsc] = useState(true);
+  const [editingReorder, setEditingReorder] = useState<number | null>(null);
+  const [reorderVal, setReorderVal] = useState("");
 
   // Load archived products when the toggle is on (active ones come from the store).
   useEffect(() => {
@@ -84,6 +86,7 @@ export function InventoryPage() {
       else if (key === "barcode") cmp = (a.barcode ?? "").localeCompare(b.barcode ?? "");
       else if (key === "expiry") cmp = (a.expiry_date ?? "zzz").localeCompare(b.expiry_date ?? "zzz");
       else if (key === "qty") cmp = a.stock_qty - b.stock_qty;
+      else if (key === "reorder") cmp = a.reorder_level - b.reorder_level;
       return cmp * dir;
     });
   }, [list, q, sortKey, sortAsc]);
@@ -127,27 +130,38 @@ export function InventoryPage() {
     }
   };
 
+  const [adjustReorder, setAdjustReorder] = useState("");
+
   const openAdjust = (p: Product) => {
     setAdjust(p);
     setDelta("");
     setReason("Damaged");
     setNote("");
     setAdjustErr("");
+    setAdjustReorder(String(p.reorder_level));
   };
 
   const doAdjust = async () => {
     if (!adjust) return;
     const d = Math.floor(Number(delta));
-    if (!delta.trim() || Number.isNaN(d) || d === 0) {
-      setAdjustErr("Enter a non-zero quantity (use − to reduce).");
+    const hasDelta = delta.trim() && !Number.isNaN(d) && d !== 0;
+    const newLevel = Math.max(0, Math.floor(Number(adjustReorder)) || 0);
+    const hasReorderChange = newLevel !== adjust.reorder_level;
+    if (!hasDelta && !hasReorderChange) {
+      setAdjustErr("Nothing to save — enter a quantity change or adjust the reorder level.");
       beep(false);
       return;
     }
     setBusy(true);
     setAdjustErr("");
     try {
-      const fullReason = note.trim() ? `${reason} — ${note.trim()}` : reason;
-      await adjustStock(adjust.id, d, fullReason, operator);
+      if (hasDelta) {
+        const fullReason = note.trim() ? `${reason} — ${note.trim()}` : reason;
+        await adjustStock(adjust.id, d, fullReason, operator);
+      }
+      if (hasReorderChange) {
+        await saveReorderLevel(adjust.id, newLevel);
+      }
       await refreshProducts();
       beep(true);
       setAdjust(null);
@@ -238,7 +252,8 @@ export function InventoryPage() {
             ["supplier", "w-36", "Supplier"],
             ["barcode", "w-40", "Barcode ID"],
             ["expiry", "w-28", "Expiry"],
-            ["qty", "w-20 text-right pr-2", "Qty"],
+            ["qty", "w-16 text-right pr-2", "Qty"],
+            ["reorder", "w-16 text-right pr-2", "Min"],
           ] as const).map(([key, cls, label]) => (
             <button
               key={key}
@@ -301,8 +316,43 @@ export function InventoryPage() {
                 >
                   {p.expiry_date ?? "—"}
                 </div>
-                <div className="w-20 pr-4 text-right font-data-mono text-data-mono text-on-surface">
+                <div className="w-16 pr-4 text-right font-data-mono text-data-mono text-on-surface">
                   {p.stock_qty}
+                </div>
+                <div className="w-16 pr-4 text-right font-data-mono text-data-mono text-on-surface-variant">
+                  {editingReorder === p.id ? (
+                    <input
+                      autoFocus
+                      type="number"
+                      min="0"
+                      value={reorderVal}
+                      onChange={(e) => setReorderVal(e.target.value)}
+                      onBlur={async () => {
+                        const v = Math.max(0, Math.floor(Number(reorderVal)) || 0);
+                        if (v !== p.reorder_level) {
+                          await saveReorderLevel(p.id, v);
+                          await refreshProducts();
+                        }
+                        setEditingReorder(null);
+                      }}
+                      onKeyDown={async (e) => {
+                        if (e.key === "Enter") {
+                          (e.target as HTMLInputElement).blur();
+                        } else if (e.key === "Escape") {
+                          setEditingReorder(null);
+                        }
+                      }}
+                      className="h-6 w-14 rounded border border-primary bg-surface-container-lowest px-1 text-right font-data-mono text-data-mono text-on-surface focus:outline-none"
+                    />
+                  ) : (
+                    <span
+                      onClick={() => { setEditingReorder(p.id); setReorderVal(String(p.reorder_level)); }}
+                      className="cursor-pointer hover:text-on-surface"
+                      title="Click to edit reorder level"
+                    >
+                      {p.reorder_level}
+                    </span>
+                  )}
                 </div>
                 <div className="w-28">
                   <StatusPill p={p} />
@@ -385,7 +435,7 @@ export function InventoryPage() {
               placeholder="e.g. 5 or −2"
               className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             />
-            {delta.trim() && !Number.isNaN(Number(delta)) && (
+            {delta.trim() && !Number.isNaN(Number(delta)) && Number(delta) !== 0 && (
               <p className="mt-1 text-body-sm font-body-sm text-on-surface-variant">
                 Result:{" "}
                 <span className="font-bold text-on-surface">
@@ -413,6 +463,16 @@ export function InventoryPage() {
               onChange={(e) => setNote(e.target.value)}
               placeholder="Note (optional)"
               className="mt-2 h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            <label className="mb-1 mt-3 block text-label-md font-label-md text-on-surface">
+              Reorder level
+            </label>
+            <input
+              type="number"
+              min="0"
+              value={adjustReorder}
+              onChange={(e) => setAdjustReorder(e.target.value)}
+              className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             />
             {adjustErr && <p className="mt-2 text-body-sm font-body-sm text-error">{adjustErr}</p>}
             <div className="mt-4 flex justify-end gap-2">

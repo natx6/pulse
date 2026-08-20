@@ -1,22 +1,26 @@
 import Database from "@tauri-apps/plugin-sql";
 import { invoke } from "@tauri-apps/api/core";
+import { appConfigDir } from "@tauri-apps/api/path";
 import type { PaymentLine, Product, SaleLine, SaleResult } from "./types";
 
 let db: Database | null = null;
 
 /**
- * Relative on purpose: must be the EXACT string the Rust side registered
- * migrations under ("sqlite:pulse.db"). tauri-plugin-sql resolves relative
- * sqlite paths against the app data dir on both sides, so the file is the
- * same one the atomic sale command writes to.
+ * Absolute path pointing at app_config_dir/pulse.db — the same file the
+ * Rust side (db_path) reads/writes. tauri-plugin-sql resolves relative
+ * sqlite:// URLs against app_data_dir, which differs from app_config_dir
+ * on Linux (~/.local/share vs ~/.config), so we must use an absolute URL
+ * to avoid two separate databases.
  */
-export function dbUrl(): string {
-  return "sqlite:pulse.db";
+export async function dbUrl(): Promise<string> {
+  const dir = await appConfigDir();
+  const sep = dir.endsWith("/") || dir.endsWith("\\") ? "" : "/";
+  return `sqlite:${dir}${sep}pulse.db`;
 }
 
 export async function initDb(): Promise<Database> {
   if (db) return db;
-  db = await Database.load(dbUrl());
+  db = await Database.load(await dbUrl());
   try {
     await db.select("PRAGMA journal_mode=WAL;");
   } catch {
@@ -195,6 +199,11 @@ export async function loadProductsAll(): Promise<Product[]> {
 export async function setProductActive(id: number, active: number): Promise<void> {
   const d = await initDb();
   await d.execute("UPDATE products SET active = $1 WHERE id = $2", [active, id]);
+}
+
+export async function saveReorderLevel(id: number, level: number): Promise<void> {
+  const d = await initDb();
+  await d.execute("UPDATE products SET reorder_level = $1 WHERE id = $2", [level, id]);
 }
 
 export interface IntakeInput {
@@ -625,8 +634,8 @@ export interface PurchaseLineInput {
   unit_cost_raw: number;
   discount_percent: number;
   unit_selling_price: number;
-  mfg_date: string | null;
   expiry_date: string;
+  batch_no: string | null;
 }
 
 export interface SavePurchaseInput {

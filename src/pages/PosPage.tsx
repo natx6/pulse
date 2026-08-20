@@ -224,8 +224,8 @@ export function PosPage() {
             unit_cost_raw: reorder.cost_price ?? 0,
             discount_percent: 0,
             unit_selling_price: reorder.selling_price ?? 0,
-            mfg_date: null,
             expiry_date: reorder.expiry_date ?? "",
+            batch_no: null,
           },
         ],
       });
@@ -604,7 +604,7 @@ export function PosPage() {
               <button
                 onClick={() => removeLine(l.productId)}
                 title="Remove this line"
-                className="absolute right-2 top-2 text-outline opacity-0 transition-opacity hover:text-error group-hover:opacity-100"
+                className="absolute right-2 top-2 text-on-surface-variant/50 transition-colors hover:text-error"
               >
                 <span className="material-symbols-outlined text-[16px]">close</span>
               </button>
