@@ -59,6 +59,7 @@ export function RestockPage() {
   const [cancelArm, setCancelArm] = useState(false);
   const [msg, setMsg] = useState("");
   const [warn, setWarn] = useState("");
+  const [detailErr, setDetailErr] = useState("");
 
   const load = async () => {
     const rows = await loadPurchases();
@@ -76,6 +77,7 @@ export function RestockPage() {
     setPayOpen(false);
     setCancelArm(false);
     setWarn("");
+    setDetailErr("");
     // Default each line to receiving everything still outstanding, with the
     // ordered unit cost pre-filled as the invoice cost to compare against.
     setRecv(Object.fromEntries(items.map((it) => [it.id, String(it.quantity - it.qty_received)])));
@@ -85,12 +87,17 @@ export function RestockPage() {
   const doReceive = async () => {
     if (!detail) return;
     setWarn("");
+    setDetailErr("");
     const lines = Object.entries(recv)
       .map(([id, v]) => {
+        const item = detail.items.find((it) => it.id === id);
+        const remaining = item ? item.quantity - item.qty_received : 0;
         const ic = Number(inv[id]);
         return {
           line_id: id,
-          qty: Number(v) || 0,
+          // Never trust the raw input past what's actually still outstanding —
+          // the max={remaining} on the field is a hint, not an enforcement.
+          qty: Math.min(Math.max(0, Number(v) || 0), remaining),
           // Skip the invoice-cost check when the field was cleared.
           invoice_cost: Number.isFinite(ic) && ic > 0 ? ic : null,
         };
@@ -117,7 +124,9 @@ export function RestockPage() {
         setWarn("");
       }, 8000);
     } catch (e) {
-      setMsg(String(e).replace(/^Error: /, ""));
+      // Shown inside the still-open modal, not the page-level `msg` banner —
+      // that banner sits behind this modal's backdrop and would be invisible.
+      setDetailErr(String(e).replace(/^Error: /, ""));
       beep(false);
     }
   };
@@ -126,6 +135,7 @@ export function RestockPage() {
    * drop out of the list and the bell. */
   const doCancel = async () => {
     if (!detail) return;
+    setDetailErr("");
     try {
       await cancelPurchase(detail.p.id, null);
       await load();
@@ -134,7 +144,7 @@ export function RestockPage() {
       beep(true);
       setTimeout(() => setMsg(""), 5000);
     } catch (e) {
-      setMsg(String(e).replace(/^Error: /, ""));
+      setDetailErr(String(e).replace(/^Error: /, ""));
       beep(false);
     }
   };
@@ -252,7 +262,7 @@ export function RestockPage() {
               </div>
               <div className="flex items-center gap-2">
                 <StatusPill p={detail.p} />
-                {detail.p.status !== "Received" && (
+                {detail.p.status !== "Received" && detail.p.received_qty === 0 && (
                   <>
                     <button
                       onClick={() => setEditing({ p: detail.p, items: detail.items })}
@@ -354,6 +364,11 @@ export function RestockPage() {
                 );
               })}
             </div>
+            {detailErr && (
+              <p className="mx-4 mb-2 rounded border border-error/30 bg-error/5 px-3 py-2 text-body-sm font-body-sm text-error">
+                {detailErr}
+              </p>
+            )}
             <div className="flex items-center justify-between border-t border-outline-variant bg-surface-container px-6 py-4">
               <div>
                 <p className="font-data-mono text-data-mono text-on-surface">
