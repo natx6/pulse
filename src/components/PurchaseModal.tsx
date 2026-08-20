@@ -259,6 +259,10 @@ export function PurchaseModal({
       setErr("Every line needs a quantity above zero.");
       return;
     }
+    if (discountType === "Percentage" && Number(discountAmount) > 100) {
+      setErr("Percentage discount can't exceed 100%.");
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
@@ -615,7 +619,7 @@ export function PurchaseModal({
                               : l.margin < 0
                                 ? "text-error"
                                 : l.margin < 10
-                                  ? "text-[#b45309] dark:text-[#d97706]"
+                                  ? "text-warn"
                                   : "text-primary"
                           }`}
                           title={l.margin === null ? "Set a selling price to see the margin" : "Profit margin on selling price"}
@@ -668,7 +672,7 @@ export function PurchaseModal({
           </datalist>
 
           {missingExpiry > 0 && (
-            <p className="mt-2 text-body-sm text-[#b45309] dark:text-[#d97706]">
+            <p className="mt-2 text-body-sm text-warn">
               {missingExpiry} line{missingExpiry === 1 ? "" : "s"} ha{missingExpiry === 1 ? "s" : "ve"} no
               expiry date — you can still save.
             </p>
@@ -700,6 +704,7 @@ export function PurchaseModal({
               <input
                 type="number"
                 min={0}
+                max={discountType === "Percentage" ? 100 : undefined}
                 step="any"
                 value={discountAmount}
                 onChange={(e) => setDiscountAmount(e.target.value)}
