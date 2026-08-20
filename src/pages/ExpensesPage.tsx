@@ -26,16 +26,20 @@ export function ExpensesPage() {
   const [cat, setCat] = useState("Other");
   const [desc, setDesc] = useState("");
   const [amount, setAmount] = useState("");
+  const [payMethod, setPayMethod] = useState("Cash");
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState("");
+  const [err, setErr] = useState("");
 
   const load = async () => {
     try {
       const [list, sum] = await Promise.all([listExpenses(from, to), expenseSummary(from, to)]);
       setExpenses(list);
       setSummary(sum);
-    } catch {
-      // Table may not exist yet if migration hasn't run.
+      setErr("");
+    } catch (e) {
+      // Table may not exist yet if migration hasn't run — still worth showing.
+      setErr(String(e).replace(/^Error: /, ""));
     }
   };
 
@@ -47,8 +51,9 @@ export function ExpensesPage() {
     const a = Number(amount);
     if (!a || a <= 0) return;
     setBusy(true);
+    setErr("");
     try {
-      await addExpense({ category: cat, description: desc, amount: a, operator: operator || "" });
+      await addExpense({ category: cat, description: desc, amount: a, operator: operator || "", paymentMethod: payMethod });
       beep(true);
       setFlash(`GH₵ ${a.toFixed(2)} recorded`);
       setTimeout(() => setFlash(""), 3000);
@@ -56,6 +61,7 @@ export function ExpensesPage() {
       setAmount("");
       await load();
     } catch (e) {
+      setErr(String(e).replace(/^Error: /, ""));
       beep(false);
     } finally {
       setBusy(false);
@@ -76,6 +82,7 @@ export function ExpensesPage() {
       beep(true);
       await load();
     } catch (e) {
+      setErr(String(e).replace(/^Error: /, ""));
       beep(false);
     }
   };
@@ -142,6 +149,19 @@ export function ExpensesPage() {
             className={`${field} w-28 text-right font-data-mono text-data-mono`}
           />
         </label>
+        <label className="block">
+          <span className="mb-1 block text-label-md font-label-md text-on-surface">Paid via</span>
+          <select
+            value={payMethod}
+            onChange={(e) => setPayMethod(e.target.value)}
+            title="Only Cash expenses count against the till in Daily Cash-up"
+            className={`${field} w-28`}
+          >
+            {["Cash", "Card", "MoMo"].map((m) => (
+              <option key={m}>{m}</option>
+            ))}
+          </select>
+        </label>
         <button
           onClick={() => void doAdd()}
           disabled={busy || !Number(amount) || Number(amount) <= 0}
@@ -152,6 +172,12 @@ export function ExpensesPage() {
         {flash && <span className="text-body-sm font-body-sm text-primary font-semibold">{flash}</span>}
       </div>
 
+      {err && (
+        <p className="mb-3 rounded border border-error/30 bg-error/5 px-3 py-2 text-body-sm font-body-sm text-error">
+          {err}
+        </p>
+      )}
+
       <div className="flex flex-1 gap-4 overflow-hidden">
         {/* Expense list */}
         <div className="flex flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface">
@@ -160,6 +186,7 @@ export function ExpensesPage() {
             <div className="w-28 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">Category</div>
             <div className="flex-1 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">Description</div>
             <div className="w-24 text-right font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">Amount</div>
+            <div className="w-20 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">Via</div>
             <div className="w-24 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">By</div>
             <div className="w-16" />
           </div>
@@ -175,6 +202,7 @@ export function ExpensesPage() {
                 </div>
                 <div className="flex-1 truncate text-body-sm text-on-surface">{e.description || "—"}</div>
                 <div className="w-24 text-right font-data-mono text-data-mono font-bold text-on-surface">{fmtMoney(e.amount)}</div>
+                <div className="w-20 text-body-sm text-on-surface-variant">{e.payment_method || "Cash"}</div>
                 <div className="w-24 text-body-sm text-on-surface-variant">{e.operator || "—"}</div>
                 <div className="w-16 text-right">
                   <button
