@@ -24,6 +24,7 @@ export function SettingsPage() {
   const [momo, setMomo] = useState(momoNumber);
   const isDark = useStore((s) => s.isDark);
   const [saved, setSaved] = useState(false);
+  const [settingsErr, setSettingsErr] = useState("");
 
   const [rows, setRows] = useState<Operator[]>([]);
   const [newName, setNewName] = useState("");
@@ -81,21 +82,27 @@ export function SettingsPage() {
   };
 
   const save = async () => {
-    await saveSetting("pharmacy_name", name.trim() || "Pulse Pharmacy");
-    await saveSetting("tax_rate", tax.trim() || "0");
-    await saveSetting("receipt_footer", footer.trim());
-    await saveSetting("support_email", support.trim());
-    await saveSetting("momo_number", momo.trim());
-    applySettings({
-      pharmacyName: name.trim() || "Pulse Pharmacy",
-      taxRate: Number(tax) || 0,
-      receiptFooter: footer.trim(),
-      supportEmail: support.trim(),
-      momoNumber: momo.trim(),
-    });
-    beep(true);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
+    setSettingsErr("");
+    try {
+      await saveSetting("pharmacy_name", name.trim() || "Pulse Pharmacy");
+      await saveSetting("tax_rate", tax.trim() || "0");
+      await saveSetting("receipt_footer", footer.trim());
+      await saveSetting("support_email", support.trim());
+      await saveSetting("momo_number", momo.trim());
+      applySettings({
+        pharmacyName: name.trim() || "Pulse Pharmacy",
+        taxRate: Number(tax) || 0,
+        receiptFooter: footer.trim(),
+        supportEmail: support.trim(),
+        momoNumber: momo.trim(),
+      });
+      beep(true);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      setSettingsErr(String(e).replace(/^Error: /, ""));
+      beep(false);
+    }
   };
 
   const addOperator = async () => {
@@ -112,28 +119,51 @@ export function SettingsPage() {
       setNewEnd("");
       await loadOperators();
       beep(true);
-    } catch {
-      setAddErr("That name already exists.");
+    } catch (e) {
+      // UNIQUE constraint on operators.name is the common case — give it a
+      // plain-language message; anything else, show what actually happened.
+      const msg = String(e).replace(/^Error: /, "");
+      setAddErr(msg.includes("UNIQUE constraint") ? "That name already exists." : msg);
+      beep(false);
     }
   };
 
   const removeOperator = async (row: Operator) => {
-    await deleteOperator(row.id);
-    if (operator === row.name) setOperator("");
-    await loadOperators();
-    beep(true);
+    setSettingsErr("");
+    try {
+      await deleteOperator(row.id);
+      if (operator === row.name) setOperator("");
+      await loadOperators();
+      beep(true);
+    } catch (e) {
+      setSettingsErr(String(e).replace(/^Error: /, ""));
+      beep(false);
+    }
   };
 
   const toggleAuto = async (v: boolean) => {
-    await saveSetting("auto_operator", v ? "1" : "0");
-    applySettings({ autoOperator: v });
-    beep(true);
+    setSettingsErr("");
+    try {
+      await saveSetting("auto_operator", v ? "1" : "0");
+      applySettings({ autoOperator: v });
+      beep(true);
+    } catch (e) {
+      setSettingsErr(String(e).replace(/^Error: /, ""));
+      beep(false);
+    }
   };
 
   const toggleDark = async () => {
+    setSettingsErr("");
     const next = !isDark;
-    await saveSetting("is_dark", next ? "1" : "0");
-    applySettings({ isDark: next });
+    try {
+      await saveSetting("is_dark", next ? "1" : "0");
+      applySettings({ isDark: next });
+      beep(true);
+    } catch (e) {
+      setSettingsErr(String(e).replace(/^Error: /, ""));
+      beep(false);
+    }
   };
 
   const field =
@@ -147,6 +177,12 @@ export function SettingsPage() {
           Receipt details and who works here. Saved locally.
         </p>
       </div>
+
+      {settingsErr && (
+        <p className="mb-4 max-w-xl rounded border border-error/30 bg-error/5 px-3 py-2 text-body-sm font-body-sm text-error">
+          {settingsErr}
+        </p>
+      )}
 
       <div className="max-w-xl">
         <label className="mb-4 block">
@@ -384,7 +420,8 @@ export function SettingsPage() {
           </div>
           {backups.length > 10 && (
             <p className="pt-2 text-[11px] text-on-surface-variant">
-              +{backups.length - 10} older backups (kept, newest 20 shown)
+              +{backups.length - 10} older backup{backups.length - 10 === 1 ? "" : "s"} not shown here
+              (up to 20 are kept on disk)
             </p>
           )}
         </div>
