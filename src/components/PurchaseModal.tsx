@@ -312,7 +312,15 @@ export function PurchaseModal({
     "h-7 w-full rounded border border-outline-variant bg-surface-container-lowest px-1 text-right font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      onKeyDown={(e) => {
+        // The search box below handles its own Escape (clear search) and
+        // stops propagation while there's text to clear; once it's empty,
+        // Escape isn't intercepted there and reaches this handler instead.
+        if (e.key === "Escape") onClose();
+      }}
+    >
       <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
         <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
           <div>
@@ -476,7 +484,13 @@ export function PurchaseModal({
                     e.preventDefault();
                     onSearchEnter();
                   }
-                  if (e.key === "Escape") setSearch("");
+                  if (e.key === "Escape" && search) {
+                    // There's text to clear — handle it here and stop, so
+                    // this Escape press clears the search instead of also
+                    // closing the whole modal via the wrapper's handler.
+                    e.stopPropagation();
+                    setSearch("");
+                  }
                 }}
                 placeholder="Scan barcode, type SKU or name…"
                 className={inputCls}
