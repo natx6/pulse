@@ -7,6 +7,9 @@ pub struct SaleLine {
     product_id: i64,
     name: String,
     quantity: i64,
+    /// Accepted for payload compatibility but never trusted — complete_sale
+    /// re-reads the real price from the catalog instead (see below).
+    #[allow(dead_code)]
     unit_price: f64,
     #[serde(default)]
     unit: Option<String>,
@@ -103,6 +106,41 @@ fn complete_sale(
     patient_phone: Option<String>,
     discount_pct: Option<f64>,
 ) -> Result<SaleResult, String> {
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let result = complete_sale_impl(
+        &mut conn,
+        payments,
+        lines,
+        operator,
+        patient_name,
+        patient_phone,
+        discount_pct,
+    )?;
+    // Auto-backup every 10th sale (power-cut insurance). Best-effort: a
+    // backup failure must never fail the sale that already committed.
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sales", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if n % 10 == 0 {
+        if let Err(e) = write_backup(&app) {
+            eprintln!("auto-backup failed: {e}");
+        }
+    }
+    Ok(result)
+}
+
+/// The actual complete_sale logic, taking an open connection directly rather
+/// than an AppHandle — kept separate from the #[tauri::command] wrapper above
+/// so it's callable from tests with a plain in-memory connection.
+fn complete_sale_impl(
+    conn: &mut rusqlite::Connection,
+    payments: Vec<Payment>,
+    lines: Vec<SaleLine>,
+    operator: Option<String>,
+    patient_name: Option<String>,
+    patient_phone: Option<String>,
+    discount_pct: Option<f64>,
+) -> Result<SaleResult, String> {
     if lines.is_empty() {
         return Err("Cart is empty".into());
     }
@@ -130,15 +168,25 @@ fn complete_sale(
         }
     }
 
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
 
-    // 1. Stock check (fail before writing anything)
+    // 1. Validate + stock check (fail before writing anything). Quantity and
+    // price are never trusted from the client — re-read the authoritative
+    // selling price and cost (for the profit snapshot below) from the
+    // catalog, the same principle save_purchase already applies to purchases.
+    let mut catalog: std::collections::HashMap<i64, (f64, f64)> = std::collections::HashMap::new();
     for l in &lines {
-        let st: i64 = tx
-            .query_row("SELECT stock_qty FROM products WHERE id = ?1", [l.product_id], |r| r.get(0))
+        if l.quantity <= 0 {
+            return Err(format!("Quantity for {} must be positive", l.name));
+        }
+        let (st, price, cost): (i64, f64, f64) = tx
+            .query_row(
+                "SELECT stock_qty, selling_price, cost_price FROM products WHERE id = ?1",
+                [l.product_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .map_err(|_| format!("Unknown product: {}", l.name))?;
         if st < l.quantity {
             return Err(format!(
@@ -146,6 +194,7 @@ fn complete_sale(
                 l.name, st, l.quantity
             ));
         }
+        catalog.insert(l.product_id, (price, cost));
     }
 
     // 2. Receipt number: per-day sequence, computed inside the transaction
@@ -161,7 +210,10 @@ fn complete_sale(
         .map_err(|e| e.to_string())?;
     let receipt_no = format!("RCPT-{}-{:03}", date, n + 1);
 
-    let subtotal: f64 = lines.iter().map(|l| l.unit_price * l.quantity as f64).sum();
+    let subtotal: f64 = lines
+        .iter()
+        .map(|l| catalog[&l.product_id].0 * l.quantity as f64)
+        .sum();
     let disc = discount_pct.unwrap_or(0.0).clamp(0.0, 100.0);
     let discount_amount = subtotal * disc / 100.0;
     let total = (subtotal - discount_amount).max(0.0);
@@ -234,12 +286,16 @@ fn complete_sale(
         .map_err(|e| e.to_string())?;
     }
 
-    // 4. Items + stock deduction
+    // 4. Items + stock deduction. unit_price and unit_cost both come from the
+    // catalog snapshot above, not the client — unit_cost is a POINT-IN-TIME
+    // snapshot so profit reports stay reproducible even after the product's
+    // cost_price later changes (see migration 0020).
     for l in &lines {
+        let (price, cost) = catalog[&l.product_id];
         tx.execute(
-            "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, unit)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![sale_id, l.product_id, l.name, l.quantity, l.unit_price, l.unit],
+            "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, unit, unit_cost)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![sale_id, l.product_id, l.name, l.quantity, price, l.unit, cost],
         )
         .map_err(|e| e.to_string())?;
         tx.execute(
@@ -250,17 +306,6 @@ fn complete_sale(
     }
 
     tx.commit().map_err(|e| e.to_string())?;
-
-    // Auto-backup every 10th sale (power-cut insurance). Best-effort: a
-    // backup failure must never fail the sale that already committed.
-    let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM sales", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    if n % 10 == 0 {
-        if let Err(e) = write_backup(&app) {
-            eprintln!("auto-backup failed: {e}");
-        }
-    }
 
     Ok(SaleResult {
         receipt_no,
@@ -346,12 +391,6 @@ fn export_report(path: String, rows: Vec<Vec<String>>) -> Result<String, String>
     Ok(path)
 }
 
-#[derive(Deserialize)]
-pub struct ReceiveLine {
-    po_item_id: i64,
-    qty: i64,
-}
-
 /// One line of a purchase (supplier invoice) being saved or received.
 #[derive(Deserialize)]
 pub struct PurchaseLine {
@@ -399,89 +438,6 @@ pub struct BackupInfo {
     size: u64,
     /// UNIX epoch seconds — formatted client-side.
     modified: u64,
-}
-
-/// Receive a requisition (partially or fully): add the received quantities to
-/// stock, update costs, and mark the PO received only when every line is
-/// complete. One transaction, all or nothing. The UI derives a "partial"
-/// display state from qty_received vs qty; status stays 'open' until done.
-#[tauri::command]
-fn receive_po(
-    app: AppHandle,
-    po_id: i64,
-    items: Vec<ReceiveLine>,
-) -> Result<serde_json::Value, String> {
-    if items.is_empty() {
-        return Err("Nothing to receive".into());
-    }
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
-
-    let (po_no, status): (String, String) = tx
-        .query_row(
-            "SELECT po_no, status FROM purchase_orders WHERE id = ?1",
-            [po_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(|_| "Requisition not found".to_string())?;
-    if status != "open" {
-        return Err(format!("{} is already {}", po_no, status));
-    }
-
-    let mut added = 0i64;
-    for rl in &items {
-        if rl.qty <= 0 {
-            return Err("Received quantity must be positive".into());
-        }
-        let (product_id, qty, qty_received, unit_cost): (i64, i64, i64, Option<f64>) = tx
-            .query_row(
-                "SELECT product_id, qty, qty_received, unit_cost FROM po_items WHERE id = ?1 AND po_id = ?2",
-                rusqlite::params![rl.po_item_id, po_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .map_err(|_| "Requisition item not found".to_string())?;
-        let rem = qty - qty_received;
-        if rl.qty > rem {
-            return Err(format!(
-                "Receiving {} exceeds the {} still outstanding on this line",
-                rl.qty, rem
-            ));
-        }
-        tx.execute(
-            "UPDATE products SET stock_qty = stock_qty + ?1, cost_price = COALESCE(?2, cost_price) WHERE id = ?3",
-            rusqlite::params![rl.qty, unit_cost, product_id],
-        )
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "UPDATE po_items SET qty_received = qty_received + ?1 WHERE id = ?2",
-            rusqlite::params![rl.qty, rl.po_item_id],
-        )
-        .map_err(|e| e.to_string())?;
-        added += rl.qty;
-    }
-
-    // Received only when every line is complete; otherwise stays open (the UI
-    // shows the partial state from qty_received vs qty).
-    let outstanding: i64 = tx
-        .query_row(
-            "SELECT COUNT(*) FROM po_items WHERE po_id = ?1 AND qty_received < qty",
-            [po_id],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let complete = outstanding == 0;
-    if complete {
-        tx.execute(
-            "UPDATE purchase_orders SET status = 'received' WHERE id = ?1",
-            [po_id],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "po_no": po_no, "added": added, "complete": complete }))
 }
 
 /// Resolve the supplier for a purchase: by id (authoritative, from the
@@ -1188,10 +1144,23 @@ fn return_sale(
     operator: Option<String>,
     lines: Vec<ReturnLine>,
 ) -> Result<ReturnResult, String> {
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    return_sale_impl(&mut conn, sale_id, reason, operator, lines)
+}
+
+/// The actual return_sale logic, taking an open connection directly rather
+/// than an AppHandle — kept separate from the #[tauri::command] wrapper above
+/// so it's callable from tests with a plain in-memory connection.
+fn return_sale_impl(
+    conn: &mut rusqlite::Connection,
+    sale_id: i64,
+    reason: Option<String>,
+    operator: Option<String>,
+    lines: Vec<ReturnLine>,
+) -> Result<ReturnResult, String> {
     if lines.is_empty() {
         return Err("Nothing to return".into());
     }
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1731,6 +1700,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0019_expenses_discount_tier",
         include_str!("../migrations/0019_expenses_discount_tier.sql"),
     ),
+    (
+        "0020_sale_items_cost_snapshot",
+        include_str!("../migrations/0020_sale_items_cost_snapshot.sql"),
+    ),
+    (
+        "0021_expenses_payment_method",
+        include_str!("../migrations/0021_expenses_payment_method.sql"),
+    ),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.
@@ -1744,6 +1721,13 @@ fn run_migrations(app: &tauri::App) -> Result<(), String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut conn = rusqlite::Connection::open(dir.join("pulse.db")).map_err(|e| e.to_string())?;
+    apply_migrations(&mut conn)
+}
+
+/// Applies pending migrations to an already-open connection — split out from
+/// run_migrations so tests can seed a plain in-memory connection through the
+/// exact same path production uses, instead of duplicating the schema setup.
+fn apply_migrations(conn: &mut rusqlite::Connection) -> Result<(), String> {
     // Migrations rebuild parent tables (0016/0017) and were written assuming
     // FK enforcement is OFF. SQLite's default is off, but the SQL plugin may
     // leave foreign_keys ON on connections to the same file, so force it OFF
@@ -1805,7 +1789,6 @@ pub fn run() {
             complete_sale,
             backup_db,
             export_report,
-            receive_po,
             return_sale,
             void_last_sale,
             adjust_stock,
@@ -1831,4 +1814,228 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Coverage for the two highest-stakes commands: complete_sale (money +
+/// stock, in one transaction) and return_sale (refunds, double-refund
+/// guard). Each test runs the real migrations against a fresh in-memory
+/// database, so they exercise the actual schema, not a hand-rolled stand-in.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_db() -> rusqlite::Connection {
+        let mut conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        apply_migrations(&mut conn).expect("apply migrations");
+        conn
+    }
+
+    fn insert_product(conn: &rusqlite::Connection, name: &str, cost: f64, price: f64, stock: i64) -> i64 {
+        conn.execute(
+            "INSERT INTO products (name, cost_price, selling_price, stock_qty) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![name, cost, price, stock],
+        )
+        .expect("insert product");
+        conn.last_insert_rowid()
+    }
+
+    fn line(product_id: i64, name: &str, qty: i64, client_price: f64) -> SaleLine {
+        SaleLine {
+            product_id,
+            name: name.to_string(),
+            quantity: qty,
+            unit_price: client_price,
+            unit: None,
+        }
+    }
+
+    fn cash(amount: f64) -> Payment {
+        Payment {
+            method: "Cash".to_string(),
+            amount,
+            reference: None,
+        }
+    }
+
+    #[test]
+    fn complete_sale_rejects_zero_quantity() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "Paracetamol", 4.0, 8.0, 50);
+        let result = complete_sale_impl(
+            &mut conn,
+            vec![cash(8.0)],
+            vec![line(pid, "Paracetamol", 0, 8.0)],
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_err(), "quantity 0 must be rejected");
+    }
+
+    #[test]
+    fn complete_sale_rejects_negative_quantity() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "Paracetamol", 4.0, 8.0, 50);
+        let result = complete_sale_impl(
+            &mut conn,
+            vec![cash(8.0)],
+            vec![line(pid, "Paracetamol", -3, 8.0)],
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_err(), "negative quantity must be rejected");
+    }
+
+    /// PUL-001: complete_sale must price from the catalog, never the client.
+    #[test]
+    fn complete_sale_ignores_client_supplied_price() {
+        let mut conn = test_db();
+        // Catalog price is 8.00; the client sends a tampered 0.01.
+        let pid = insert_product(&conn, "Paracetamol", 4.0, 8.0, 50);
+        let result = complete_sale_impl(
+            &mut conn,
+            vec![cash(1000.0)], // overpay so the total-coverage check can't fail either way
+            vec![line(pid, "Paracetamol", 2, 0.01)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sale should succeed");
+        assert!(
+            (result.total - 16.0).abs() < 0.001,
+            "total was {}, expected 16.00 (2 x catalog price 8.00) — client price must be ignored",
+            result.total
+        );
+    }
+
+    #[test]
+    fn complete_sale_rejects_insufficient_stock() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "Insulin", 50.0, 90.0, 2);
+        let result = complete_sale_impl(
+            &mut conn,
+            vec![cash(900.0)],
+            vec![line(pid, "Insulin", 5, 90.0)],
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_err(), "selling more than what's in stock must be rejected");
+    }
+
+    /// PUL-006: sale_items.unit_cost must snapshot cost_price at sale time.
+    #[test]
+    fn complete_sale_snapshots_cost_and_deducts_stock() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "Amoxicillin", 22.5, 35.0, 100);
+        complete_sale_impl(
+            &mut conn,
+            vec![cash(70.0)],
+            vec![line(pid, "Amoxicillin", 2, 35.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sale should succeed");
+
+        let stock: i64 = conn
+            .query_row("SELECT stock_qty FROM products WHERE id = ?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stock, 98, "stock must be deducted by the quantity sold");
+
+        let snapshot_cost: f64 = conn
+            .query_row("SELECT unit_cost FROM sale_items WHERE product_id = ?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert!(
+            (snapshot_cost - 22.5).abs() < 0.001,
+            "sale_items.unit_cost must snapshot the product's cost at sale time"
+        );
+    }
+
+    #[test]
+    fn return_sale_restocks_and_refunds() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "Ibuprofen", 9.0, 15.0, 30);
+        let sale = complete_sale_impl(
+            &mut conn,
+            vec![cash(45.0)],
+            vec![line(pid, "Ibuprofen", 3, 15.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sale should succeed");
+
+        let refund = return_sale_impl(
+            &mut conn,
+            sale.sale_id,
+            Some("customer changed mind".into()),
+            None,
+            vec![ReturnLine {
+                product_id: pid,
+                quantity: 1,
+            }],
+        )
+        .expect("return should succeed");
+
+        assert!((refund.total_refunded - 15.0).abs() < 0.001);
+        let stock: i64 = conn
+            .query_row("SELECT stock_qty FROM products WHERE id = ?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stock, 28, "30 initial - 3 sold + 1 returned = 28");
+    }
+
+    /// The return path's core double-refund guard (also what ReturnModal's
+    /// UI now mirrors for its displayed max).
+    #[test]
+    fn return_sale_rejects_returning_more_than_remains() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "Ibuprofen", 9.0, 15.0, 30);
+        let sale = complete_sale_impl(
+            &mut conn,
+            vec![cash(30.0)],
+            vec![line(pid, "Ibuprofen", 2, 15.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sale should succeed");
+
+        return_sale_impl(
+            &mut conn,
+            sale.sale_id,
+            None,
+            None,
+            vec![ReturnLine {
+                product_id: pid,
+                quantity: 1,
+            }],
+        )
+        .expect("first return of 1 should succeed");
+
+        // Only 1 unit remains returnable; asking for 2 more must fail outright,
+        // never silently partial-refund or double-refund.
+        let second = return_sale_impl(
+            &mut conn,
+            sale.sale_id,
+            None,
+            None,
+            vec![ReturnLine {
+                product_id: pid,
+                quantity: 2,
+            }],
+        );
+        assert!(
+            second.is_err(),
+            "returning more than what's left on the sale must be rejected"
+        );
+    }
 }
