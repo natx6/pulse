@@ -31,11 +31,17 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
   const operator = useStore((s) => s.operator);
   const pharmacyName = useStore((s) => s.pharmacyName);
   const [items, setItems] = useState<SaleItem[]>([]);
+  const [alreadyReturned, setAlreadyReturned] = useState<Record<number, number>>({});
   const [qtys, setQtys] = useState<Record<number, string>>({});
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [slip, setSlip] = useState<ReturnResult | null>(null);
+
+  /** What's actually still returnable per product: sold minus already returned
+   * on this sale — matches the Rust return_sale guard exactly. */
+  const available = (productId: number, sold: number) =>
+    Math.max(0, sold - (alreadyReturned[productId] ?? 0));
 
   useEffect(() => {
     void (async () => {
@@ -45,10 +51,24 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
           "SELECT product_id, product_name, quantity, unit_price, unit FROM sale_items WHERE sale_id = $1 ORDER BY id",
           [sale.id],
         );
+        const prior = await db.select<{ product_id: number; qty: number }[]>(
+          `SELECT sri.product_id AS product_id, SUM(sri.quantity) AS qty
+           FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
+           WHERE sr.sale_id = $1 GROUP BY sri.product_id`,
+          [sale.id],
+        );
         setItems(rows);
-        setQtys(Object.fromEntries(rows.map((r) => [r.product_id, String(r.quantity)])));
+        setAlreadyReturned(Object.fromEntries(prior.map((r) => [r.product_id, Number(r.qty)])));
+        setQtys(
+          Object.fromEntries(
+            rows.map((r) => {
+              const priorQty = prior.find((p) => p.product_id === r.product_id)?.qty ?? 0;
+              return [r.product_id, String(Math.max(0, r.quantity - Number(priorQty)))];
+            }),
+          ),
+        );
       } catch (e) {
-        setErr(String(e));
+        setErr(String(e).replace(/^Error: /, ""));
       }
     })();
   }, [sale.id]);
@@ -56,7 +76,10 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
   const lines = items
     .map((it) => ({
       product_id: it.product_id,
-      quantity: Math.min(Math.max(0, Math.floor(Number(qtys[it.product_id]) || 0)), it.quantity),
+      quantity: Math.min(
+        Math.max(0, Math.floor(Number(qtys[it.product_id]) || 0)),
+        available(it.product_id, it.quantity),
+      ),
       unit_price: it.unit_price,
     }))
     .filter((l) => l.quantity > 0);
@@ -90,7 +113,15 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
 
   if (slip) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            onClose();
+          }
+        }}
+      >
         <div className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface shadow-lg">
           <div id="receipt-area" className="p-6">
             <div className="text-center">
@@ -106,27 +137,29 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
             </div>
             <div className="my-4 border-t border-dashed border-outline-variant" />
             <div className="flex flex-col gap-1.5">
-              {items
-                .filter((it) => Number(qtys[it.product_id]) > 0)
-                .map((it) => {
-                  const q = Math.min(Number(qtys[it.product_id]) || 0, it.quantity);
-                  return (
-                    <div key={it.product_id} className="flex justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="truncate text-body-sm font-body-sm font-semibold text-on-surface">
-                          {it.product_name}
-                        </p>
-                        <p className="font-data-mono text-data-mono text-on-surface-variant">
-                          {it.unit ? `${it.unit} · ` : ""}
-                          {q} × {fmtMoney(it.unit_price)}
-                        </p>
-                      </div>
-                      <span className="shrink-0 font-data-mono text-data-mono text-error">
-                        −{fmtMoney(q * it.unit_price)}
-                      </span>
+              {/* Rendered from `lines` (what was actually submitted and
+                  accepted), not re-derived from raw input state, so the slip
+                  can never show a different quantity than what was refunded. */}
+              {lines.map((l) => {
+                const it = items.find((i) => i.product_id === l.product_id);
+                if (!it) return null;
+                return (
+                  <div key={l.product_id} className="flex justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-body-sm font-body-sm font-semibold text-on-surface">
+                        {it.product_name}
+                      </p>
+                      <p className="font-data-mono text-data-mono text-on-surface-variant">
+                        {it.unit ? `${it.unit} · ` : ""}
+                        {l.quantity} × {fmtMoney(l.unit_price)}
+                      </p>
                     </div>
-                  );
-                })}
+                    <span className="shrink-0 font-data-mono text-data-mono text-error">
+                      −{fmtMoney(l.quantity * l.unit_price)}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
             <div className="my-4 border-t border-dashed border-outline-variant" />
             <div className="flex justify-between font-data-mono text-data-mono">
@@ -161,7 +194,15 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
       <div className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
         <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
           <div>
@@ -186,6 +227,8 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
           )}
           {items.map((it) => {
             const v = Number(qtys[it.product_id]) || 0;
+            const max = available(it.product_id, it.quantity);
+            const priorQty = alreadyReturned[it.product_id] ?? 0;
             return (
               <div
                 key={it.product_id}
@@ -197,19 +240,21 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
                   </p>
                   <p className="font-data-mono text-data-mono text-on-surface-variant">
                     {fmtMoney(it.unit_price)} each · {it.quantity} sold
+                    {priorQty > 0 ? ` · ${priorQty} already returned` : ""}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <input
                     type="number"
                     min={0}
-                    max={it.quantity}
+                    max={max}
                     value={qtys[it.product_id] ?? ""}
                     onChange={(e) =>
                       setQtys((q) => ({ ...q, [it.product_id]: e.target.value }))
                     }
-                    title={`Return how many (max ${it.quantity})`}
-                    className="h-8 w-16 rounded border border-outline-variant bg-surface-container-lowest px-1 text-right font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
+                    title={`Return how many (max ${max})`}
+                    disabled={max === 0}
+                    className="h-8 w-16 rounded border border-outline-variant bg-surface-container-lowest px-1 text-right font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none disabled:opacity-50"
                   />
                   <span className="w-20 text-right font-data-mono text-data-mono text-on-surface">
                     {v > 0 ? `−${fmtMoney(v * it.unit_price)}` : "—"}
