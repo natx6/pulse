@@ -11,24 +11,25 @@ import { AddCustomerModal } from "../components/AddCustomerModal";
 import { Tip } from "../components/Tip";
 import { useToast } from "../store/toast";
 import { getPatientDiscount } from "../db";
+import { useFocusTrap } from "../lib/focusTrap";
 
 function StatusBadge({ p }: { p: Product }) {
   const st = stockStatus(p);
   if (st === "critical")
     return (
       <span className="rounded border border-error/30 bg-error-container px-1.5 text-[10px] font-bold text-on-error-container">
-        Stock: {p.stock_qty}
+        Critical · {p.stock_qty}
       </span>
     );
   if (st === "low")
     return (
       <span className="rounded border border-warn bg-warn-muted px-1.5 text-[10px] font-bold text-warn">
-        Stock: {p.stock_qty}
+        Low · {p.stock_qty}
       </span>
     );
   return (
     <span className="rounded border border-primary/30 bg-primary/10 px-1.5 text-[10px] text-primary">
-      Stock: {p.stock_qty}
+      {p.stock_qty} in stock
     </span>
   );
 }
@@ -73,6 +74,7 @@ export function PosPage() {
   const [patientInput, setPatientInput] = useState("");
   const [patientHits, setPatientHits] = useState<{ name: string; phone: string | null }[]>([]);
   const [showAddCustomer, setShowAddCustomer] = useState(false);
+  const reorderDialogRef = useFocusTrap<HTMLDivElement>();
 
   // Live patient suggestions while typing the customer name (click to attach).
   useEffect(() => {
@@ -132,6 +134,11 @@ export function PosPage() {
     return () => { cancelled = true; };
   }, [patient?.name]);
 
+  /** Current catalog stock for a cart line, so quantity controls can't be
+   * pushed past what's actually on the shelf. */
+  const stockFor = (productId: number): number | undefined =>
+    products.find((p) => p.id === productId)?.stock_qty;
+
   const subtotal = cart.reduce((s, l) => s + l.unitPrice * l.qty, 0);
   const discountAmt = subtotal * (discountPct / 100);
   const afterDiscount = subtotal - discountAmt;
@@ -142,22 +149,16 @@ export function PosPage() {
     const q = searchQuery.trim();
     if (!q) return;
     const st = useStore.getState();
-    const toast = useToast.getState();
     const p = st.products.find((x) => x.barcode === q);
     if (p) {
-      if (p.stock_qty <= 0) {
-        beep(false);
-        toast.show(`${p.name} is out of stock`, "error");
-        return;
-      }
-      st.addToCart(p);
-      beep(true);
-      toast.show(`${p.name} added`, "success", { duration: 1500 });
-      setSearch("");
+      // Delegate to tryAdd so the out-of-stock/at-cart-max checks can never
+      // drift from the product-grid add path — a repeat scan past available
+      // stock must not play the success beep for a cart that didn't change.
+      if (tryAdd(p)) setSearch("");
     } else if (q.length >= 6 && /^[0-9]+$/.test(q)) {
       // looks like an unknown barcode → quick add
       beep(false);
-      toast.show(`Unknown barcode ${q} — quick add`, "info");
+      useToast.getState().show(`Unknown barcode ${q} — quick add`, "info");
       st.setQuickAdd({ barcode: q });
       setSearch("");
     }
@@ -184,24 +185,27 @@ export function PosPage() {
     await refreshProducts();
   };
 
-  const tryAdd = (p: Product) => {
+  /** Adds to cart if there's room; returns whether it actually did, so
+   * callers (e.g. the barcode-scan path) know whether the add was real or
+   * silently blocked at the stock cap. */
+  const tryAdd = (p: Product): boolean => {
     if (p.stock_qty <= 0) {
       beep(false);
       useToast.getState().show(`${p.name} is out of stock`, "error");
-      return;
+      return false;
     }
     const line = cart.find((l) => l.productId === p.id);
     if (line && line.qty >= p.stock_qty) {
       beep(false);
       useToast.getState().show(`Max stock reached for ${p.name}`, "error");
-      return;
+      return false;
     }
     addToCart(p);
     beep(true);
     useToast.getState().show(`${p.name} added`, "success", { duration: 1500 });
+    return true;
   };
 
-  // F9/F10/F11: quick checkout from the POS screen (no-op while a modal is open)
   const doReorder = async () => {
     if (!reorder) return;
     setOrderBusy(true);
@@ -268,6 +272,7 @@ export function PosPage() {
     document.getElementById("pos-search")?.focus();
   }, []);
 
+  // F9/F10/F11: quick checkout from the POS screen (no-op while a modal is open)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (payMethod) return; // payment modal open — it handles F9/10/11 itself
@@ -581,16 +586,26 @@ export function PosPage() {
                   <input
                     type="number"
                     min={1}
+                    max={stockFor(l.productId)}
                     value={l.qty}
                     onFocus={(e) => e.target.select()}
-                    onChange={(e) =>
-                      setQty(l.productId, Number(e.target.value) || 1)
-                    }
+                    onChange={(e) => {
+                      const max = stockFor(l.productId);
+                      const v = Number(e.target.value) || 1;
+                      const clamped = max !== undefined ? Math.min(v, max) : v;
+                      if (max !== undefined && v > max) {
+                        useToast.getState().show(`Only ${max} in stock`, "error");
+                      }
+                      setQty(l.productId, clamped);
+                    }}
                     className="h-8 w-10 border-x border-outline-variant/50 bg-transparent p-0 text-center font-data-mono text-data-mono focus:outline-none"
                   />
                   <Tip label="More">
                     <button
-                      onClick={() => setQty(l.productId, l.qty + 1)}
+                      onClick={() => {
+                        const max = stockFor(l.productId);
+                        setQty(l.productId, max !== undefined ? Math.min(l.qty + 1, max) : l.qty + 1);
+                      }}
                       className="flex h-8 w-8 items-center justify-center rounded-r text-on-surface hover:bg-surface-variant"
                     >
                       <span className="material-symbols-outlined text-[16px]">add</span>
@@ -745,8 +760,14 @@ export function PosPage() {
 
       {reorder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
-          <div className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface p-5 shadow-lg">
-            <h3 className="mb-1 text-headline-md font-headline-md text-on-surface">
+          <div
+            ref={reorderDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reorder-dialog-title"
+            className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface p-5 shadow-lg"
+          >
+            <h3 id="reorder-dialog-title" className="mb-1 text-headline-md font-headline-md text-on-surface">
               Order {reorder.name}
             </h3>
             <p className="mb-4 text-body-sm font-body-sm text-on-surface-variant">

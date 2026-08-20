@@ -82,6 +82,15 @@ export default function App() {
               toast.show(`${p.name} is out of stock`, "error");
               return;
             }
+            // Same at-cart-max guard as PosPage's tryAdd — addToCart silently
+            // no-ops once the cart hits stock_qty, so without this a repeat
+            // scan past available stock would still play a success beep.
+            const line = st.cart.find((l) => l.productId === p.id);
+            if (line && line.qty >= p.stock_qty) {
+              beep(false);
+              toast.show(`Max stock reached for ${p.name}`, "error");
+              return;
+            }
             st.addToCart(p);
             beep(true);
             toast.show(`${p.name} added`, "success", { duration: 1500 });
