@@ -454,80 +454,6 @@ export async function commitStockImport(
   return await invoke("commit_stock_import", { records });
 }
 
-export interface PurchaseOrder {
-  id: number;
-  po_no: string;
-  supplier: string | null;
-  status: "open" | "received" | "cancelled";
-  created_at: string;
-  item_count: number;
-  /** Total quantity ordered across lines. */
-  total_qty: number;
-  /** Quantity received so far across lines. */
-  received_qty: number;
-}
-
-export interface PoItem {
-  id: number;
-  po_id: number;
-  product_id: number;
-  product_name: string;
-  qty: number;
-  qty_received: number;
-  unit_cost: number | null;
-}
-
-export async function loadPurchaseOrders(): Promise<PurchaseOrder[]> {
-  const d = await initDb();
-  return await d.select<PurchaseOrder[]>(
-    `SELECT po.id, po.po_no, po.supplier, po.status, po.created_at,
-            (SELECT COUNT(*) FROM po_items pi WHERE pi.po_id = po.id) AS item_count,
-            (SELECT COALESCE(SUM(pi.qty),0) FROM po_items pi WHERE pi.po_id = po.id) AS total_qty,
-            (SELECT COALESCE(SUM(pi.qty_received),0) FROM po_items pi WHERE pi.po_id = po.id) AS received_qty
-     FROM purchase_orders po ORDER BY po.id DESC`,
-  );
-}
-
-export async function loadPoItems(poId: number): Promise<PoItem[]> {
-  const d = await initDb();
-  return await d.select<PoItem[]>(
-    "SELECT id, po_id, product_id, product_name, qty, qty_received, unit_cost FROM po_items WHERE po_id = $1 ORDER BY id",
-    [poId],
-  );
-}
-
-export async function createPurchaseOrder(
-  supplier: string,
-  items: { product_id: number; product_name: string; qty: number; unit_cost: number | null }[],
-): Promise<string> {
-  const d = await initDb();
-  const [row] = await d.select<{ n: number; date: string }[]>(
-    "SELECT COUNT(*) AS n, strftime('%Y%m%d','now','localtime') AS date FROM purchase_orders WHERE date(created_at) = date('now','localtime')",
-  );
-  const po_no = `REQ-${row.date}-${String(Number(row.n) + 1).padStart(3, "0")}`;
-  const res = await d.execute(
-    "INSERT INTO purchase_orders (po_no, supplier) VALUES ($1, $2)",
-    [po_no, supplier || null],
-  );
-  const poId = Number(res.lastInsertId);
-  for (const it of items) {
-    await d.execute(
-      "INSERT INTO po_items (po_id, product_id, product_name, qty, unit_cost) VALUES ($1,$2,$3,$4,$5)",
-      [poId, it.product_id, it.product_name, it.qty, it.unit_cost],
-    );
-  }
-  return po_no;
-}
-
-/** Receive a requisition atomically in Rust: stock += received, mark received
- * only when every line is complete. Partial receipts leave it open. */
-export async function receivePo(
-  poId: number,
-  items: { po_item_id: number; qty: number }[],
-): Promise<{ po_no: string; added: number; complete: boolean }> {
-  return await invoke("receive_po", { poId, items });
-}
-
 // ---- Requisitions (orders + supplier invoices) ----
 
 export interface Supplier {
@@ -858,6 +784,7 @@ export interface Expense {
   description: string | null;
   amount: number;
   operator: string | null;
+  payment_method: string;
   timestamp: string;
 }
 
@@ -872,18 +799,19 @@ export async function addExpense(e: {
   description: string;
   amount: number;
   operator: string;
+  paymentMethod: string;
 }): Promise<void> {
   const d = await initDb();
   await d.execute(
-    "INSERT INTO expenses (category, description, amount, operator) VALUES ($1, $2, $3, $4)",
-    [e.category, e.description || null, e.amount, e.operator || null],
+    "INSERT INTO expenses (category, description, amount, operator, payment_method) VALUES ($1, $2, $3, $4, $5)",
+    [e.category, e.description || null, e.amount, e.operator || null, e.paymentMethod || "Cash"],
   );
 }
 
 export async function listExpenses(from: string, to: string): Promise<Expense[]> {
   const d = await initDb();
   return d.select<Expense[]>(
-    "SELECT id, category, description, amount, operator, timestamp FROM expenses WHERE date(timestamp) BETWEEN $1 AND $2 ORDER BY id DESC",
+    "SELECT id, category, description, amount, operator, payment_method, timestamp FROM expenses WHERE date(timestamp) BETWEEN $1 AND $2 ORDER BY id DESC",
     [from, to],
   );
 }
