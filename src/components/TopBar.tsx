@@ -124,7 +124,10 @@ export function TopBar() {
   const expiring = products.filter(
     (p) => p.expiry_date && p.expiry_date > today && p.expiry_date <= in60,
   );
-  const expired = products.filter((p) => p.expiry_date && p.expiry_date < today);
+  // Inclusive of today, matching lib/stock.ts's stockStatus() and the
+  // Reports page's stock-health widgets — a product expiring exactly today
+  // must count as expired everywhere, not just on the pages checked first.
+  const expired = products.filter((p) => p.expiry_date && p.expiry_date <= today);
   const openPurchases = purchases.filter((p) => p.status === "Ordered" || p.status === "Draft");
 
   const alertCount = low.length + expiring.length + expired.length + openPurchases.length;
