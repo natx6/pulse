@@ -4,6 +4,8 @@ import { stockStatus } from "../lib/stock";
 import { fmtMoney } from "../lib/money";
 import { adjustStock, loadProductsAll, saveReorderLevel, setProductActive } from "../db";
 import { beep } from "../lib/audio";
+import { useToast } from "../store/toast";
+import { useFocusTrap } from "../lib/focusTrap";
 import { LabelModal } from "../components/LabelModal";
 import { ImportStockModal } from "../components/ImportStockModal";
 import type { Product } from "../types";
@@ -50,6 +52,7 @@ export function InventoryPage() {
   const [sortAsc, setSortAsc] = useState(true);
   const [editingReorder, setEditingReorder] = useState<number | null>(null);
   const [reorderVal, setReorderVal] = useState("");
+  const adjustDialogRef = useFocusTrap<HTMLDivElement>();
 
   // Load archived products when the toggle is on (active ones come from the store).
   useEffect(() => {
@@ -113,7 +116,10 @@ export function InventoryPage() {
       }
       beep(true);
     } catch (e) {
-      setAdjustErr(String(e));
+      // No modal is open during archive/restore, so the error has to be a
+      // toast — a local banner (like adjustErr) would only ever render
+      // inside the unrelated Adjust modal.
+      useToast.getState().show(String(e).replace(/^Error: /, ""), "error");
       beep(false);
     }
   };
@@ -125,7 +131,7 @@ export function InventoryPage() {
       await refreshProducts();
       beep(true);
     } catch (e) {
-      setAdjustErr(String(e));
+      useToast.getState().show(String(e).replace(/^Error: /, ""), "error");
       beep(false);
     }
   };
@@ -416,8 +422,14 @@ export function InventoryPage() {
 
       {adjust && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
-          <div className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface p-5 shadow-lg">
-            <h3 className="mb-1 text-headline-md font-headline-md text-on-surface">
+          <div
+            ref={adjustDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="adjust-dialog-title"
+            className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface p-5 shadow-lg"
+          >
+            <h3 id="adjust-dialog-title" className="mb-1 text-headline-md font-headline-md text-on-surface">
               Adjust — {adjust.name}
             </h3>
             <p className="mb-4 text-body-sm font-body-sm text-on-surface-variant">
