@@ -21,6 +21,7 @@ import { useStore } from "../store/useStore";
 import type { PaymentLine, PaymentMethod } from "../types";
 import { fmtMoney } from "../lib/money";
 import { beep } from "../lib/audio";
+import { round2 } from "../lib/price";
 import { ReceiptModal } from "../components/ReceiptModal";
 import { ReturnModal } from "../components/ReturnModal";
 import { supplierBalances, expenseSummary, type SupplierBalance } from "../db";
@@ -121,9 +122,12 @@ async function fetchReport(
     `SELECT COUNT(*) AS n, COALESCE(SUM(total_amount),0) AS revenue FROM sales s WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}`,
     p,
   );
+  // Profit uses each line's own unit_cost snapshot (set at sale time) first,
+  // falling back to the live catalog cost only for pre-snapshot historical
+  // rows — so re-running an old report gives the same number every time.
   const [vol] = await db.select<{ items: number; profit: number }[]>(
     `SELECT COALESCE(SUM(si.quantity),0) AS items,
-            COALESCE(SUM((si.unit_price - COALESCE(p.cost_price,0)) * si.quantity),0) AS profit
+            COALESCE(SUM((si.unit_price - COALESCE(si.unit_cost, p.cost_price, 0)) * si.quantity),0) AS profit
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
      JOIN products p ON p.id = si.product_id
@@ -153,7 +157,7 @@ async function fetchReport(
   >(
     `SELECT p.category, SUM(si.quantity) AS qty,
             SUM(si.unit_price * si.quantity) AS amt,
-            SUM((si.unit_price - COALESCE(p.cost_price,0)) * si.quantity) AS profit,
+            SUM((si.unit_price - COALESCE(si.unit_cost, p.cost_price, 0)) * si.quantity) AS profit,
             COUNT(DISTINCT s.id) AS n
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
@@ -285,15 +289,18 @@ export function AnalyticsPage() {
            WHERE s.payment_method = 'Cash' AND date(sr.timestamp) = $1${opCond}`,
           p,
         );
-        // Cash expenses for the day (paid from till). May fail if migration hasn't run.
+        // Cash expenses for the day (paid from till) — same operator filter as
+        // sales/refunds above, and only counting expenses actually paid in
+        // cash (a MoMo/card expense never touches the till).
         let dayExpenses = 0;
         try {
+          const expOpCond = cashOp ? " AND operator = $2" : "";
           const [expRow] = await db.select<{ v: number }[]>(
-            "SELECT COALESCE(SUM(amount),0) AS v FROM expenses WHERE date(timestamp) = $1",
-            [cashDay],
+            `SELECT COALESCE(SUM(amount),0) AS v FROM expenses WHERE date(timestamp) = $1 AND payment_method = 'Cash'${expOpCond}`,
+            p,
           );
           dayExpenses = Number(expRow?.v ?? 0);
-        } catch { /* expenses table may not exist yet */ }
+        } catch { /* expenses table/column may not exist yet */ }
         setCashData({
           sales: Number(sales?.v ?? 0),
           refunds: Number(refunds?.v ?? 0),
@@ -364,7 +371,6 @@ export function AnalyticsPage() {
         : k === "Returned"
           ? "bg-surface-variant text-on-surface-variant"
           : "bg-warn-muted text-warn";
-  const round2 = (n: number) => Math.round(n * 100) / 100;
 
   const doSettle = async (c: CustomerCredit) => {
     const a = Number(settleAmt);
@@ -482,11 +488,14 @@ export function AnalyticsPage() {
   const lowStock = products.filter(
     (p) => p.stock_qty > 0 && p.stock_qty <= p.reorder_level,
   );
+  // A product expiring exactly today counts as expired (last safe-to-sell day
+  // has passed), matching lib/stock.ts's stockStatus() which already treats
+  // today as critical — this keeps every product in exactly one bucket.
   const expiring = products.filter(
     (p) => p.expiry_date && p.expiry_date > todayStr && p.expiry_date <= in60Str,
   );
   const expired = products.filter(
-    (p) => p.expiry_date && p.expiry_date < todayStr,
+    (p) => p.expiry_date && p.expiry_date <= todayStr,
   );
 
   const doBackup = async () => {
@@ -1109,7 +1118,7 @@ export function AnalyticsPage() {
               />
             </label>
             <span className="text-body-sm text-on-surface-variant">
-              Cash in the till = opening float + cash sales − cash refunds
+              Cash in the till = opening float + cash sales − cash refunds − cash expenses
             </span>
           </div>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
