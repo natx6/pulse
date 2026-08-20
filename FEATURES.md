@@ -12,11 +12,16 @@ the app works fully offline (power cuts and flaky internet are assumed).
 
 - Single desktop window titled "Pulse" (pharmacy name shown inside the app is
   editable in Settings and never hard-codes the window title).
-- Left sidebar navigation: POS, Inventory, Requisitions, Reports, Settings.
-- Top bar: pharmacy name, search field (Ctrl+K focuses it), "New
-  Prescription" button (holds current order if any, clears the counter,
-  focuses the scanner), Barcode Scan shortcut, notification/history/account
-  icons (decorative).
+- Left sidebar navigation: POS, Inventory, Requisitions, Reports, Expenses,
+  and Support, with Settings and the operator switcher pinned below a
+  divider at the bottom.
+- Top bar: pharmacy name, search field (Ctrl+K focuses it; matches products
+  and patients live as you type), "New Prescription" button (holds current
+  order if any, clears the counter, focuses the scanner), Barcode Scan
+  shortcut (jumps to POS and focuses the scanner), and a notification bell —
+  its badge is a live count of low-stock + expiring + expired products and
+  open purchase orders, and its dropdown links straight to Inventory or
+  Requisitions.
 - Color-coded theme (Material green `#006c49` primary, red errors), Inter
   font, Material Symbols icons — all self-hosted, zero network dependency.
 - Full keyboard operation (see section 7).
@@ -28,22 +33,25 @@ the app works fully offline (power cuts and flaky internet are assumed).
   to the cart instantly with a success beep. Typing in the search box never
   triggers a false scan. Unknown barcodes open a quick-add screen.
 - **Search**: type anywhere in the POS search box; exact barcode match adds
-  to cart, otherwise live product filtering. Ctrl+F focuses it.
+  to cart, otherwise live product filtering. Auto-focused whenever the POS
+  screen opens.
 - **Product grid**: cards show name, strength, unit of measure (blister/
   strip/bottle/sachet), manufacturer, Rx/OTC badge, price in GH₵, live stock
   status (green = healthy, yellow = at/below reorder level, red = out of
   stock / expired / expiring within 30 days).
-- **One-tap reorder**: low/out-of-stock cards show an "Order" button that
-  creates a requisition in one click (quantity pre-filled from the reorder
-  level), with a confirmation flash.
+- **Reorder from the card**: low/out-of-stock cards show an "Order" button
+  that opens a small confirm dialog pre-filled with a quantity (from the
+  reorder level, or 10), editable before you commit — a second click ("Add
+  to Requisition") creates the order, with a confirmation flash.
 - **Cart**: quantity steppers, line totals, remove, Clear All, "Add Manual
   Item" (products without barcodes), Hold Order (saves the cart, restorable
   via "Restore Held Order"), unit of measure shown per line.
 - **Customer header**: inline patient name entry (walk-in by default; name
   goes on the receipt). Every sale stamps the patient's name/phone and builds
   a patient history (search the top bar, see section 5).
-- **Totals**: live subtotal, tax (rate from Settings), total. All amounts in
-  GH₵.
+- **Totals**: live subtotal, an automatic discount if the attached patient
+  has a discount tier set (section 6), tax (rate from Settings), total. All
+  amounts in GH₵.
 - **Payments** (all one tap, no dialogs):
   - Cash (default) — Exact pre-selected, quick-tender amounts, change
     calculated, custom amount entry. F9.
@@ -62,7 +70,9 @@ the app works fully offline (power cuts and flaky internet are assumed).
     printed on the receipt.
 - **Receipt**: on-screen receipt preview after every sale, printable via the
   OS print dialog. Shows pharmacy name, receipt number, items with units,
-  totals, payment method, operator name, footer from Settings.
+  subtotal, any patient discount, tax, total, amount paid, change, payment
+  method/reference (MoMo number too when relevant), and footer from
+  Settings — the operator's name is not on it.
 - **Atomic sales**: a sale (receipt + items + stock deduction) commits as a
   single SQLite transaction in Rust — a crash or power cut can never produce
   a half-recorded sale. Overselling is rejected before anything is written.
@@ -79,6 +89,13 @@ the app works fully offline (power cuts and flaky internet are assumed).
 - **Receive Stock** (F2 from anywhere): scan or enter a barcode, quantity,
   batch/lot, expiry date, supplier, unit of measure, unit cost, retail price.
   Existing product = stock added; unknown barcode = new product created.
+- **Import Stock** (from Excel/CSV): pick a file exported from the old
+  system, the app auto-maps columns to fields (name, barcode, prices,
+  quantity, category, and more — remap anything it guesses wrong), previews
+  the first rows, then commits everything in one transaction: a matching
+  barcode or name updates price and adds quantity, anything unmatched
+  creates a new product. A backup is taken automatically first; up to 5,000
+  rows per file.
 - Quick-add for unknown barcodes from the POS.
 - Units of measure: every product carries a unit label (strip of 6,
   bottle of 100, sachet…) shown on cards, cart lines, and receipts.
@@ -123,8 +140,9 @@ what needs attention.
 - **Payments**: record payments per invoice (Cash / Mobile Money / Bank /
   Cheque) with history; the list shows each order's outstanding **Balance**
   (overpaying is rejected server-side).
-- Orders can be created from the POS via the one-tap Order button on
-  low/out-of-stock cards.
+- Orders can be created from the POS via the Order button on low/out-of-stock
+  cards (opens a pre-filled confirm dialog; a second click creates the
+  order).
 
 ## 5. Reports (Analytics)
 
@@ -134,7 +152,8 @@ what needs attention.
   breakdown, categories, top products, recent sales, returns, cash-up. The
   CSV export and its filename carry the operator (`sales-today-ama.csv`).
 - KPIs: **Gross Sales / Returns / Net Revenue** (refunds subtracted honestly),
-  transaction count, items sold, gross profit (uses stored cost price).
+  transaction count, items sold, gross profit (uses stored cost price),
+  total expenses, and net profit (gross profit minus expenses).
 - Breakdowns: by payment method (Cash/Card/MoMo — split payments counted
   per method), by operator, by category.
 - Top products (by quantity), recent sales list — each row has a **Return**
@@ -145,8 +164,9 @@ what needs attention.
   printable RETURN slip with negative amounts is generated. Reports subtract
   returns from net revenue.
 - **Daily cash-up**: pick a day, enter the opening float (remembered per day),
-  see cash sales minus cash refunds, enter what was counted, and save the
-  variance (green/red) to a per-day history.
+  see cash sales minus cash refunds minus cash expenses (see Expenses,
+  section 10 — only expenses paid in Cash count against the till), enter
+  what was counted, and save the variance (green/red) to a per-day history.
 - **Recent stock adjustments**: the last 10 audit entries (product, ±qty,
   reason, operator).
 - Stock health: low stock, expiring ≤ 60 days, expired, and **slow movers**
@@ -158,6 +178,9 @@ what needs attention.
 - **Customer Credit (book)**: every customer's outstanding balance from
   credit sales, with one-tap Settle (amount + method, overpaying rejected);
   a per-payment history is kept.
+- **Supplier Balances**: the flip side of Customer Credit — per-supplier
+  purchased / paid / balance across every purchase order on file (invoice
+  count, oldest open date), so you can see who you still owe.
 - Export CSV: one file with all sections, saved wherever you pick in the
   native Save dialog (path shown in the UI after export).
 - Backup button: WAL-safe copy of the database to `backups/` (path shown).
@@ -170,6 +193,9 @@ what needs attention.
 - Patients are created automatically at checkout whenever a name is attached
   to a sale; the sale keeps a name/phone snapshot, so history never breaks
   even if a patient record is cleaned up.
+- **Discount tier**: each patient can carry a standing discount (0-100%), set
+  from their history card. It applies automatically to the subtotal of their
+  next sale at checkout and shows as a line on the receipt.
 
 ## 7. Settings & operations
 
@@ -183,13 +209,18 @@ what needs attention.
   two-tap Restore. Restoring snapshots the current database to
   `backups/pre-restore-<ts>.db` first, swaps the file, and restarts the app.
   Auto-backups keep the newest 20 files.
+- **Dark mode**: a toggle in an Appearance card switches the whole app
+  between light and dark via a CSS custom-property token system (colors
+  only, no separate dark-mode components), saved as a setting so it
+  persists between launches.
 
 ## 8. Keyboard map
 
+- F8 — Hold the current order (POS screen only; no-op with an empty cart).
 - F9 / F10 / F11 — Cash / Card / MoMo: on POS with items they open checkout
   pre-selected; inside the payment screen they switch method.
 - F2 — Inventory Intake from anywhere.
-- Ctrl+K — focus top search. Ctrl+F — focus POS scan/search.
+- Ctrl+K — focus top search.
 - Esc — close modal. Enter — confirm (and scan-equivalent in the POS box).
 
 ## 9. Data & reliability
@@ -208,20 +239,46 @@ what needs attention.
   timestamp), sale_payments (per-method amount + optional reference),
   sale_items (snapshot of name/unit/price, quantity), sale_returns +
   sale_return_items, stock_adjustments (audit log), cash_ups (per-day till
-  records), patients (search index), suppliers, purchases + purchase_items
-  (orders with qty_received, cancelled flag), purchase_payments (supplier
-  invoice payments), credit_payments (customer book settlements), settings
-  key/value.
+  records), patients (search index, discount_tier), suppliers, purchases +
+  purchase_items (orders with qty_received, cancelled flag),
+  purchase_payments (supplier invoice payments), credit_payments (customer
+  book settlements), expenses (category, description, amount, payment
+  method, operator, timestamp), settings key/value.
 - Migrations run through an in-app runner keyed by PRAGMA user_version
-  (currently v18) — the plugin's own runner and its leftover
-  `_sqlx_migrations` table were dropped.
+  (currently v21 — 21 migration files) — the plugin's own runner and its
+  leftover `_sqlx_migrations` table were dropped.
 - Fonts (Inter + Material Symbols) are self-hosted in `public/fonts/` — no
   Google Fonts at runtime.
 - Demo seed catalog ships with the first migration (Coartem, Amoxicillin,
   Paracetamol, Ibuprofen, Lisinopril, Amlodipine, Metformin, ORS) with real
   expiry/status variety — deletable.
 
-## 10. Deliberately NOT included (v1 scope decisions)
+## 10. Expenses
+
+Petty cash and running costs — rent, utilities, staff, transport,
+maintenance, supplies, licenses, tax, other — tracked separately from stock
+purchases.
+
+- **Log an expense**: category (fixed list), description, amount (GH₵), and
+  how it was paid (Cash / Card / MoMo), stamped with the operator on duty.
+  Each entry can be deleted (two-tap confirm).
+- **Date range + by-category breakdown**: filter any range, see a running
+  total and a per-category subtotal panel alongside the list.
+- **Feeds Reports**: total expenses and net profit (gross profit minus
+  expenses) appear as KPI tiles, and cash-paid expenses subtract from Daily
+  cash-up's expected till total — Card/MoMo expenses never touch the till,
+  so they're excluded from that calculation.
+
+## 11. Support
+
+A compose page, not a ticket system: describe the problem, tap Send, and the
+OS mail app opens with a message pre-filled (pharmacy name, staff name, app
+version, a device id, timestamp, what you were doing, what went wrong)
+addressed to the support email set in Settings — so a report arrives with
+context instead of "it's broken." Attach a screenshot before sending if the
+problem is visual.
+
+## 12. Deliberately NOT included (v1 scope decisions)
 
 - No login / passwords / user roles (operator name only).
 - No NHIS/insurance claims or e-invoicing.
@@ -232,7 +289,7 @@ what needs attention.
 - No multi-branch sync, no cloud.
 - No internet required for any feature.
 
-## 11. Build & run
+## 13. Build & run
 
 - `npm install`, then `npm run tauri dev` (first Rust build takes several
   minutes; afterwards it hot-reloads). Production binary: `npm run tauri
