@@ -31,7 +31,7 @@ export function orderTotal(
   const subtotal = lines.reduce((s, l) => s + l.line_total, 0);
   const amt = discountAmount || 0;
   if (discountType === "Fixed") return Math.max(0, subtotal - amt);
-  if (discountType === "Percentage") return subtotal * (1 - amt / 100);
+  if (discountType === "Percentage") return Math.max(0, subtotal * (1 - Math.min(amt, 100) / 100));
   return subtotal;
 }
 
