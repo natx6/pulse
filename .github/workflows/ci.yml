@@ -6,6 +6,7 @@ name: CI
 # stack: the TypeScript build/typecheck and the Rust build/tests.
 on:
   push:
+    branches: ["main"]
   pull_request:
 
 jobs:
