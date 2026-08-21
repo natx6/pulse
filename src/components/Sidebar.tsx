@@ -16,7 +16,6 @@ const NAV: { id: PageId; icon: string; label: string }[] = [
 export function Sidebar() {
   const page = useStore((s) => s.page);
   const setPage = useStore((s) => s.setPage);
-  const newSale = useStore((s) => s.newSale);
   const operator = useStore((s) => s.operator);
   const operators = useStore((s) => s.operators);
   const autoOperator = useStore((s) => s.autoOperator);
@@ -52,16 +51,6 @@ export function Sidebar() {
           </p>
         </div>
       </div>
-
-      <Tip label="Fresh sale — holds the current order and clears the counter">
-        <button
-          onClick={newSale}
-          className="mb-6 flex w-full items-center justify-center gap-2 rounded bg-primary px-4 py-2 text-on-primary transition-colors hover:opacity-90 active:opacity-80"
-        >
-          <span className="material-symbols-outlined filled text-[18px]">add_circle</span>
-          <span className="text-label-md font-label-md">New Prescription</span>
-        </button>
-      </Tip>
 
       <nav className="flex flex-1 flex-col gap-1">
         {NAV.map((n) => {
