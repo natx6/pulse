@@ -32,6 +32,9 @@ export function PatientModal({ name, phone, onClose }: Props) {
     lines: CartLine[];
     subtotal: number;
     tax: number;
+    /** Discount snapshot (migration 0024) so reprints explain subtotal > total. */
+    discountPct?: number;
+    discountAmt?: number;
     method: string;
     payments?: PaymentLine[];
   } | null>(null);
@@ -63,17 +66,28 @@ export function PatientModal({ name, phone, onClose }: Props) {
   const saveDiscount = async () => {
     const v = Math.min(100, Math.max(0, Number(discountInput) || 0));
     setDiscountInput(v > 0 ? String(v) : "");
-    await updatePatientDiscount(name, v);
-    setDiscountSaved(true);
-    setTimeout(() => setDiscountSaved(false), 1500);
+    try {
+      await updatePatientDiscount(name, v);
+      setErr("");
+      setDiscountSaved(true);
+      setTimeout(() => setDiscountSaved(false), 1500);
+    } catch (e) {
+      // A failed write must not show the success checkmark.
+      setErr(String(e).replace(/^Error: /, ""));
+      beep(false);
+    }
   };
 
   const doReprint = async (receiptNo: string) => {
     try {
       const db = await initDb();
       const [sale] = await db.select<
-        { id: number; receipt_no: string; total_amount: number; payment_method: string }[]
-      >("SELECT id, receipt_no, total_amount, payment_method FROM sales WHERE receipt_no = $1", [
+        { id: number; receipt_no: string; total_amount: number; payment_method: string;
+          change_given: number | null; subtotal: number | null; discount_amount: number | null;
+          tax_amount: number | null }[]
+      >(`SELECT id, receipt_no, total_amount, payment_method,
+                change_given, subtotal, discount_amount, tax_amount
+         FROM sales WHERE receipt_no = $1`, [
         receiptNo,
       ]);
       if (!sale) return;
@@ -87,12 +101,19 @@ export function PatientModal({ name, phone, onClose }: Props) {
       >("SELECT method, amount, reference FROM sale_payments WHERE sale_id = $1 ORDER BY id", [
         sale.id,
       ]);
+      // Stored snapshot (migration 0024); legacy fallback as in Reports. The
+      // percent is re-derived from the stored amount — patient tiers are
+      // whole numbers, so this recovers the original figure exactly.
+      const sub = sale.subtotal !== null && Number(sale.subtotal) > 0 ? Number(sale.subtotal) : Number(sale.total_amount);
+      const discountAmt = Number(sale.discount_amount ?? 0);
+      const discountPct =
+        discountAmt > 0 && sub > 0 ? Math.round((discountAmt / sub) * 100) : 0;
       setReprint({
         result: {
           receipt_no: sale.receipt_no,
           sale_id: sale.id,
           total: Number(sale.total_amount),
-          change: 0,
+          change: Number(sale.change_given ?? 0),
         },
         lines: items.map((i) => ({
           productId: 0,
@@ -101,8 +122,10 @@ export function PatientModal({ name, phone, onClose }: Props) {
           unitPrice: Number(i.unit_price),
           qty: Number(i.quantity),
         })),
-        subtotal: Number(sale.total_amount),
-        tax: 0,
+        subtotal: sub,
+        tax: Number(sale.tax_amount ?? 0),
+        discountPct,
+        discountAmt,
         method: sale.payment_method,
         payments: pays.length
           ? pays.map((p) => ({
@@ -239,6 +262,8 @@ export function PatientModal({ name, phone, onClose }: Props) {
           lines={reprint.lines}
           subtotal={reprint.subtotal}
           tax={reprint.tax}
+          discountPct={reprint.discountPct}
+          discountAmt={reprint.discountAmt}
           paymentMethod={reprint.method}
           payments={reprint.payments}
           onClose={() => setReprint(null)}

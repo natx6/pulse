@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { initDb, getSettings } from "./db";
 import { useStore } from "./store/useStore";
 import { initScanner } from "./lib/scanner";
@@ -10,6 +10,7 @@ import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { QuickAddModal } from "./components/QuickAddModal";
 import { IntakeModal } from "./components/IntakeModal";
+import { DashboardPage } from "./pages/DashboardPage";
 import { PosPage } from "./pages/PosPage";
 import { InventoryPage } from "./pages/InventoryPage";
 import { RestockPage } from "./pages/RestockPage";
@@ -27,6 +28,10 @@ export default function App() {
     pct: number | null;
     note: string;
   } | null>(null);
+  /** Startup failure that survived every retry — shown with a Retry button
+   * instead of leaving the app silently empty (all-defaults UI). */
+  const [initError, setInitError] = useState("");
+  const scannerReady = useRef(false);
 
   // Auto-update: installed builds check for a newer release on launch, download
   // it (with a small progress overlay), install, and restart. The dev app never
@@ -64,46 +69,69 @@ export default function App() {
 
   useEffect(() => {
     let disposed = false;
-    void (async () => {
+
+    const runInit = async (): Promise<boolean> => {
       try {
         await initDb();
         const s = await getSettings();
-        if (disposed) return;
+        if (disposed) return true;
         useStore.getState().applySettings(s);
         await useStore.getState().refreshProducts();
         await useStore.getState().loadOperators();
-        initScanner((code) => {
-          const st = useStore.getState();
-          const toast = useToast.getState();
-          const p = st.products.find((x) => x.barcode === code);
-          if (p) {
-            if (p.stock_qty <= 0) {
+        if (!scannerReady.current) {
+          scannerReady.current = true;
+          initScanner((code) => {
+            const st = useStore.getState();
+            const toast = useToast.getState();
+            const p = st.products.find((x) => x.barcode === code);
+            if (p) {
+              if (p.stock_qty <= 0) {
+                beep(false);
+                toast.show(`${p.name} is out of stock`, "error");
+                return;
+              }
+              // Same at-cart-max guard as PosPage's tryAdd — addToCart silently
+              // no-ops once the cart hits stock_qty, so without this a repeat
+              // scan past available stock would still play a success beep.
+              const line = st.cart.find((l) => l.productId === p.id);
+              if (line && line.qty >= p.stock_qty) {
+                beep(false);
+                toast.show(`Max stock reached for ${p.name}`, "error");
+                return;
+              }
+              st.addToCart(p);
+              beep(true);
+              toast.show(`${p.name} added`, "success", { duration: 1500 });
+            } else {
               beep(false);
-              toast.show(`${p.name} is out of stock`, "error");
-              return;
+              toast.show(`Unknown barcode ${code} — quick add`, "info");
+              st.setQuickAdd({ barcode: code });
             }
-            // Same at-cart-max guard as PosPage's tryAdd — addToCart silently
-            // no-ops once the cart hits stock_qty, so without this a repeat
-            // scan past available stock would still play a success beep.
-            const line = st.cart.find((l) => l.productId === p.id);
-            if (line && line.qty >= p.stock_qty) {
-              beep(false);
-              toast.show(`Max stock reached for ${p.name}`, "error");
-              return;
-            }
-            st.addToCart(p);
-            beep(true);
-            toast.show(`${p.name} added`, "success", { duration: 1500 });
-          } else {
-            beep(false);
-            toast.show(`Unknown barcode ${code} — quick add`, "info");
-            st.setQuickAdd({ barcode: code });
-          }
-        });
+          });
+        }
+        if (!disposed) setInitError("");
+        return true;
       } catch (e) {
         console.error("init failed", e);
+        if (!disposed) {
+          setInitError(String(e).replace(/^Error: /, ""));
+        }
+        return false;
+      }
+    };
+
+    // Retries with backoff: during `tauri dev` restarts the freshly spawned
+    // instance can race the old one for the SQLite file (database is locked)
+    // and lose — that must cost a retry, not an empty app with no explanation.
+    void (async () => {
+      const delays = [0, 1500, 4000];
+      for (const d of delays) {
+        if (d) await new Promise((r) => setTimeout(r, d));
+        if (disposed) return;
+        if (await runInit()) return;
       }
     })();
+
     return () => {
       disposed = true;
     };
@@ -153,8 +181,36 @@ export default function App() {
     <div className="flex h-screen overflow-hidden bg-background text-on-background font-body-md text-body-md antialiased">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col pl-64">
+        {initError && (
+          <div className="flex items-center gap-3 border-b border-error/30 bg-error-container px-4 py-2 text-on-error-container">
+            <span className="material-symbols-outlined text-[18px]">error</span>
+            <span className="min-w-0 flex-1 truncate text-body-sm font-body-sm" title={initError}>
+              Startup problem: {initError}
+            </span>
+            <button
+              onClick={() => {
+                setInitError("");
+                void (async () => {
+                  try {
+                    await initDb();
+                    const s = await getSettings();
+                    useStore.getState().applySettings(s);
+                    await useStore.getState().refreshProducts();
+                    await useStore.getState().loadOperators();
+                  } catch (e) {
+                    setInitError(String(e).replace(/^Error: /, ""));
+                  }
+                })();
+              }}
+              className="shrink-0 rounded border border-on-error-container/40 px-2 py-1 text-label-md font-label-md hover:bg-black/5"
+            >
+              Retry
+            </button>
+          </div>
+        )}
         <TopBar />
         <main className="min-h-0 flex-1 overflow-hidden pt-14">
+          {page === "dashboard" && <DashboardPage />}
           {page === "pos" && <PosPage />}
           {page === "inventory" && <InventoryPage />}
           {page === "restock" && <RestockPage />}

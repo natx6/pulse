@@ -195,6 +195,12 @@ jobs:
         run: |
           set -e
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          # The updater compares manifest version to the built binary — a tag
+          # that doesn't match the conf would break updates silently.
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} != tauri.conf version v${VERSION} — bump the conf or retag"
+            exit 1
+          fi
           ASSETS=$(find artifacts -type f \
             \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \
                -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \

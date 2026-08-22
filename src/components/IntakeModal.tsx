@@ -21,6 +21,10 @@ export function IntakeModal() {
   const [manufacturer, setManufacturer] = useState("");
   const [category, setCategory] = useState("");
   const [unit, setUnit] = useState("");
+  /** Units per purchase pack (carton of 10 strips = 10). */
+  const [pack, setPack] = useState("");
+  /** Quick multiplier: type how many packs arrived → quantity auto-fills. */
+  const [packsIn, setPacksIn] = useState("");
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
@@ -38,12 +42,25 @@ export function IntakeModal() {
       setManufacturer("");
       setCategory("");
       setUnit("");
+      setPack("");
+      setPacksIn("");
       setMessage(null);
       setTimeout(() => scanRef.current?.focus(), 50);
     }
   }, [open]);
 
   if (!open) return null;
+
+  const packSize = Math.max(0, Math.floor(Number(pack)) || 0);
+
+  /** Typing a number of packs multiplies into the quantity field. */
+  const applyPacks = (n: string) => {
+    setPacksIn(n);
+    const count = Math.max(0, Math.floor(Number(n)) || 0);
+    if (count > 0 && packSize > 1) {
+      setQty(String(count * packSize));
+    }
+  };
 
   const lookup = () => {
     const code = barcode.trim();
@@ -59,6 +76,7 @@ export function IntakeModal() {
       setManufacturer(p.manufacturer ?? "");
       setCategory(p.category ?? "");
       setUnit(p.unit ?? "");
+      setPack((p.pack_size ?? 1) > 1 ? String(p.pack_size) : "");
       setMessage({ ok: true, text: `${p.name} — adding to existing stock.` });
     } else {
       setMessage({ ok: false, text: "New barcode — fill the details to create it." });
@@ -91,6 +109,7 @@ export function IntakeModal() {
         manufacturer: manufacturer.trim() || null,
         category: category.trim() || null,
         unit: unit.trim() || null,
+        packSize: packSize > 1 ? packSize : null,
       });
       await refreshProducts();
       beep(true);
@@ -201,6 +220,23 @@ export function IntakeModal() {
                 className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               />
             </label>
+            {packSize > 1 && (
+              <label className="block">
+                <span
+                  className="mb-1 block text-label-md font-label-md text-on-surface"
+                  title={`Quantity auto-fills from packs × ${packSize}`}
+                >
+                  Packs arrived ({packSize} units each)
+                </span>
+                <input
+                  value={packsIn}
+                  onChange={(e) => applyPacks(e.target.value)}
+                  inputMode="numeric"
+                  placeholder="e.g. 5 cartons"
+                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </label>
+            )}
             <label className="block">
               <span className="mb-1 block text-label-md font-label-md text-on-surface">
                 Supplier
@@ -254,6 +290,24 @@ export function IntakeModal() {
                 onChange={(e) => setUnit(e.target.value)}
                 placeholder="e.g. strip (10 tabs), bottle (100 caps)"
                 className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </label>
+            <label className="block">
+              <span
+                className="mb-1 block text-label-md font-label-md text-on-surface"
+                title="How many sell units one purchase pack contains (carton of 10 strips = 10). Lets the POS add a whole carton in one tap."
+              >
+                Units per Pack (optional)
+              </span>
+              <input
+                value={pack}
+                onChange={(e) => {
+                  setPack(e.target.value);
+                  applyPacks(packsIn);
+                }}
+                inputMode="numeric"
+                placeholder="e.g. 10"
+                className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               />
             </label>
             <label className="block">

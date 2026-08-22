@@ -4,6 +4,7 @@ import { completeSale } from "../db";
 import { useStore } from "../store/useStore";
 import { beep } from "../lib/audio";
 import { fmtMoney } from "../lib/money";
+import { round2 } from "../lib/price";
 import { Tip } from "./Tip";
 
 interface Props {
@@ -23,7 +24,6 @@ const METHODS: { id: PaymentMethod; icon: string; label: string; key: string }[]
 ];
 
 const QUICK_TENDER = [20, 50, 100, 200];
-const round2 = (n: number) => Math.round(n * 100) / 100;
 
 interface SplitRow {
   method: PaymentMethod;

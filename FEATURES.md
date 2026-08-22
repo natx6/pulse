@@ -12,9 +12,15 @@ the app works fully offline (power cuts and flaky internet are assumed).
 
 - Single desktop window titled "Pulse" (pharmacy name shown inside the app is
   editable in Settings and never hard-codes the window title).
-- Left sidebar navigation: POS, Inventory, Requisitions, Reports, Expenses,
+- Left sidebar navigation: Dashboard, POS, Inventory, Requisitions, Reports,
+  Expenses,
   and Support, with Settings and the operator switcher pinned below a
   divider at the bottom.
+- **Launch dashboard**: the app opens on a today-snapshot instead of the
+  counter — net sales + transaction count, cash/card/MoMo takings, expected
+  till (float − refunds − cash expenses), out-of-stock / low / expiring /
+  expired counts, open purchase orders, and the latest receipts. Refreshes
+  each minute; "Open register" is one tap to the POS.
 - Top bar: pharmacy name, search field (Ctrl+K focuses it; matches products
   and patients live as you type), "New Prescription" button (holds current
   order if any, clears the counter, focuses the scanner), Barcode Scan
@@ -69,10 +75,17 @@ the app works fully offline (power cuts and flaky internet are assumed).
   - Every payment line (method, amount, reference) is stored per sale and
     printed on the receipt.
 - **Receipt**: on-screen receipt preview after every sale, printable via the
-  OS print dialog. Shows pharmacy name, receipt number, items with units,
+  OS print dialog or sent straight to an ESC/POS thermal printer over the
+  LAN (TCP 9100 — no print dialog; address set in Settings). Shows pharmacy
+  name, receipt number, items with units,
   subtotal, any patient discount, tax, total, amount paid, change, payment
   method/reference (MoMo number too when relevant), and footer from
   Settings — the operator's name is not on it.
+- **Pack/break-unit selling**: a product can carry `pack_size` (units per
+  purchase pack — carton of 10 strips = 10). Product cards then show an
+  "×N" add-a-whole-pack button, cart lines get a ×1/×N step toggle, and
+  Intake multiplies packs × size into quantity automatically. Stock is
+  always counted in sell units; packs are just faster fingers.
 - **Atomic sales**: a sale (receipt + items + stock deduction) commits as a
   single SQLite transaction in Rust — a crash or power cut can never produce
   a half-recorded sale. Overselling is rejected before anything is written.
@@ -100,6 +113,14 @@ the app works fully offline (power cuts and flaky internet are assumed).
 - Units of measure: every product carries a unit label (strip of 6,
   bottle of 100, sachet…) shown on cards, cart lines, and receipts.
 - Batch number, expiry date, cost and selling price per product.
+- **Batch-level stock (FEFO)**: every product's stock is broken down into
+  `product_batches` rows; sales consume the nearest-expiry batch first, so
+  old stock never dies behind new. Each sale records which batches it
+  dispensed (`sale_items.batches`) — the recall trail: search that column
+  to find every receipt that sold a given batch. Returns and voids put
+  units back on their original batches; imports, intake, and purchases all
+  merge onto matching (batch, expiry) rows. Expand any Inventory row to see
+  its batches in FEFO order.
 - **Stock adjustments** (row action on hover): a signed quantity change
   (damaged / expired / counting error / returned to supplier / other + note),
   mandatory reason, logged to an audit list on the Reports page. Stock can
@@ -107,6 +128,11 @@ the app works fully offline (power cuts and flaky internet are assumed).
 - **Archive**: any product can be archived (two-tap confirm) — it disappears
   from the POS and inventory but keeps its sales history. "Show archived"
   lists them with a one-tap Restore.
+- **Stock take**: count the whole shelf without stopping sales — filter the
+  list, type what's actually on each shelf, see live variances (+/−), commit
+  once. Only differences are applied in a single transaction (stock + FEFO
+  batch ledger together) and every correction lands in the audit list as a
+  'Stock take' row stamped with the operator's name.
 - **Print Label**: pick a product (or type any barcode) and print a scannable
   Code39 shelf label — completes the loop for QuickAdd products whose fake
   barcodes become printable, scannable labels.
@@ -162,7 +188,8 @@ what needs attention.
 - **Returns**: refund part or all of any sale (per-line quantities, optional
   reason) — the sale stays on record, stock goes back on the shelf, and a
   printable RETURN slip with negative amounts is generated. Reports subtract
-  returns from net revenue.
+  returns from net revenue. Refunds and voids are gated by the manager PIN
+  whenever one is configured in Settings (see section 7).
 - **Daily cash-up**: pick a day, enter the opening float (remembered per day),
   see cash sales minus cash refunds minus cash expenses (see Expenses,
   section 10 — only expenses paid in Cash count against the till), enter
@@ -202,13 +229,22 @@ what needs attention.
 - Pharmacy name (shown in the top bar and on receipts), tax rate, receipt
   footer, operator name, **Mobile Money number** (shown at MoMo checkout and
   printed on receipts).
+- **Thermal printer** card: address + port of an ESC/POS receipt printer on
+  the LAN; once set, every receipt modal shows a one-tap Thermal button.
 - Operator chip in the sidebar: tap to change who is on duty; the operator's
   name is stamped on every sale and feeds the per-operator report. No login,
   no passwords — the data exists, the flow forces nothing.
+- **Loss prevention**: an optional manager PIN (4–8 digits, set/clear in
+  Settings) gates the shrinkage paths — voiding a sale, refunds (returns),
+  and negative stock adjustments all prompt for it when configured. The
+  check is enforced in Rust on every gated command, not just in the UI.
+  No PIN = today's friction-free flow, untouched.
 - **Backups card**: every backup in `backups/` (name, size, date) with a
   two-tap Restore. Restoring snapshots the current database to
   `backups/pre-restore-<ts>.db` first, swaps the file, and restarts the app.
-  Auto-backups keep the newest 20 files.
+  Auto-backups keep the newest 20 files. "Save to flash drive…" copies a
+  fresh WAL-safe snapshot to any folder — flash drive or second disk — for
+  offsite insurance against theft and fire.
 - **Dark mode**: a toggle in an Appearance card switches the whole app
   between light and dark via a CSS custom-property token system (colors
   only, no separate dark-mode components), saved as a setting so it
@@ -233,11 +269,14 @@ what needs attention.
   newest 20 backups are kept (timestamped names); restores are two-tap with a
   pre-restore safety snapshot.
 - Schema: products (name, barcode unique+indexed, category, manufacturer,
-  supplier, strength, unit, Rx flag, FDA reg no, controlled flag, batch,
-  expiry, cost, retail, stock, reorder level, active flag), sales (receipt
+  supplier, strength, unit, pack_size, Rx flag, FDA reg no, controlled flag,
+  batch, expiry, cost, retail, stock, reorder level, active flag),
+  product_batches (per-batch FEFO ledger — its per-product sum always equals
+  products.stock_qty), sales (receipt
   no, total, primary payment method, operator, patient name/phone snapshot,
   timestamp), sale_payments (per-method amount + optional reference),
-  sale_items (snapshot of name/unit/price, quantity), sale_returns +
+  sale_items (snapshot of name/unit/price, quantity, cost snapshot, batches
+  dispensed), sale_returns +
   sale_return_items, stock_adjustments (audit log), cash_ups (per-day till
   records), patients (search index, discount_tier), suppliers, purchases +
   purchase_items (orders with qty_received, cancelled flag),
@@ -245,7 +284,7 @@ what needs attention.
   book settlements), expenses (category, description, amount, payment
   method, operator, timestamp), settings key/value.
 - Migrations run through an in-app runner keyed by PRAGMA user_version
-  (currently v21 — 21 migration files) — the plugin's own runner and its
+  (currently v22 — 22 migration files) — the plugin's own runner and its
   leftover `_sqlx_migrations` table were dropped.
 - Fonts (Inter + Material Symbols) are self-hosted in `public/fonts/` — no
   Google Fonts at runtime.
@@ -284,7 +323,8 @@ problem is visual.
 - No NHIS/insurance claims or e-invoicing.
 - No live MoMo API integration (the merchant number is displayed; Pulse
   doesn't move money itself).
-- No thermal-printer direct driver (browser print only).
+- No USB-serial thermal driver (ESC/POS works over TCP 9100; a USB printer
+  can be shared onto the network by its host).
 - No prescriptions lifecycle / dosing regimens (patient history only).
 - No multi-branch sync, no cloud.
 - No internet required for any feature.

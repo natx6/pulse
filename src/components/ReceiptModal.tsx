@@ -1,6 +1,8 @@
+import { useState } from "react";
 import type { CartLine, PaymentLine, SaleResult } from "../types";
 import { useStore } from "../store/useStore";
 import { fmtMoney } from "../lib/money";
+import { getSettings, printThermalReceipt } from "../db";
 
 interface Props {
   result: SaleResult;
@@ -20,6 +22,53 @@ export function ReceiptModal({ result, lines, subtotal, discountPct, discountAmt
   const momoNumber = useStore((s) => s.momoNumber);
   const paidByMoMo =
     paymentMethod === "MoMo" || (payments ?? []).some((p) => p.method === "MoMo");
+
+  // Direct-to-thermal printing state ("idle" | "busy" | "ok" | "err").
+  const [thermal, setThermal] = useState<"idle" | "busy" | "ok" | "err">("idle");
+  const [thermalMsg, setThermalMsg] = useState("");
+
+  /** Send the receipt straight to the ESC/POS printer configured in
+   * Settings — raw bytes over the LAN, no print dialog. Money is rendered
+   * without the cedi sign here because thermal fonts are ASCII-only. */
+  const doThermal = async () => {
+    setThermal("busy");
+    setThermalMsg("");
+    try {
+      const st = await getSettings();
+      if (!st.printerHost.trim()) {
+        throw new Error("No printer configured — set its address in Settings");
+      }
+      const ghs = (n: number) => n.toFixed(2);
+      await printThermalReceipt({
+        host: st.printerHost.trim(),
+        port: st.printerPort,
+        pharmacy_name: pharmacyName,
+        receipt_no: result.receipt_no,
+        timestamp: new Date().toLocaleString(),
+        lines: lines.map((l) => ({
+          name: l.name,
+          detail: [l.unit ?? null, `${l.qty} x ${ghs(l.unitPrice)}`].filter(Boolean).join(" · "),
+          amount: ghs(l.qty * l.unitPrice),
+        })),
+        subtotal: ghs(subtotal),
+        discount:
+          discountAmt && discountAmt > 0
+            ? `-${ghs(discountAmt)} (${discountPct ?? 0}%)`
+            : null,
+        tax: tax > 0 ? ghs(tax) : null,
+        total: ghs(result.total),
+        payments: (payments ?? []).map(
+          (p) => `${p.method} ${ghs(p.amount)}${p.reference ? ` ref ${p.reference}` : ""}`,
+        ),
+        change: result.change > 0 ? ghs(result.change) : null,
+        footer: footer || null,
+      });
+      setThermal("ok");
+    } catch (e) {
+      setThermal("err");
+      setThermalMsg(String(e).replace(/^Error: /, ""));
+    }
+  };
 
   return (
     <div
@@ -136,21 +185,45 @@ export function ReceiptModal({ result, lines, subtotal, discountPct, discountAmt
             </>
           )}
         </div>
-        <div className="flex gap-2 border-t border-outline-variant bg-surface-container px-6 py-4">
-          <button
-            onClick={() => window.print()}
-            className="flex flex-1 items-center justify-center gap-2 rounded border border-outline px-4 py-2 text-on-surface hover:bg-surface-variant"
-          >
-            <span className="material-symbols-outlined text-[18px]">print</span>
-            <span className="text-label-md font-label-md">Print</span>
-          </button>
-          <button
-            onClick={onClose}
-            autoFocus
-            className="flex-1 rounded bg-primary px-4 py-2 text-on-primary shadow-sm hover:bg-on-primary-fixed-variant"
-          >
-            <span className="text-label-md font-label-md">Done</span>
-          </button>
+        <div className="border-t border-outline-variant bg-surface-container px-6 py-4">
+          {thermal !== "idle" && (
+            <p
+              className={`mb-2 text-center text-body-sm font-body-sm ${
+                thermal === "ok" ? "text-primary" : thermal === "err" ? "text-error" : "text-on-surface-variant"
+              }`}
+            >
+              {thermal === "busy"
+                ? "Printing…"
+                : thermal === "ok"
+                  ? "Sent to the printer."
+                  : thermalMsg}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={() => void doThermal()}
+              disabled={thermal === "busy"}
+              title="Print straight to the thermal printer (set its address in Settings)"
+              className="flex flex-1 items-center justify-center gap-1 rounded border border-outline px-3 py-2 text-on-surface hover:bg-surface-variant disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[18px]">receipt_long</span>
+              <span className="text-label-md font-label-md">Thermal</span>
+            </button>
+            <button
+              onClick={() => window.print()}
+              className="flex flex-1 items-center justify-center gap-2 rounded border border-outline px-4 py-2 text-on-surface hover:bg-surface-variant"
+            >
+              <span className="material-symbols-outlined text-[18px]">print</span>
+              <span className="text-label-md font-label-md">Print</span>
+            </button>
+            <button
+              onClick={onClose}
+              autoFocus
+              className="flex-1 rounded bg-primary px-4 py-2 text-on-primary shadow-sm hover:bg-on-primary-fixed-variant"
+            >
+              <span className="text-label-md font-label-md">Done</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

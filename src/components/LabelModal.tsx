@@ -12,6 +12,7 @@ interface Props {
  * QuickAdd product's fake barcode, which then becomes scannable). */
 export function LabelModal({ onClose }: Props) {
   const products = useStore((s) => s.products);
+  const pharmacyName = useStore((s) => s.pharmacyName);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Product | null>(null);
   const [manual, setManual] = useState("");
@@ -110,7 +111,7 @@ export function LabelModal({ onClose }: Props) {
               style={{ width: 60 * 3.78 }} // ~60mm at 96dpi
             >
               <p className="mb-0.5 text-center text-[12px] font-bold leading-tight text-black">
-                {selected?.name ?? (manual.trim() ? "Pulse Pharmacy" : "")}
+                {selected?.name ?? (manual.trim() ? pharmacyName : "")}
               </p>
               {selected?.strength && (
                 <p className="text-center text-[10px] font-semibold text-black/70">

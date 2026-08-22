@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { initDb, returnSale } from "../db";
+import { initDb, isManagerPinSet, returnSale } from "../db";
 import type { ReturnResult } from "../db";
 import { useStore } from "../store/useStore";
 import { beep } from "../lib/audio";
@@ -37,6 +37,9 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [slip, setSlip] = useState<ReturnResult | null>(null);
+  /** Manager PIN gate — required only when one is configured in Settings. */
+  const [pinRequired, setPinRequired] = useState(false);
+  const [managerPin, setManagerPin] = useState("");
 
   /** What's actually still returnable per product: sold minus already returned
    * on this sale — matches the Rust return_sale guard exactly. */
@@ -45,6 +48,11 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
 
   useEffect(() => {
     void (async () => {
+      try {
+        setPinRequired(await isManagerPinSet());
+      } catch {
+        setPinRequired(false);
+      }
       try {
         const db = await initDb();
         const rows = await db.select<SaleItem[]>(
@@ -91,6 +99,11 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
       beep(false);
       return;
     }
+    if (pinRequired && managerPin.trim().length < 4) {
+      setErr("Manager PIN required for refunds.");
+      beep(false);
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
@@ -99,6 +112,7 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
         lines.map((l) => ({ product_id: l.product_id, quantity: l.quantity })),
         reason.trim() || null,
         operator,
+        managerPin.trim() || null,
       );
       beep(true);
       setSlip(r);
@@ -267,6 +281,21 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
         </div>
 
         <div className="border-t border-outline-variant bg-surface-container px-6 py-4">
+          {pinRequired && (
+            <label className="mb-3 block">
+              <span className="mb-1 block text-label-md font-label-md text-on-surface">
+                Manager PIN — refunds are protected
+              </span>
+              <input
+                type="password"
+                inputMode="numeric"
+                value={managerPin}
+                onChange={(e) => setManagerPin(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                placeholder="••••"
+                className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 font-data-mono text-data-mono tracking-[0.3em] text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </label>
+          )}
           <label className="mb-3 block">
             <span className="mb-1 block text-label-md font-label-md text-on-surface">
               Reason (optional)

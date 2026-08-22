@@ -344,6 +344,7 @@ const FIELDS: { key: keyof StockImportRow; label: string; aliases: string[] }[] 
   { key: "cost_price", label: "Cost price", aliases: ["cost", "cost price", "buying price", "unit cost", "purchase price", "cogs"] },
   { key: "stock_qty", label: "Stock quantity", aliases: ["qty", "quantity", "stock", "stock qty", "balance", "on hand", "available", "current stock", "stock balance"] },
   { key: "reorder_level", label: "Reorder level", aliases: ["reorder", "reorder level", "min stock", "minimum", "reorder point", "min qty"] },
+  { key: "pack_size", label: "Units per pack", aliases: ["pack size", "units per pack", "pack qty", "units in pack", "per pack", "pieces per pack"] },
   { key: "category", label: "Category", aliases: ["category", "class", "group", "therapeutic class"] },
   { key: "manufacturer", label: "Manufacturer", aliases: ["manufacturer", "maker", "brand", "company"] },
   { key: "supplier", label: "Supplier", aliases: ["supplier", "vendor", "distributor"] },
@@ -417,6 +418,7 @@ function rowToRecord(row: string[], mapping: Record<string, number>): StockImpor
     selling_price: num(get("selling_price")),
     stock_qty: int(get("stock_qty")),
     reorder_level: int(get("reorder_level")),
+    pack_size: int(get("pack_size")),
     fda_reg_no: get("fda_reg_no") || null,
     is_controlled: bool(get("is_controlled")),
   };

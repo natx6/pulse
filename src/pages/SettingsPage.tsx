@@ -1,6 +1,18 @@
 import { useEffect, useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../store/useStore";
-import { deleteOperator, saveOperator, saveSetting, listBackups, restoreBackup, restartApp } from "../db";
+import {
+  backupDbToDir,
+  deleteOperator,
+  getSettings,
+  isManagerPinSet,
+  saveOperator,
+  saveSetting,
+  setManagerPin,
+  listBackups,
+  restoreBackup,
+  restartApp,
+} from "../db";
 import type { Operator, BackupInfo } from "../db";
 import { beep } from "../lib/audio";
 
@@ -22,9 +34,70 @@ export function SettingsPage() {
   const [footer, setFooter] = useState(receiptFooter);
   const [support, setSupport] = useState(supportEmail);
   const [momo, setMomo] = useState(momoNumber);
+  /** Thermal printer address — receipts can print straight to it (ESC/POS
+   * over TCP port 9100), no print dialog. */
+  const [printerHost, setPrinterHost] = useState("");
+  const [printerPort, setPrinterPort] = useState("9100");
   const isDark = useStore((s) => s.isDark);
   const [saved, setSaved] = useState(false);
   const [settingsErr, setSettingsErr] = useState("");
+  /** Manager PIN gate (loss prevention). */
+  const [pinActive, setPinActive] = useState(false);
+  const [pinInput, setPinInput] = useState("");
+  const [pinMsg, setPinMsg] = useState("");
+  /** Second tap required to actually clear an active PIN. */
+  const [pinArmClear, setPinArmClear] = useState(false);
+  /** Flash-drive backup. */
+  const [driveBusy, setDriveBusy] = useState(false);
+  const [driveMsg, setDriveMsg] = useState("");
+
+  useEffect(() => {
+    void getSettings().then((s) => {
+      setPrinterHost(s.printerHost);
+      setPrinterPort(String(s.printerPort));
+    });
+    void isManagerPinSet().then(setPinActive).catch(() => setPinActive(false));
+  }, []);
+
+  const savePin = async () => {
+    const p = pinInput.trim();
+    // Clearing an active PIN is destructive — arm it first (two taps).
+    if (!p && pinActive && !pinArmClear) {
+      setPinArmClear(true);
+      window.setTimeout(() => setPinArmClear(false), 3000);
+      return;
+    }
+    setPinArmClear(false);
+    if (p && !/^\d{4,8}$/.test(p)) {
+      setPinMsg("PIN must be 4–8 digits.");
+      return;
+    }
+    try {
+      await setManagerPin(p || null);
+      setPinActive(Boolean(p));
+      setPinInput("");
+      setPinMsg(p ? "Manager PIN is now active." : "Manager PIN cleared.");
+    } catch (e) {
+      setPinMsg(String(e).replace(/^Error: /, ""));
+    }
+  };
+
+  const saveToDrive = async () => {
+    setDriveMsg("");
+    try {
+      const picked = await openDialog({ directory: true, title: "Where should the backup copy go?" });
+      if (!picked) return; // dialog cancelled
+      setDriveBusy(true);
+      const path = await backupDbToDir(String(picked));
+      beep(true);
+      setDriveMsg(`Backup copied to ${path}`);
+    } catch (e) {
+      setDriveMsg(String(e).replace(/^Error: /, ""));
+      beep(false);
+    } finally {
+      setDriveBusy(false);
+    }
+  };
 
   const [rows, setRows] = useState<Operator[]>([]);
   const [newName, setNewName] = useState("");
@@ -89,6 +162,11 @@ export function SettingsPage() {
       await saveSetting("receipt_footer", footer.trim());
       await saveSetting("support_email", support.trim());
       await saveSetting("momo_number", momo.trim());
+      await saveSetting("printer_host", printerHost.trim());
+      await saveSetting(
+        "printer_port",
+        String(Math.max(1, Math.floor(Number(printerPort)) || 9100)),
+      );
       applySettings({
         pharmacyName: name.trim() || "Pulse Pharmacy",
         taxRate: Number(tax) || 0,
@@ -239,6 +317,40 @@ export function SettingsPage() {
         </label>
 
         <div className="mb-6 rounded-xl border border-outline-variant bg-surface p-4">
+          <h3 className="mb-1 text-headline-md font-headline-md text-on-surface">
+            Thermal printer (optional)
+          </h3>
+          <p className="mb-3 text-body-sm font-body-sm text-on-surface-variant">
+            Receipts print straight to an ESC/POS printer on the shop's
+            network — no print dialog. Set its IP address and port (9100 is
+            the default for networked and router-shared USB printers).
+          </p>
+          <div className="flex gap-3">
+            <label className="block flex-1">
+              <span className="mb-1 block text-body-md font-body-md text-on-surface">
+                Printer address
+              </span>
+              <input
+                value={printerHost}
+                onChange={(e) => setPrinterHost(e.target.value)}
+                placeholder="e.g. 192.168.1.50"
+                className={`${field} font-data-mono`}
+              />
+            </label>
+            <label className="block w-28">
+              <span className="mb-1 block text-body-md font-body-md text-on-surface">Port</span>
+              <input
+                value={printerPort}
+                onChange={(e) => setPrinterPort(e.target.value)}
+                inputMode="numeric"
+                placeholder="9100"
+                className={`${field} font-data-mono`}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="mb-6 rounded-xl border border-outline-variant bg-surface p-4">
           <h3 className="mb-3 text-headline-md font-headline-md text-on-surface">Operators</h3>
 
           <label className="mb-4 block">
@@ -364,13 +476,28 @@ export function SettingsPage() {
         <div className="mb-6 rounded-xl border border-outline-variant bg-surface p-4">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-headline-md font-headline-md text-on-surface">Backups</h3>
-            <button
-              onClick={() => void loadBackups()}
-              className="rounded border border-outline-variant px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:bg-surface-variant"
-            >
-              Refresh
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => void saveToDrive()}
+                disabled={driveBusy}
+                title="Copy the database to a flash drive or second disk — insurance against theft or fire"
+                className="rounded border border-primary/40 bg-primary/5 px-2 py-1 text-label-md font-label-md text-primary hover:bg-primary/10 disabled:opacity-50"
+              >
+                {driveBusy ? "Copying…" : "Save to flash drive…"}
+              </button>
+              <button
+                onClick={() => void loadBackups()}
+                className="rounded border border-outline-variant px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:bg-surface-variant"
+              >
+                Refresh
+              </button>
+            </div>
           </div>
+          {driveMsg && (
+            <p className="mb-3 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-body-sm font-body-sm break-all text-primary">
+              {driveMsg}
+            </p>
+          )}
           <p className="mb-3 text-body-sm font-body-sm text-on-surface-variant">
             Automatic backups run after every 10th sale, on app exit, and via
             the Reports page. The newest 20 are kept. Restoring swaps the
@@ -423,6 +550,62 @@ export function SettingsPage() {
               +{backups.length - 10} older backup{backups.length - 10 === 1 ? "" : "s"} not shown here
               (up to 20 are kept on disk)
             </p>
+          )}
+        </div>
+
+        <div className="mb-6 rounded-xl border border-outline-variant bg-surface p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-headline-md font-headline-md text-on-surface">
+              Loss prevention
+            </h3>
+            <span
+              className={`rounded px-2 py-0.5 text-[11px] font-bold ${
+                pinActive ? "bg-primary/10 text-primary" : "bg-surface-container-highest text-on-surface-variant"
+              }`}
+            >
+              {pinActive ? "PIN active" : "No PIN"}
+            </span>
+          </div>
+          <p className="mb-3 text-body-sm font-body-sm text-on-surface-variant">
+            When a manager PIN is set, voiding a sale, refunding (returns), and
+            reducing stock all ask for it first — so day-to-day counter work
+            stays untouched while the sensitive paths are watched. The PIN is
+            stored locally; it's oversight, not encryption.
+          </p>
+          <div className="flex items-end gap-2">
+            <label className="block flex-1">
+              <span className="mb-1 block text-body-md font-body-md text-on-surface">
+                {pinActive ? "Change or clear the manager PIN" : "Set a manager PIN (4–8 digits)"}
+              </span>
+              <input
+                type="password"
+                inputMode="numeric"
+                value={pinInput}
+                onChange={(e) => setPinInput(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                placeholder={pinActive ? "New PIN — leave blank to keep" : "e.g. 2468"}
+                className={`${field} font-data-mono tracking-[0.3em]`}
+              />
+            </label>
+            <button
+              onClick={() => void savePin()}
+              disabled={!pinInput.trim() && !pinActive}
+              className={`h-9 shrink-0 rounded px-4 text-label-md font-label-md shadow-sm transition-colors ${
+                pinArmClear
+                  ? "bg-error text-on-error hover:opacity-90"
+                  : "bg-primary text-on-primary hover:bg-on-primary-fixed-variant"
+              } disabled:opacity-50`}
+            >
+              {pinInput.trim()
+                ? "Save PIN"
+                : pinActive
+                  ? pinArmClear
+                    ? "Really clear?"
+                    : "Clear PIN"
+                  : "Set PIN"}
+            </button>
+          </div>
+          {pinMsg && (
+            <p className="mt-2 text-body-sm font-body-sm text-on-surface-variant">{pinMsg}</p>
           )}
         </div>
 

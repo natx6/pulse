@@ -64,6 +64,8 @@ pub struct StockImportRow {
     #[serde(default)]
     reorder_level: Option<i64>,
     #[serde(default)]
+    pack_size: Option<i64>,
+    #[serde(default)]
     fda_reg_no: Option<String>,
     #[serde(default)]
     is_controlled: Option<i64>,
@@ -197,7 +199,9 @@ fn complete_sale_impl(
         catalog.insert(l.product_id, (price, cost));
     }
 
-    // 2. Receipt number: per-day sequence, computed inside the transaction
+    // 2. Receipt number: per-day sequence, computed inside the transaction.
+    // BEGIN IMMEDIATE serializes writers across app instances on this file,
+    // so two counters can never compute the same next number.
     let n: i64 = tx
         .query_row(
             "SELECT COUNT(*) FROM sales WHERE date(timestamp) = date('now', 'localtime')",
@@ -216,7 +220,19 @@ fn complete_sale_impl(
         .sum();
     let disc = discount_pct.unwrap_or(0.0).clamp(0.0, 100.0);
     let discount_amount = subtotal * disc / 100.0;
-    let total = (subtotal - discount_amount).max(0.0);
+    // Tax comes from the shop's Settings — the counter display and the
+    // recorded sale must agree, so Rust is authoritative (it never was
+    // applied here before, silently diverging from the UI when set).
+    let tax_rate: f64 = tx
+        .query_row(
+            "SELECT COALESCE((SELECT CAST(value AS REAL) FROM settings WHERE key = 'tax_rate'), 0)",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let tax_amount = ((subtotal - discount_amount) * (tax_rate / 100.0) * 100.0).round() / 100.0;
+    let total =
+        (((subtotal - discount_amount + tax_amount) * 100.0).round() / 100.0).max(0.0);
     if paid < total - 0.005 {
         return Err(format!(
             "Payments (GH₵ {:.2}) don't cover the total (GH₵ {:.2})",
@@ -226,10 +242,10 @@ fn complete_sale_impl(
     let change = (paid - total).max(0.0);
     let primary = payments[0].method.clone();
 
-    // 3. Sale
+    // 3. Sale — with the point-in-time financial snapshot (migration 0024).
     tx.execute(
-        "INSERT INTO sales (receipt_no, total_amount, payment_method, operator, tendered, change_given, patient_name, patient_phone)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO sales (receipt_no, total_amount, payment_method, operator, tendered, change_given, patient_name, patient_phone, subtotal, discount_amount, tax_amount)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         rusqlite::params![
             receipt_no,
             total,
@@ -238,7 +254,10 @@ fn complete_sale_impl(
             paid,
             change,
             patient_name,
-            patient_phone
+            patient_phone,
+            (subtotal * 100.0).round() / 100.0,
+            (discount_amount * 100.0).round() / 100.0,
+            tax_amount,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -289,18 +308,25 @@ fn complete_sale_impl(
     // 4. Items + stock deduction. unit_price and unit_cost both come from the
     // catalog snapshot above, not the client — unit_cost is a POINT-IN-TIME
     // snapshot so profit reports stay reproducible even after the product's
-    // cost_price later changes (see migration 0020).
+    // cost_price later changes (see migration 0020). Batch ledger moves in
+    // lockstep (FEFO) and the consumed batches are recorded on the sale_item
+    // as the recall trail.
+    // Aggregate stock moves FIRST so the batch ledger reconciles against
+    // post-deduction quantities.
     for l in &lines {
-        let (price, cost) = catalog[&l.product_id];
-        tx.execute(
-            "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, unit, unit_cost)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![sale_id, l.product_id, l.name, l.quantity, price, l.unit, cost],
-        )
-        .map_err(|e| e.to_string())?;
         tx.execute(
             "UPDATE products SET stock_qty = stock_qty - ?1 WHERE id = ?2",
             rusqlite::params![l.quantity, l.product_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for l in &lines {
+        let (price, cost) = catalog[&l.product_id];
+        let batches = fefo_deduct(&tx, l.product_id, l.quantity)?;
+        tx.execute(
+            "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, unit, unit_cost, batches)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![sale_id, l.product_id, l.name, l.quantity, price, l.unit, cost, batches],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -377,10 +403,19 @@ fn export_report(path: String, rows: Vec<Vec<String>>) -> Result<String, String>
         let line: Vec<String> = r
             .iter()
             .map(|c| {
+                // Formula-injection defense: spreadsheet apps execute cells
+                // starting with these. A leading ' renders them inert.
+                let mut c = c.clone();
+                if matches!(
+                    c.chars().next(),
+                    Some('=') | Some('+') | Some('-') | Some('@') | Some('\t') | Some('\r')
+                ) {
+                    c.insert(0, '\'');
+                }
                 if c.contains(',') || c.contains('"') || c.contains('\n') {
                     format!("\"{}\"", c.replace('"', "\"\""))
                 } else {
-                    c.clone()
+                    c
                 }
             })
             .collect();
@@ -419,7 +454,7 @@ pub struct PurchaseReceiveLine {
     invoice_cost: Option<f64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct ReturnLine {
     product_id: i64,
     quantity: i64,
@@ -473,6 +508,173 @@ fn resolve_supplier(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Batch ledger (FEFO) — product_batches mirrors products.stock_qty per batch.
+// Every stock-moving path updates both sides inside the same transaction, so
+// SUM(product_batches.quantity) always equals products.stock_qty.
+// ---------------------------------------------------------------------------
+
+/// Consume `qty` units of a product from its batches, nearest expiry first
+/// (undated batches last, oldest row as the final tiebreak). Returns the
+/// breakdown recorded on sale_items.batches — e.g. "AX-8821@2027-03-15x2;B15x1"
+/// — which is the recall trail and what returns restore against.
+fn fefo_deduct(
+    tx: &rusqlite::Transaction,
+    product_id: i64,
+    qty: i64,
+) -> Result<String, String> {
+    let rows: Vec<(i64, Option<String>, Option<String>, i64)> = tx
+        .prepare(
+            "SELECT id, batch_no, expiry_date, quantity FROM product_batches
+             WHERE product_id = ?1 AND quantity > 0
+             ORDER BY COALESCE(NULLIF(expiry_date, ''), '9999-12-31') ASC, id ASC",
+        )
+        .map_err(|e| e.to_string())?
+        .query_map([product_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let mut remaining = qty;
+    let mut parts: Vec<String> = Vec::new();
+    for (id, batch_no, expiry, have) in rows {
+        if remaining <= 0 {
+            break;
+        }
+        let take = have.min(remaining);
+        remaining -= take;
+        tx.execute(
+            "UPDATE product_batches SET quantity = ?1 WHERE id = ?2",
+            rusqlite::params![have - take, id],
+        )
+        .map_err(|e| e.to_string())?;
+        parts.push(format!(
+            "{}{}x{}",
+            batch_no.unwrap_or_default(),
+            expiry.map(|e| format!("@{e}")).unwrap_or_default(),
+            take
+        ));
+    }
+    // Drift guard (legacy rows predating the ledger): when batches couldn't
+    // cover the full quantity, reconcile the UNTRACKED bucket against the
+    // product's true aggregate stock so SUM(ledger) == stock_qty afterwards,
+    // instead of silently losing or inventing units.
+    if remaining > 0 {
+        add_to_batch(tx, product_id, Some("UNTRACKED"), None, 0)?;
+        let stock_now: i64 = tx
+            .query_row(
+                "SELECT stock_qty FROM products WHERE id = ?1",
+                [product_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let ledger_other: i64 = tx
+            .query_row(
+                "SELECT COALESCE(SUM(quantity),0) FROM product_batches
+                 WHERE product_id = ?1 AND batch_no IS NOT 'UNTRACKED'",
+                [product_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE product_batches SET quantity = ?1
+             WHERE product_id = ?2 AND batch_no = 'UNTRACKED'",
+            rusqlite::params![(stock_now - ledger_other).max(0), product_id],
+        )
+        .map_err(|e| e.to_string())?;
+        parts.push(format!("UNTRACKEDx{}", remaining));
+    }
+    Ok(parts.join(";"))
+}
+
+/// Parse a sale_items.batches breakdown ("AX8821@2027-03-15x2;CT-2301x1")
+/// into (batch_no, expiry_date, qty) triples. Tolerant: unparseable parts
+/// are skipped rather than failing the whole restore.
+fn parse_batch_breakdown(s: &str) -> Vec<(String, String, i64)> {
+    s.split(';')
+        .filter_map(|part| {
+            let p = part.trim();
+            if p.is_empty() {
+                return None;
+            }
+            let ix = p.rfind('x')?;
+            let qty: i64 = p[ix + 1..].parse().ok()?;
+            if qty <= 0 {
+                return None;
+            }
+            let head = &p[..ix];
+            let (batch, expiry) = match head.split_once('@') {
+                Some((b, e)) => (b.to_string(), e.to_string()),
+                None => (head.to_string(), String::new()),
+            };
+            Some((batch, expiry, qty))
+        })
+        .collect()
+}
+
+/// Add `qty` to a product's batch matching (batch_no, expiry) exactly,
+/// creating the row when it doesn't exist. NULL-safe on both fields.
+fn add_to_batch(
+    tx: &rusqlite::Transaction,
+    product_id: i64,
+    batch_no: Option<&str>,
+    expiry: Option<&str>,
+    qty: i64,
+) -> Result<(), String> {
+    let updated = tx
+        .execute(
+            "UPDATE product_batches SET quantity = quantity + ?1
+             WHERE product_id = ?2 AND batch_no IS ?3
+               AND COALESCE(expiry_date, '') = COALESCE(?4, '')",
+            rusqlite::params![qty, product_id, batch_no, expiry],
+        )
+        .map_err(|e| e.to_string())?;
+    if updated == 0 {
+        tx.execute(
+            "INSERT INTO product_batches (product_id, batch_no, expiry_date, quantity)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![product_id, batch_no, expiry, qty],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Put sold units back onto the batches they came out of (returns / voids).
+/// `breakdown` is the sale_items.batches string fefo_deduct recorded; it is
+/// consumed in order, capped at `fallback_qty` (a partial return restores
+/// only what it took). Batches that have since disappeared are recreated
+/// with their recorded expiry. A missing/unparseable trail falls back to one
+/// undated batch, so restocked goods never vanish from the ledger.
+fn fefo_restore(
+    tx: &rusqlite::Transaction,
+    product_id: i64,
+    breakdown: Option<&str>,
+    fallback_qty: i64,
+) -> Result<(), String> {
+    let parts = match breakdown.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(b) => parse_batch_breakdown(b),
+        None => Vec::new(),
+    };
+    let mut remaining = fallback_qty;
+    for (batch, expiry, qty) in parts {
+        if remaining <= 0 {
+            break;
+        }
+        let take = qty.min(remaining);
+        remaining -= take;
+        let batch_opt = if batch.is_empty() { None } else { Some(batch.as_str()) };
+        let expiry_opt = if expiry.is_empty() { None } else { Some(expiry.as_str()) };
+        add_to_batch(tx, product_id, batch_opt, expiry_opt, take)?;
+    }
+    if remaining > 0 {
+        add_to_batch(tx, product_id, None, None, remaining)?;
+    }
+    Ok(())
+}
+
 /// Stock side of a purchase line being received: add the quantity, stamp the
 /// new cost/selling prices, packaging unit, expiry and supplier onto the
 /// product. Called inside the purchase transaction only.
@@ -506,6 +708,15 @@ fn commit_purchase_stock(
     if n == 0 {
         return Err(format!("Unknown product: {}", name));
     }
+    // Land the goods on a batch row keyed by (batch_no, expiry) so FEFO can
+    // pick it up — blank batch numbers collapse onto an undated batch.
+    add_to_batch(
+        tx,
+        product_id,
+        batch_no.map(str::trim).filter(|s| !s.is_empty()),
+        Some(expiry).filter(|s| !s.is_empty()),
+        add,
+    )?;
     Ok(())
 }
 
@@ -1143,9 +1354,10 @@ fn return_sale(
     reason: Option<String>,
     operator: Option<String>,
     lines: Vec<ReturnLine>,
+    manager_pin: Option<String>,
 ) -> Result<ReturnResult, String> {
     let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
-    return_sale_impl(&mut conn, sale_id, reason, operator, lines)
+    return_sale_impl(&mut conn, sale_id, reason, operator, lines, manager_pin)
 }
 
 /// The actual return_sale logic, taking an open connection directly rather
@@ -1157,6 +1369,7 @@ fn return_sale_impl(
     reason: Option<String>,
     operator: Option<String>,
     lines: Vec<ReturnLine>,
+    manager_pin: Option<String>,
 ) -> Result<ReturnResult, String> {
     if lines.is_empty() {
         return Err("Nothing to return".into());
@@ -1164,6 +1377,9 @@ fn return_sale_impl(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+
+    // Money leaves the till on a refund — gate it when a manager PIN is set.
+    check_manager_pin(&tx, manager_pin)?;
 
     let receipt_no: String = tx
         .query_row(
@@ -1173,8 +1389,9 @@ fn return_sale_impl(
         )
         .map_err(|_| "Sale not found".to_string())?;
 
-    // FIFO consumption of the sale's own lines → (product, name, qty, price, unit)
-    let mut to_restock: Vec<(i64, String, i64, f64, Option<String>)> = Vec::new();
+    // FIFO consumption of the sale's own lines → (product, name, qty, price,
+    // unit, batch breakdown) — the breakdown is what goes back on the shelf.
+    let mut to_restock: Vec<(i64, String, i64, f64, Option<String>, Option<String>)> = Vec::new();
     let mut total_refunded = 0.0;
     for l in &lines {
         if l.quantity <= 0 {
@@ -1189,19 +1406,19 @@ fn return_sale_impl(
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
-        let sold_rows: Vec<(i64, f64, Option<String>, String)> = tx
+        let sold_rows: Vec<(i64, f64, Option<String>, String, Option<String>)> = tx
             .prepare(
-                "SELECT quantity, unit_price, unit, product_name FROM sale_items
+                "SELECT quantity, unit_price, unit, product_name, batches FROM sale_items
                  WHERE sale_id = ?1 AND product_id = ?2 ORDER BY id",
             )
             .map_err(|e| e.to_string())?
             .query_map(rusqlite::params![sale_id, l.product_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })
             .map_err(|e| e.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?;
-        let sold: i64 = sold_rows.iter().map(|(q, _, _, _)| q).sum();
+        let sold: i64 = sold_rows.iter().map(|(q, _, _, _, _)| q).sum();
         let avail = (sold - returned).max(0);
         if l.quantity > avail {
             return Err(format!(
@@ -1210,14 +1427,14 @@ fn return_sale_impl(
             ));
         }
         let mut remaining = l.quantity;
-        for (qty, price, unit, name) in &sold_rows {
+        for (qty, price, unit, name, batches) in &sold_rows {
             if remaining <= 0 {
                 break;
             }
             let take = (*qty).min(remaining);
             remaining -= take;
             total_refunded += price * take as f64;
-            to_restock.push((l.product_id, name.clone(), take, *price, unit.clone()));
+            to_restock.push((l.product_id, name.clone(), take, *price, unit.clone(), batches.clone()));
         }
     }
 
@@ -1229,7 +1446,7 @@ fn return_sale_impl(
         )
         .map_err(|e| e.to_string())?;
     let return_id = tx.last_insert_rowid();
-    for (pid, name, qty, price, unit) in &to_restock {
+    for (pid, name, qty, price, unit, batches) in &to_restock {
         tx.execute(
             "INSERT INTO sale_return_items (return_id, product_id, product_name, quantity, unit_price, unit)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1241,6 +1458,7 @@ fn return_sale_impl(
             rusqlite::params![qty, pid],
         )
         .map_err(|e| e.to_string())?;
+        fefo_restore(&tx, *pid, batches.as_deref(), *qty)?;
     }
 
     tx.commit().map_err(|e| e.to_string())?;
@@ -1257,30 +1475,56 @@ fn return_sale_impl(
 #[tauri::command]
 fn void_last_sale(
     app: AppHandle,
+    sale_id: i64,
     operator: Option<String>,
+    manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let _ = operator; // nothing to stamp — the rows are deleted
     let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    void_last_sale_impl(&mut conn, sale_id, manager_pin)
+}
+
+/// The actual void logic (see return_sale_impl for why this is split out).
+fn void_last_sale_impl(
+    conn: &mut rusqlite::Connection,
+    sale_id: i64,
+    manager_pin: Option<String>,
+) -> Result<serde_json::Value, String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
 
-    let (id, receipt_no, is_today): (i64, String, bool) = tx
+    // A void erases a sale outright — the strongest shrinkage vector there
+    // is. Gated by the manager PIN whenever one is configured.
+    check_manager_pin(&tx, manager_pin)?;
+
+    // The UI sends the exact row it displayed; binding the void to that id
+    // means a stale screen can never destroy a different sale than the one
+    // the operator confirmed.
+    let (id, receipt_no): (i64, String) = tx
         .query_row(
-            "SELECT id, receipt_no, date(timestamp) = date('now','localtime')
-             FROM sales ORDER BY id DESC LIMIT 1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            "SELECT id, receipt_no FROM sales WHERE id = ?1
+             AND date(timestamp) = date('now', 'localtime')",
+            [sale_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .map_err(|_| "No sales to void".to_string())?;
-    if !is_today {
-        return Err("Only today's last sale can be voided".into());
+        .map_err(|_| "Sale not found (voids are same-day only)".to_string())?;
+    let newest: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(id), 0) FROM sales
+             WHERE date(timestamp) = date('now', 'localtime')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if id != newest {
+        return Err("Only today's latest sale can be voided".into());
     }
 
-    let items: Vec<(i64, i64)> = tx
-        .prepare("SELECT product_id, quantity FROM sale_items WHERE sale_id = ?1")
+    let items: Vec<(i64, i64, Option<String>)> = tx
+        .prepare("SELECT product_id, quantity, batches FROM sale_items WHERE sale_id = ?1")
         .map_err(|e| e.to_string())?
-        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
@@ -1291,12 +1535,13 @@ fn void_last_sale(
         .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM sales WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
-    for (pid, qty) in &items {
+    for (pid, qty, batches) in &items {
         tx.execute(
             "UPDATE products SET stock_qty = stock_qty + ?1 WHERE id = ?2",
             rusqlite::params![qty, pid],
         )
         .map_err(|e| e.to_string())?;
+        fefo_restore(&tx, *pid, batches.as_deref(), *qty)?;
     }
 
     tx.commit().map_err(|e| e.to_string())?;
@@ -1312,6 +1557,7 @@ fn adjust_stock(
     delta: i64,
     reason: String,
     operator: Option<String>,
+    manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if reason.trim().is_empty() {
         return Err("A reason is required for stock adjustments".into());
@@ -1323,6 +1569,13 @@ fn adjust_stock(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+
+    // Stock walking out the door as "damaged" is a classic shrinkage vector —
+    // reductions ask for the manager PIN when one is configured. Additions
+    // (found stock, counting errors) stay friction-free.
+    if delta < 0 {
+        check_manager_pin(&tx, manager_pin)?;
+    }
 
     let (name, stock): (String, i64) = tx
         .query_row(
@@ -1343,6 +1596,14 @@ fn adjust_stock(
         rusqlite::params![delta, product_id],
     )
     .map_err(|e| e.to_string())?;
+    // Ledger side: reductions consume FEFO like a sale; additions have no
+    // known batch (counting error, found stock) so they land on an undated
+    // batch — which FEFO naturally consumes last.
+    if delta < 0 {
+        fefo_deduct(&tx, product_id, -delta)?;
+    } else {
+        add_to_batch(&tx, product_id, None, None, delta)?;
+    }
     tx.execute(
         "INSERT INTO stock_adjustments (product_id, product_name, delta, reason, operator)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1601,6 +1862,10 @@ fn commit_stock_import(
                     vals.push(rusqlite::types::Value::Integer(rl));
                     sets.push(format!("reorder_level = ?{}", vals.len()));
                 }
+                if let Some(ps) = r.pack_size.filter(|p| *p >= 1) {
+                    vals.push(rusqlite::types::Value::Integer(ps));
+                    sets.push(format!("pack_size = ?{}", vals.len()));
+                }
                 if qty > 0 {
                     vals.push(rusqlite::types::Value::Integer(qty));
                     sets.push(format!("stock_qty = stock_qty + ?{}", vals.len()));
@@ -1619,12 +1884,22 @@ fn commit_stock_import(
                 let sql = format!("UPDATE products SET {} WHERE id = ?{}", sets.join(", "), vals.len());
                 tx.execute(&sql, rusqlite::params_from_iter(vals.iter()))
                     .map_err(|e| e.to_string())?;
+                if qty > 0 {
+                    // Keep the batch ledger in step with the imported stock.
+                    add_to_batch(
+                        &tx,
+                        id,
+                        r.batch_no.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                        r.expiry_date.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                        qty,
+                    )?;
+                }
                 updated += 1;
             }
             None => {
                 tx.execute(
-                    "INSERT INTO products (name, barcode, category, manufacturer, supplier, strength, unit, rx_flag, batch_no, expiry_date, cost_price, selling_price, stock_qty, reorder_level, fda_reg_no, is_controlled, active)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1)",
+                    "INSERT INTO products (name, barcode, category, manufacturer, supplier, strength, unit, rx_flag, batch_no, expiry_date, cost_price, selling_price, stock_qty, reorder_level, pack_size, fda_reg_no, is_controlled, active)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 1)",
                     rusqlite::params![
                         name,
                         barcode,
@@ -1640,11 +1915,21 @@ fn commit_stock_import(
                         r.selling_price.unwrap_or(0.0),
                         qty,
                         r.reorder_level.unwrap_or(10),
+                        r.pack_size.filter(|p| *p >= 1).unwrap_or(1),
                         r.fda_reg_no.as_deref(),
                         r.is_controlled.unwrap_or(0),
                     ],
                 )
                 .map_err(|e| e.to_string())?;
+                if qty > 0 {
+                    add_to_batch(
+                        &tx,
+                        tx.last_insert_rowid(),
+                        r.batch_no.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                        r.expiry_date.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                        qty,
+                    )?;
+                }
                 created += 1;
             }
         }
@@ -1657,6 +1942,445 @@ fn commit_stock_import(
         skipped,
         errors,
     })
+}
+
+// ---------------------------------------------------------------------------
+// ESC/POS thermal receipt printing (network, raw TCP port 9100)
+// ---------------------------------------------------------------------------
+
+/// One item row of a thermal receipt. All strings arrive pre-formatted from
+/// the frontend (money already rendered) so this side only does layout.
+#[derive(Deserialize)]
+pub struct EscposLine {
+    name: String,
+    /// e.g. "2 x 8.00" or "20 strips (2 cartons)"
+    detail: String,
+    amount: String,
+}
+
+#[derive(Deserialize)]
+pub struct EscposReceipt {
+    host: String,
+    #[serde(default = "default_printer_port")]
+    port: u16,
+    /// Characters per line — 42 for 80mm heads, ~32 for 58mm.
+    #[serde(default = "default_paper_width")]
+    width: usize,
+    pharmacy_name: String,
+    receipt_no: String,
+    timestamp: String,
+    lines: Vec<EscposLine>,
+    subtotal: String,
+    discount: Option<String>,
+    tax: Option<String>,
+    total: String,
+    /// Pre-formatted payment rows ("Cash 50.00 · ref 123")
+    payments: Vec<String>,
+    change: Option<String>,
+    footer: Option<String>,
+}
+
+fn default_printer_port() -> u16 {
+    9100
+}
+
+fn default_paper_width() -> usize {
+    42
+}
+
+/// Strip characters outside CP437-safe ASCII — cheap thermal fonts render
+/// anything else as garbage (the cedi sign becomes "GH" via fmtMoneyGhs).
+fn ascii_only(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '?' })
+        .collect()
+}
+
+/// Render the receipt as raw ESC/POS bytes: init, centered double-size
+/// header, item rows with right-aligned amounts, totals block, cut.
+/// Pure so tests can assert on the byte stream without a printer.
+fn build_escpos_bytes(r: &EscposReceipt, width: usize) -> Vec<u8> {
+    const ESC: u8 = 0x1B;
+    const GS: u8 = 0x1D;
+    let mut out = Vec::new();
+    // ESC @ — initialize
+    out.extend_from_slice(&[ESC, b'@']);
+    let center = |out: &mut Vec<u8>| out.extend_from_slice(&[ESC, b'a', 1]);
+    let left = |out: &mut Vec<u8>| out.extend_from_slice(&[ESC, b'a', 0]);
+    let big_on = |out: &mut Vec<u8>| {
+        out.extend_from_slice(&[GS, b'!', 0x11]);
+        out.extend_from_slice(&[ESC, b'E', 1]);
+    };
+    let big_off = |out: &mut Vec<u8>| {
+        out.extend_from_slice(&[GS, b'!', 0x00]);
+        out.extend_from_slice(&[ESC, b'E', 0]);
+    };
+    let bold_off = |out: &mut Vec<u8>| out.extend_from_slice(&[ESC, b'E', 0]);
+    let text = |out: &mut Vec<u8>, s: &str| {
+        out.extend_from_slice(ascii_only(s).as_bytes());
+        out.push(b'\n');
+    };
+
+    center(&mut out);
+    big_on(&mut out);
+    text(&mut out, r.pharmacy_name.trim());
+    big_off(&mut out);
+    text(&mut out, &r.receipt_no);
+    text(&mut out, &r.timestamp);
+    left(&mut out);
+
+    for l in &r.lines {
+        // Name left / amount right on one line; detail indented below.
+        let amount = ascii_only(l.amount.trim());
+        let mut name = ascii_only(l.name.trim());
+        if name.len() + amount.len() + 1 > width.saturating_sub(2) {
+            let room = width.saturating_sub(2).saturating_sub(amount.len() + 1);
+            name.truncate(room.max(3));
+        }
+        let pad = (width.saturating_sub(name.len() + amount.len())).max(1);
+        text(&mut out, &format!("{}{}{}", name, " ".repeat(pad), amount));
+        let detail = l.detail.trim();
+        if !detail.is_empty() && !detail.eq_ignore_ascii_case("1") {
+            text(&mut out, &format!("  {}", detail));
+        }
+    }
+
+    let rule: String = "-".repeat(width.min(48));
+    text(&mut out, &rule);
+    let kv = |out: &mut Vec<u8>, k: &str, v: &str| {
+        let k = ascii_only(k.trim());
+        let v = ascii_only(v.trim());
+        let pad = (width.saturating_sub(k.len() + v.len())).max(1);
+        text(out, &format!("{}{}{}", k, " ".repeat(pad), v));
+    };
+    kv(&mut out, "Subtotal", &r.subtotal);
+    if let Some(d) = &r.discount {
+        kv(&mut out, "Discount", d);
+    }
+    if let Some(t) = &r.tax {
+        kv(&mut out, "Tax", t);
+    }
+    bold_off(&mut out); // safety no-op before the emphasized total
+    out.extend_from_slice(&[ESC, b'E', 1]); // bold total
+    kv(&mut out, "TOTAL", &r.total);
+    out.extend_from_slice(&[ESC, b'E', 0]);
+    for p in &r.payments {
+        kv(&mut out, "", p);
+    }
+    if let Some(c) = &r.change {
+        kv(&mut out, "Change", c);
+    }
+    if let Some(f) = &r.footer {
+        center(&mut out);
+        text(&mut out, "");
+        text(&mut out, f);
+    }
+    // Feed + full cut
+    out.extend_from_slice(b"\n\n\n");
+    out.extend_from_slice(&[GS, b'V', 0]);
+    out
+}
+
+/// Send a receipt to an ESC/POS thermal printer over raw TCP (port 9100 —
+/// the default every networked and router-shared USB thermal printer
+/// listens on). Fully offline; nothing leaves the shop's LAN.
+#[tauri::command]
+fn print_receipt(receipt: EscposReceipt) -> Result<String, String> {
+    use std::io::Write;
+    use std::net::ToSocketAddrs;
+    if receipt.host.trim().is_empty() {
+        return Err("No printer configured — set its address in Settings".into());
+    }
+    let bytes = build_escpos_bytes(&receipt, receipt.width.max(20).min(80));
+    let addr = (receipt.host.trim(), receipt.port)
+        .to_socket_addrs()
+        .map_err(|e| format!("Bad printer address {}: {}", receipt.host, e))?
+        .next()
+        .ok_or_else(|| format!("Bad printer address {}", receipt.host))?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(4))
+        .map_err(|e| format!("Can't reach printer at {}:{} — {}", receipt.host, receipt.port, e))?;
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(4)))
+        .map_err(|e| e.to_string())?;
+    stream.write_all(&bytes).map_err(|e| e.to_string())?;
+    stream.flush().map_err(|e| e.to_string())?;
+    Ok(format!("Printed to {}:{}", receipt.host, receipt.port))
+}
+
+// ---------------------------------------------------------------------------
+// Loss prevention — manager PIN gate, bulk stock take, external backups
+// ---------------------------------------------------------------------------
+
+/// Manager PIN gate for sensitive actions (voids, returns). When no PIN is
+/// configured in Settings everything is allowed; when set, `provided` must
+/// match it exactly. This is staff oversight, not encryption — the database
+/// itself is plaintext by design.
+fn check_manager_pin(
+    conn: &rusqlite::Connection,
+    provided: Option<String>,
+) -> Result<(), String> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'manager_pin'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(expected) = stored.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    match provided.as_deref().map(str::trim) {
+        Some(p) if p == expected => Ok(()),
+        _ => Err("Manager PIN required for this action".into()),
+    }
+}
+
+/// One line of a stock-take sheet: what the shelf actually counted.
+#[derive(Deserialize)]
+pub struct StockTakeLine {
+    product_id: i64,
+    counted: i64,
+}
+
+/// Apply a completed physical count atomically: every variance becomes a
+/// products.stock_qty correction + a matching batch-ledger move + one
+/// 'Stock take' audit row. Products counted unchanged are skipped.
+fn commit_stock_take_impl(
+    conn: &mut rusqlite::Connection,
+    lines: Vec<StockTakeLine>,
+    operator: Option<String>,
+    manager_pin: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if lines.is_empty() {
+        return Err("Nothing to commit".into());
+    }
+    if lines.len() > 5000 {
+        return Err("Too many lines — max 5000 per count".into());
+    }
+    for l in &lines {
+        if l.counted < 0 {
+            return Err("Counted quantities can't be negative".into());
+        }
+    }
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+
+    // Does this count reduce anything? Reductions are the shrinkage vector,
+    // so they ask for the manager PIN when one is configured — checked
+    // BEFORE anything is written.
+    for l in &lines {
+        let stock: i64 = tx
+            .query_row(
+                "SELECT stock_qty FROM products WHERE id = ?1",
+                [l.product_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| "Unknown product in count sheet".to_string())?;
+        if l.counted < stock {
+            check_manager_pin(&tx, manager_pin)?;
+            break;
+        }
+    }
+
+    let mut changed: Vec<(String, i64, i64)> = Vec::new();
+    for l in &lines {
+        let (name, stock): (String, i64) = tx
+            .query_row(
+                "SELECT name, stock_qty FROM products WHERE id = ?1",
+                [l.product_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|_| "Unknown product in count sheet".to_string())?;
+        if stock == l.counted {
+            continue;
+        }
+        let delta = l.counted - stock;
+        tx.execute(
+            "UPDATE products SET stock_qty = ?1 WHERE id = ?2",
+            rusqlite::params![l.counted, l.product_id],
+        )
+        .map_err(|e| e.to_string())?;
+        // Ledger mirrors the aggregate: reductions consume FEFO like a sale,
+        // surpluses land on an undated batch (unknown provenance).
+        if delta < 0 {
+            fefo_deduct(&tx, l.product_id, -delta)?;
+        } else {
+            add_to_batch(&tx, l.product_id, None, None, delta)?;
+        }
+        tx.execute(
+            "INSERT INTO stock_adjustments (product_id, product_name, delta, reason, operator)
+             VALUES (?1, ?2, ?3, 'Stock take', ?4)",
+            rusqlite::params![l.product_id, name, delta, operator],
+        )
+        .map_err(|e| e.to_string())?;
+        changed.push((name, stock, l.counted));
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "changed": changed.len(),
+        "unchanged": lines.len() - changed.len(),
+    }))
+}
+
+/// Copy the database to an EXTERNAL folder (flash drive, second disk) with a
+/// timestamped name — offsite insurance for theft/fire/power-surges that a
+/// backup on the same machine can't cover. WAL-safe via the online backup API.
+#[tauri::command]
+fn backup_to_dir(app: AppHandle, dir: String) -> Result<String, String> {
+    let path = std::path::Path::new(&dir);
+    if !path.is_absolute() {
+        return Err("Pick a folder first".into());
+    }
+    if !path.is_dir() {
+        return Err(format!("{} is not a folder", dir));
+    }
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis();
+    let dst = path.join(format!("pulse-{}.db", epoch));
+    backup_to_path(&db_path(&app)?, &dst)?;
+    Ok(dst.to_string_lossy().into_owned())
+}
+
+/// Commit a completed physical stock count atomically (variance corrections
+/// + batch ledger + audit rows). See commit_stock_take_impl.
+#[tauri::command]
+fn commit_stock_take(
+    app: AppHandle,
+    counts: Vec<StockTakeLine>,
+    operator: Option<String>,
+    manager_pin: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    commit_stock_take_impl(&mut conn, counts, operator, manager_pin)
+}
+
+// --- Atomic intake: stock update/insert and batch row in ONE transaction ---
+#[derive(Deserialize)]
+pub struct IntakePayload {
+    barcode: Option<String>,
+    name: String,
+    quantity: i64,
+    #[serde(default)]
+    cost_price: Option<f64>,
+    selling_price: f64,
+    #[serde(default)]
+    batch_no: Option<String>,
+    #[serde(default)]
+    expiry_date: Option<String>,
+    #[serde(default)]
+    supplier: Option<String>,
+    #[serde(default)]
+    manufacturer: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    unit: Option<String>,
+    #[serde(default)]
+    pack_size: Option<i64>,
+}
+
+fn trim_opt(s: &Option<String>) -> Option<String> {
+    s.as_deref()
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(String::from)
+}
+
+#[tauri::command]
+fn intake_stock(app: AppHandle, input: IntakePayload) -> Result<serde_json::Value, String> {
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err("Product name is required".into());
+    }
+    if input.quantity <= 0 {
+        return Err("Quantity must be positive".into());
+    }
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let bc = trim_opt(&input.barcode);
+    let existing: Option<i64> = bc
+        .as_deref()
+        .and_then(|b| {
+            tx.query_row("SELECT id FROM products WHERE barcode = ?1", [b], |r| r.get(0))
+                .optional()
+                .ok()
+                .flatten()
+        });
+    let pack = input.pack_size.filter(|p| *p >= 1);
+    let id;
+    let created;
+    match existing {
+        Some(pid) => {
+            tx.execute(
+                "UPDATE products SET name=?1, selling_price=?2, stock_qty=stock_qty+?3,
+                    batch_no=COALESCE(?4,batch_no), expiry_date=COALESCE(?5,expiry_date),
+                    supplier=COALESCE(?6,supplier), manufacturer=COALESCE(?7,manufacturer),
+                    category=COALESCE(?8,category), cost_price=COALESCE(?9,cost_price),
+                    unit=COALESCE(?10,unit), pack_size=COALESCE(?11,pack_size) WHERE id=?12",
+                rusqlite::params![
+                    name, input.selling_price, input.quantity,
+                    trim_opt(&input.batch_no), trim_opt(&input.expiry_date),
+                    trim_opt(&input.supplier), trim_opt(&input.manufacturer),
+                    trim_opt(&input.category), input.cost_price, trim_opt(&input.unit),
+                    pack, pid
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            id = pid;
+            created = false;
+        }
+        None => {
+            tx.execute(
+                "INSERT INTO products (name,barcode,category,manufacturer,supplier,batch_no,expiry_date,cost_price,selling_price,stock_qty,reorder_level,unit,pack_size)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,10,?11,?12)",
+                rusqlite::params![
+                    name, input.barcode, input.category, input.manufacturer, input.supplier,
+                    input.batch_no, input.expiry_date, input.cost_price.unwrap_or(0.0),
+                    input.selling_price, input.quantity, input.unit, pack
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            id = tx.last_insert_rowid();
+            created = true;
+        }
+    }
+    add_to_batch(
+        &tx,
+        id,
+        trim_opt(&input.batch_no).as_deref(),
+        trim_opt(&input.expiry_date).as_deref(),
+        input.quantity,
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "id": id, "created": created }))
+}
+
+#[tauri::command]
+fn quick_add_product(app: AppHandle, name: String, selling_price: f64) -> Result<i64, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Product name is required".into());
+    }
+    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO products (name, barcode, selling_price, stock_qty, reorder_level) VALUES (?1, NULL, ?2, 1, 10)",
+        rusqlite::params![name, selling_price],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = tx.last_insert_rowid();
+    add_to_batch(&tx, id, None, None, 1)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 const MIGRATIONS: &[(&str, &str)] = &[
@@ -1708,6 +2432,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0021_expenses_payment_method",
         include_str!("../migrations/0021_expenses_payment_method.sql"),
     ),
+    (
+        "0022_batch_fefo",
+        include_str!("../migrations/0022_batch_fefo.sql"),
+    ),
+    (
+        "0023_till_floats",
+        include_str!("../migrations/0023_till_floats.sql"),
+    ),
+    (
+        "0024_sales_totals",
+        include_str!("../migrations/0024_sales_totals.sql"),
+    ),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.
@@ -1748,27 +2484,46 @@ fn apply_migrations(conn: &mut rusqlite::Connection) -> Result<(), String> {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
-        match tx.execute_batch(sql) {
+        match exec_migration(&tx, sql) {
             Ok(()) => {
                 tx.pragma_update(None, "user_version", v)
                     .map_err(|e| e.to_string())?;
                 tx.commit().map_err(|e| e.to_string())?;
             }
-            Err(e) => {
-                let msg = e.to_string();
+            Err(msg) => {
                 drop(tx); // rollback
-                if msg.contains("duplicate column name") {
-                    // Column already exists — treat as applied.
-                    let tx2 = conn
-                        .transaction_with_behavior(TransactionBehavior::Immediate)
-                        .map_err(|e| e.to_string())?;
-                    tx2.pragma_update(None, "user_version", v)
-                        .map_err(|e| e.to_string())?;
-                    tx2.commit().map_err(|e| e.to_string())?;
-                } else {
-                    return Err(format!("migration {} failed: {}", name, msg));
-                }
+                return Err(format!("migration {} failed: {}", name, msg));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Execute a migration statement-by-statement so a tolerable re-run failure
+/// ("duplicate column/table/index already exists") skips just that statement
+/// instead of aborting the whole file — execute_batch stopped there while the
+/// runner still bumped user_version, silently skipping every later statement.
+/// Constraint: migrations must not contain semicolons inside literals or
+/// trigger bodies (none do).
+fn exec_migration(tx: &rusqlite::Transaction, sql: &str) -> Result<(), String> {
+    // Strip '--' comment lines BEFORE splitting on ';' — comments may
+    // contain semicolons of their own.
+    let stripped = sql
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for stmt in stripped.split(';') {
+        let stmt = stmt.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        if let Err(e) = tx.execute_batch(stmt) {
+            let msg = e.to_string();
+            if msg.contains("duplicate column name") || msg.contains("already exists") {
+                continue;
+            }
+            return Err(msg);
         }
     }
     Ok(())
@@ -1802,7 +2557,12 @@ pub fn run() {
             update_purchase,
             cancel_purchase,
             record_payment,
-            settle_credit
+            settle_credit,
+            print_receipt,
+            commit_stock_take,
+            backup_to_dir,
+            intake_stock,
+            quick_add_product
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -1982,6 +2742,7 @@ mod tests {
                 product_id: pid,
                 quantity: 1,
             }],
+            None,
         )
         .expect("return should succeed");
 
@@ -2018,6 +2779,7 @@ mod tests {
                 product_id: pid,
                 quantity: 1,
             }],
+            None,
         )
         .expect("first return of 1 should succeed");
 
@@ -2032,10 +2794,568 @@ mod tests {
                 product_id: pid,
                 quantity: 2,
             }],
+            None,
         );
         assert!(
             second.is_err(),
             "returning more than what's left on the sale must be rejected"
         );
+    }
+
+    // ---- Batch ledger (FEFO) ----
+
+    /// Insert a product plus its batch rows, keeping products.stock_qty equal
+    /// to the batch total (the invariant the production paths maintain).
+    fn insert_batched_product(
+        conn: &rusqlite::Connection,
+        name: &str,
+        cost: f64,
+        price: f64,
+        batches: &[(&str, &str, i64)], // (batch_no, expiry, qty)
+    ) -> i64 {
+        let total: i64 = batches.iter().map(|(_, _, q)| q).sum();
+        conn.execute(
+            "INSERT INTO products (name, cost_price, selling_price, stock_qty) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![name, cost, price, total],
+        )
+        .expect("insert product");
+        let pid = conn.last_insert_rowid();
+        for (batch_no, expiry, qty) in batches {
+            conn.execute(
+                "INSERT INTO product_batches (product_id, batch_no, expiry_date, quantity) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![pid, batch_no, expiry, qty],
+            )
+            .expect("insert batch");
+        }
+        pid
+    }
+
+    fn batch_qty(conn: &rusqlite::Connection, product_id: i64, batch_no: &str) -> i64 {
+        conn.query_row(
+            "SELECT COALESCE((SELECT quantity FROM product_batches WHERE product_id = ?1 AND batch_no = ?2), -1)",
+            rusqlite::params![product_id, batch_no],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn sold_batches(conn: &rusqlite::Connection, product_id: i64) -> String {
+        conn.query_row(
+            "SELECT batches FROM sale_items WHERE product_id = ?1 ORDER BY id DESC LIMIT 1",
+            [product_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .unwrap()
+        .unwrap_or_default()
+    }
+
+    #[test]
+    fn fefo_consumes_nearest_expiry_first() {
+        let mut conn = test_db();
+        let pid = insert_batched_product(
+            &conn,
+            "Coartem",
+            38.0,
+            52.0,
+            &[("B-OLD", "2026-09-01", 4), ("B-NEW", "2027-01-01", 6)],
+        );
+        complete_sale_impl(
+            &mut conn,
+            vec![cash(260.0)],
+            vec![line(pid, "Coartem", 5, 52.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sale should succeed");
+
+        let stock: i64 = conn
+            .query_row("SELECT stock_qty FROM products WHERE id = ?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stock, 5, "aggregate stock must drop by the quantity sold");
+        assert_eq!(batch_qty(&conn, pid, "B-OLD"), 0, "nearest-expiry batch drains first");
+        assert_eq!(batch_qty(&conn, pid, "B-NEW"), 5, "newer batch untouched until old is empty");
+        assert_eq!(
+            sold_batches(&conn, pid),
+            "B-OLD@2026-09-01x4;B-NEW@2027-01-01x1",
+            "sale_items.batches records exactly which batches dispensed"
+        );
+    }
+
+    #[test]
+    fn return_puts_units_back_on_their_original_batches() {
+        let mut conn = test_db();
+        let pid = insert_batched_product(
+            &conn,
+            "Coartem",
+            38.0,
+            52.0,
+            &[("B-OLD", "2026-09-01", 4), ("B-NEW", "2027-01-01", 6)],
+        );
+        let sale = complete_sale_impl(
+            &mut conn,
+            vec![cash(260.0)],
+            vec![line(pid, "Coartem", 5, 52.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sale should succeed");
+
+        // Partial return of 2 (of the 5 sold) — restores against the
+        // breakdown in order: both units go back to B-OLD.
+        return_sale_impl(
+            &mut conn,
+            sale.sale_id,
+            None,
+            None,
+            vec![ReturnLine {
+                product_id: pid,
+                quantity: 2,
+            }],
+            None,
+        )
+        .expect("return should succeed");
+
+        let stock: i64 = conn
+            .query_row("SELECT stock_qty FROM products WHERE id = ?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stock, 7);
+        assert_eq!(batch_qty(&conn, pid, "B-OLD"), 2, "returned units land on their source batch");
+        assert_eq!(batch_qty(&conn, pid, "B-NEW"), 5);
+
+        // Ledger total must still equal aggregate stock after the round-trip.
+        let ledger: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(quantity),0) FROM product_batches WHERE product_id = ?1",
+                [pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ledger, stock, "batch ledger and aggregate stock must stay equal");
+    }
+
+    #[test]
+    fn fefo_drift_parks_shortfall_on_untracked() {
+        let mut conn = test_db();
+        // Product created without any batch rows (legacy/imported data) — a
+        // sale must still work and reconcile the ledger honestly.
+        let pid = insert_product(&conn, "Legacy", 4.0, 8.0, 10);
+        complete_sale_impl(
+            &mut conn,
+            vec![cash(24.0)],
+            vec![line(pid, "Legacy", 3, 8.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sale should succeed despite an empty batch ledger");
+
+        assert_eq!(batch_qty(&conn, pid, "UNTRACKED"), 7);
+        assert_eq!(
+            sold_batches(&conn, pid),
+            "UNTRACKEDx3",
+            "the shortfall is recorded as UNTRACKED, never silently lost"
+        );
+    }
+
+    #[test]
+    fn purchase_intake_merges_same_batch_and_splits_new() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "ORS", 1.2, 3.0, 0);
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+
+        commit_purchase_stock(&tx, pid, "ORS", 5.0, "Pack", 1.2, 3.0, "2027-01-31", None, Some("AX-1")).unwrap();
+        commit_purchase_stock(&tx, pid, "ORS", 5.0, "Pack", 1.2, 3.0, "2027-01-31", None, Some("AX-1")).unwrap();
+        commit_purchase_stock(&tx, pid, "ORS", 3.0, "Pack", 1.2, 3.0, "2027-02-28", None, Some("AX-2")).unwrap();
+        commit_purchase_stock(&tx, pid, "ORS", 2.0, "Pack", 1.2, 3.0, "", None, None).unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(batch_qty(&conn, pid, "AX-1"), 10, "same batch+expiry merges into one row");
+        assert_eq!(batch_qty(&conn, pid, "AX-2"), 3);
+        assert_eq!(batch_qty(&conn, pid, "UNTRACKED"), -1, "no phantom UNTRACKED row");
+        let undated: i64 = conn
+            .query_row(
+                "SELECT quantity FROM product_batches WHERE product_id = ?1 AND batch_no IS NULL",
+                [pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(undated, 2, "blank batch lands on the undated batch");
+
+        let stock: i64 = conn
+            .query_row("SELECT stock_qty FROM products WHERE id = ?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stock, 15);
+    }
+
+    #[test]
+    fn parse_batch_breakdown_is_tolerant() {
+        let parts = parse_batch_breakdown("AX@2027-03-15x2;CTx1;junk;;Ax0");
+        assert_eq!(
+            parts,
+            vec![
+                ("AX".to_string(), "2027-03-15".to_string(), 2),
+                ("CT".to_string(), "".to_string(), 1),
+            ],
+            "unparseable/zero parts are skipped, not fatal"
+        );
+        assert!(parse_batch_breakdown("").is_empty());
+        // Undated batch name with digits survives (rsplit on the qty separator).
+        assert_eq!(
+            parse_batch_breakdown("BX12@2026-12-31x3"),
+            vec![("BX12".to_string(), "2026-12-31".to_string(), 3)]
+        );
+    }
+
+    // ---- ESC/POS receipt bytes ----
+
+    fn sample_receipt() -> EscposReceipt {
+        EscposReceipt {
+            host: "192.168.1.50".into(),
+            port: 9100,
+            width: 42,
+            pharmacy_name: "Pulse Pharmacy".into(),
+            receipt_no: "RCPT-20260822-003".into(),
+            timestamp: "2026-08-22 10:14".into(),
+            lines: vec![
+                EscposLine { name: "Paracetamol 500mg".into(), detail: "2 x 8.00".into(), amount: "16.00".into() },
+                EscposLine {
+                    name: "Amoxicillin 500mg Capsules Very Long Name Indeed Here".into(),
+                    detail: "20 strips (2 cartons)".into(),
+                    amount: "700.00".into(),
+                },
+            ],
+            subtotal: "716.00".into(),
+            discount: Some("-20.00".into()),
+            tax: None,
+            total: "696.00".into(),
+            payments: vec!["Cash 700.00".into()],
+            change: Some("4.00".into()),
+            footer: Some("Thank you. Get well soon.".into()),
+        }
+    }
+
+    fn bytes_contain(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn escpos_bytes_start_with_init_and_end_with_cut() {
+        let out = build_escpos_bytes(&sample_receipt(), 42);
+        assert_eq!(&out[..2], &[0x1B, b'@'], "must begin with ESC @ init");
+        assert!(
+            bytes_contain(&out, &[0x1D, b'V', 0]),
+            "must end with the GS V 0 full-cut command"
+        );
+        assert!(
+            bytes_contain(&out, b"RCPT-20260822-003"),
+            "receipt number must appear in the output"
+        );
+        assert!(bytes_contain(&out, b"TOTAL"), "totals block must be labelled");
+    }
+
+    #[test]
+    fn escpos_rows_fit_the_paper_width() {
+        let width = 42;
+        let out = build_escpos_bytes(&sample_receipt(), width);
+        let text = String::from_utf8_lossy(&out);
+        for line in text.lines().filter(|l| !l.contains('\u{1b}') && !l.contains('\u{1d}')) {
+            assert!(
+                line.chars().count() <= width,
+                "row exceeds paper width: {:?}",
+                line
+            );
+        }
+        assert!(
+            !text.contains("Indeed Here"),
+            "over-long item names get truncated, not wrapped"
+        );
+    }
+
+    #[test]
+    fn escpos_strips_non_ascii() {
+        assert_eq!(ascii_only("GH\u{20b5}50 ✓"), "GH?50 ?", "non-printables become ?");
+    }
+
+    // ---- Loss prevention: manager PIN, stock take ----
+
+    fn set_manager_pin(conn: &rusqlite::Connection, pin: &str) {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('manager_pin', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [pin],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn manager_pin_gates_returns() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "Ibuprofen", 9.0, 15.0, 30);
+        let sale = complete_sale_impl(
+            &mut conn,
+            vec![cash(45.0)],
+            vec![line(pid, "Ibuprofen", 3, 15.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sale should succeed");
+
+        set_manager_pin(&conn, "2468");
+        let lines = vec![ReturnLine {
+            product_id: pid,
+            quantity: 1,
+        }];
+        assert!(
+            return_sale_impl(&mut conn, sale.sale_id, None, None, lines.clone(), None).is_err(),
+            "return without the manager PIN must be refused"
+        );
+        assert!(
+            return_sale_impl(
+                &mut conn,
+                sale.sale_id,
+                None,
+                None,
+                lines.clone(),
+                Some("1111".into())
+            )
+            .is_err(),
+            "a wrong manager PIN must be refused"
+        );
+        let ok = return_sale_impl(
+            &mut conn,
+            sale.sale_id,
+            None,
+            None,
+            lines,
+            Some("2468".into()),
+        )
+        .expect("correct PIN must allow the return");
+        assert!((ok.total_refunded - 15.0).abs() < 0.001);
+
+        // With no PIN configured (fresh db), returns stay open.
+        let mut open_conn = test_db();
+        let pid2 = insert_product(&open_conn, "Paracetamol", 4.0, 8.0, 10);
+        let sale2 = complete_sale_impl(
+            &mut open_conn,
+            vec![cash(8.0)],
+            vec![line(pid2, "Paracetamol", 1, 8.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sale should succeed");
+        return_sale_impl(
+            &mut open_conn,
+            sale2.sale_id,
+            None,
+            None,
+            vec![ReturnLine {
+                product_id: pid2,
+                quantity: 1,
+            }],
+            None,
+        )
+        .expect("without a configured PIN returns need no PIN");
+    }
+
+    #[test]
+    fn manager_pin_gates_voids() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "ORS", 1.2, 3.0, 100);
+        let sale = complete_sale_impl(
+            &mut conn,
+            vec![cash(3.0)],
+            vec![line(pid, "ORS", 1, 3.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("sale should succeed");
+        set_manager_pin(&conn, "9999");
+
+        assert!(
+            void_last_sale_impl(&mut conn, sale.sale_id, None).is_err(),
+            "void without a PIN must be refused"
+        );
+        assert!(
+            void_last_sale_impl(&mut conn, sale.sale_id, Some("0000".into())).is_err(),
+            "void with a wrong PIN must be refused"
+        );
+        void_last_sale_impl(&mut conn, sale.sale_id, Some("9999".into()))
+            .expect("the correct PIN must allow the void");
+        let stock: i64 = conn
+            .query_row("SELECT stock_qty FROM products WHERE id = ?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stock, 100, "void must have restocked");
+    }
+
+    #[test]
+    fn void_binds_to_the_exact_sale_id() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "ORS", 1.2, 3.0, 100);
+        let older = complete_sale_impl(
+            &mut conn,
+            vec![cash(3.0)],
+            vec![line(pid, "ORS", 1, 3.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("first sale should succeed");
+        let _newer = complete_sale_impl(
+            &mut conn,
+            vec![cash(6.0)],
+            vec![line(pid, "ORS", 2, 3.0)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("second sale should succeed");
+
+        // A stale screen asking to void the OLDER sale must be refused —
+        // only today's newest is ever voidable.
+        assert!(
+            void_last_sale_impl(&mut conn, older.sale_id, None).is_err(),
+            "voiding a non-latest sale must be refused"
+        );
+        // Unknown / other-day ids are refused too.
+        assert!(void_last_sale_impl(&mut conn, 999_999, None).is_err());
+    }
+
+    #[test]
+    fn stock_take_reductions_require_pin() {
+        let mut conn = test_db();
+        let pid = insert_batched_product(&conn, "Coartem", 38.0, 52.0, &[("B-OLD", "2026-09-01", 10)]);
+        set_manager_pin(&conn, "1357");
+
+        // Pure increases stay ungated.
+        commit_stock_take_impl(
+            &mut conn,
+            vec![StockTakeLine { product_id: pid, counted: 12 }],
+            None,
+            None,
+        )
+        .expect("an increase needs no PIN");
+        // A reduction without/wrong PIN is refused outright.
+        assert!(
+            commit_stock_take_impl(
+                &mut conn,
+                vec![StockTakeLine { product_id: pid, counted: 9 }],
+                None,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            commit_stock_take_impl(
+                &mut conn,
+                vec![StockTakeLine { product_id: pid, counted: 9 }],
+                None,
+                Some("0000".into()),
+            )
+            .is_err()
+        );
+        commit_stock_take_impl(
+            &mut conn,
+            vec![StockTakeLine { product_id: pid, counted: 9 }],
+            None,
+            Some("1357".into()),
+        )
+        .expect("correct PIN allows the reduction");
+    }
+
+    #[test]
+    fn stock_take_applies_variances_and_audits() {
+        let mut conn = test_db();
+        let pid = insert_batched_product(
+            &conn,
+            "Coartem",
+            38.0,
+            52.0,
+            &[("B-OLD", "2026-09-01", 4), ("B-NEW", "2027-01-01", 6)],
+        );
+        let other = insert_product(&conn, "ORS", 1.2, 3.0, 50);
+
+        // An unknown product aborts the WHOLE count — never a partial apply.
+        assert!(
+            commit_stock_take_impl(
+                &mut conn,
+                vec![
+                    StockTakeLine {
+                        product_id: pid,
+                        counted: 8
+                    },
+                    StockTakeLine {
+                        product_id: 999_999,
+                        counted: 1
+                    },
+                ],
+                Some("Ama".into()),
+                None,
+            )
+            .is_err()
+        );
+        let untouched: i64 = conn
+            .query_row("SELECT stock_qty FROM products WHERE id = ?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(untouched, 10, "a failed count must not touch any stock");
+
+        // Valid sheet: one variance, one unchanged.
+        let r = commit_stock_take_impl(
+            &mut conn,
+            vec![
+                StockTakeLine {
+                    product_id: pid,
+                    counted: 8
+                },
+                StockTakeLine {
+                    product_id: other,
+                    counted: 50
+                },
+            ],
+            Some("Ama".into()),
+            None,
+        )
+        .expect("count should commit");
+        assert_eq!(r["changed"], 1, "only real variances count as changed");
+        assert_eq!(r["unchanged"], 1);
+
+        let stock: i64 = conn
+            .query_row("SELECT stock_qty FROM products WHERE id = ?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stock, 8);
+        // FEFO ledger absorbed the −2 from the nearest-expiry batch.
+        assert_eq!(batch_qty(&conn, pid, "B-OLD"), 2);
+        assert_eq!(batch_qty(&conn, pid, "B-NEW"), 6);
+        let audit: (i64, String) = conn
+            .query_row(
+                "SELECT delta, reason FROM stock_adjustments WHERE product_id = ?1",
+                [pid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(audit, (-2, "Stock take".to_string()));
+        // Ledger total still equals aggregate stock.
+        let ledger: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(quantity),0) FROM product_batches WHERE product_id = ?1",
+                [pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ledger, stock);
     }
 }

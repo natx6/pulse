@@ -1,7 +1,7 @@
 import Database from "@tauri-apps/plugin-sql";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfigDir } from "@tauri-apps/api/path";
-import type { PaymentLine, Product, SaleLine, SaleResult } from "./types";
+import type { BatchRow, PaymentLine, Product, SaleLine, SaleResult } from "./types";
 
 let db: Database | null = null;
 
@@ -50,6 +50,8 @@ async function seedSettings() {
     auto_operator: "0",
     support_email: "",
     momo_number: "",
+    printer_host: "",
+    printer_port: "9100",
   };
   for (const [k, v] of Object.entries(defaults)) {
     if (!have.has(k)) {
@@ -82,6 +84,9 @@ export interface AppSettings {
   autoOperator: boolean;
   supportEmail: string;
   momoNumber: string;
+  printerHost: string;
+  printerPort: number;
+  managerPinSet: boolean;
   isDark: boolean;
 }
 
@@ -99,6 +104,9 @@ export async function getSettings(): Promise<AppSettings> {
     autoOperator: map.auto_operator === "1",
     supportEmail: map.support_email ?? "",
     momoNumber: map.momo_number ?? "",
+    printerHost: map.printer_host ?? "",
+    printerPort: Number(map.printer_port ?? 9100) || 9100,
+    managerPinSet: Boolean(map.manager_pin?.trim()),
     isDark: map.is_dark === "1",
   };
 }
@@ -206,6 +214,15 @@ export async function saveReorderLevel(id: number, level: number): Promise<void>
   await d.execute("UPDATE products SET reorder_level = $1 WHERE id = $2", [level, id]);
 }
 
+/** Units per purchase pack (carton of 10 strips = 10). Min 1. */
+export async function savePackSize(id: number, packSize: number): Promise<void> {
+  const d = await initDb();
+  await d.execute("UPDATE products SET pack_size = $1 WHERE id = $2", [
+    Math.max(1, Math.floor(packSize) || 1),
+    id,
+  ]);
+}
+
 export interface IntakeInput {
   barcode: string | null;
   name: string;
@@ -218,81 +235,51 @@ export interface IntakeInput {
   manufacturer: string | null;
   category: string | null;
   unit: string | null;
+  packSize?: number | null;
 }
 
-/** Restock: update existing product by barcode (adds qty) or create a new one. Returns {id, created}. */
+/** Merge received units onto the product's FEFO ledger — now done atomically
+ * inside the Rust intake command; kept only for signature history. */
+
+/** Restock: update existing product by barcode (adds qty) or create a new
+ * one — atomic in Rust (stock + FEFO batch row in one transaction). */
 export async function intakeStock(input: IntakeInput): Promise<{ id: number; created: boolean }> {
-  const d = await initDb();
-  if (input.barcode) {
-    const existing = await d.select<Product[]>(
-      "SELECT * FROM products WHERE barcode = $1",
-      [input.barcode],
-    );
-    if (existing.length > 0) {
-      const e = existing[0];
-      await d.execute(
-        `UPDATE products SET
-           name = $1,
-           selling_price = $2,
-           stock_qty = stock_qty + $3,
-           batch_no = COALESCE($4, batch_no),
-           expiry_date = COALESCE($5, expiry_date),
-           supplier = COALESCE($6, supplier),
-           manufacturer = COALESCE($7, manufacturer),
-           category = COALESCE($8, category),
-           cost_price = COALESCE($9, cost_price),
-           unit = COALESCE($10, unit)
-         WHERE id = $11`,
-        [
-          input.name,
-          input.sellingPrice,
-          input.quantity,
-          input.batchNo,
-          input.expiryDate,
-          input.supplier,
-          input.manufacturer,
-          input.category,
-          input.costPrice,
-          input.unit,
-          e.id,
-        ],
-      );
-      return { id: e.id, created: false };
-    }
-  }
-  const res = await d.execute(
-    `INSERT INTO products
-       (name, barcode, category, manufacturer, supplier, batch_no, expiry_date,
-        cost_price, selling_price, stock_qty, reorder_level, unit)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 10, $11)`,
-    [
-      input.name,
-      input.barcode,
-      input.category,
-      input.manufacturer,
-      input.supplier,
-      input.batchNo,
-      input.expiryDate,
-      input.costPrice ?? 0,
-      input.sellingPrice,
-      input.quantity,
-      input.unit,
-    ],
-  );
-  return { id: Number(res.lastInsertId), created: true };
+  return await invoke("intake_stock", {
+    input: {
+      barcode: input.barcode,
+      name: input.name,
+      quantity: Math.floor(input.quantity),
+      cost_price: input.costPrice,
+      selling_price: input.sellingPrice,
+      batch_no: input.batchNo,
+      expiry_date: input.expiryDate,
+      supplier: input.supplier,
+      manufacturer: input.manufacturer,
+      category: input.category,
+      unit: input.unit,
+      pack_size: input.packSize ?? null,
+    },
+  });
 }
 
-/** Manual / quick-add item with no barcode. */
+/** Manual / quick-add item with no barcode — atomic in Rust. */
 export async function quickAddProduct(
   name: string,
   sellingPrice: number,
 ): Promise<number> {
+  return await invoke("quick_add_product", { name, sellingPrice });
+}
+
+/** Per-batch breakdown of a product's stock (FEFO ledger), nearest expiry first. */
+export async function loadBatches(productId: number): Promise<BatchRow[]> {
   const d = await initDb();
-  const res = await d.execute(
-    "INSERT INTO products (name, barcode, selling_price, stock_qty, reorder_level) VALUES ($1, NULL, $2, 1, 10)",
-    [name, sellingPrice],
+  const rows = await d.select<BatchRow[]>(
+    `SELECT id, batch_no, expiry_date, quantity FROM product_batches
+     WHERE product_id = $1 AND (quantity > 0 OR batch_no IS NOT NULL)
+     ORDER BY COALESCE(NULLIF(expiry_date, ''), '9999-12-31') ASC, id ASC`,
+    [productId],
   );
-  return Number(res.lastInsertId);
+  return rows.map((r) => ({ ...r, quantity: Number(r.quantity) }));
 }
 
 /** Atomic sale in Rust: sale + payments + items + stock deduction, one transaction. */
@@ -317,35 +304,116 @@ export async function backupDb(): Promise<string> {
   return await invoke("backup_db");
 }
 
+// ---- ESC/POS thermal receipt printing ----
+
+export interface ThermalReceipt {
+  host: string;
+  port?: number;
+  pharmacy_name: string;
+  receipt_no: string;
+  timestamp: string;
+  lines: { name: string; detail: string; amount: string }[];
+  subtotal: string;
+  discount?: string | null;
+  tax?: string | null;
+  total: string;
+  payments: string[];
+  change?: string | null;
+  footer?: string | null;
+}
+
+/** Send the receipt to the thermal printer over raw TCP (port 9100).
+ * Keys are snake_case to match the Rust struct's serde field names. */
+export async function printThermalReceipt(r: ThermalReceipt): Promise<string> {
+  return await invoke("print_receipt", { receipt: r });
+}
+
 export interface ReturnResult {
   receipt_no: string;
   total_refunded: number;
   return_id: number;
 }
 
-/** Refund part/all of a sale atomically in Rust; stock goes back on the shelf. */
+/** Refund part/all of a sale atomically in Rust; stock goes back on the shelf.
+ * When a manager PIN is configured in Settings, `managerPin` must match it. */
 export async function returnSale(
   saleId: number,
   lines: { product_id: number; quantity: number }[],
   reason: string | null,
   operator: string | null,
+  managerPin?: string | null,
 ): Promise<ReturnResult> {
-  return await invoke("return_sale", { saleId, lines, reason, operator });
+  return await invoke("return_sale", { saleId, lines, reason, operator, managerPin });
 }
 
-/** Delete today's last sale entirely (guarded in Rust: today-only, max-id). */
-export async function voidLastSale(operator: string | null): Promise<{ receipt_no: string }> {
-  return await invoke("void_last_sale", { operator });
+/** Delete a sale entirely — the UI sends the exact row it displayed; Rust
+ * refuses anything that isn't today's newest sale (and asks for the manager
+ * PIN when one is configured). */
+export async function voidLastSale(
+  saleId: number,
+  operator: string | null,
+  managerPin?: string | null,
+): Promise<{ receipt_no: string }> {
+  return await invoke("void_last_sale", { saleId, operator, managerPin });
 }
 
-/** Manual stock change with a mandatory reason; logged to stock_adjustments. */
+// ---- Loss prevention ----
+
+/** Whether a manager PIN gate is active (the PIN itself never leaves the DB
+ * except through the Rust-side comparison). */
+export async function isManagerPinSet(): Promise<boolean> {
+  const d = await initDb();
+  const rows = await d.select<{ value: string }[]>(
+    "SELECT value FROM settings WHERE key = 'manager_pin'",
+  );
+  return Boolean(rows[0]?.value?.trim());
+}
+
+/** Set (or clear with null) the manager PIN that gates voids and refunds. */
+export async function setManagerPin(pin: string | null): Promise<void> {
+  const d = await initDb();
+  const trimmed = pin?.trim() || null;
+  if (trimmed === null) {
+    await d.execute("DELETE FROM settings WHERE key = 'manager_pin'");
+  } else {
+    await d.execute(
+      "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      ["manager_pin", trimmed],
+    );
+  }
+}
+
+export interface StockTakeCount {
+  product_id: number;
+  counted: number;
+}
+
+/** Commit a completed physical count atomically in Rust: every variance
+ * becomes a stock correction + batch-ledger move + 'Stock take' audit row.
+ * Reductions ask for the manager PIN when one is configured. */
+export async function commitStockTake(
+  counts: StockTakeCount[],
+  operator: string | null,
+  managerPin?: string | null,
+): Promise<{ changed: number; unchanged: number }> {
+  return await invoke("commit_stock_take", { counts, operator, managerPin });
+}
+
+/** Copy the database to an external folder (flash drive); returns the file path. */
+export async function backupDbToDir(dir: string): Promise<string> {
+  return await invoke("backup_to_dir", { dir });
+}
+
+/** Manual stock change with a mandatory reason; logged to stock_adjustments.
+ * Negative deltas ask for the manager PIN when one is configured. */
 export async function adjustStock(
   productId: number,
   delta: number,
   reason: string,
   operator: string | null,
+  managerPin?: string | null,
 ): Promise<{ product_id: number; delta: number; new_stock: number }> {
-  return await invoke("adjust_stock", { productId, delta, reason, operator });
+  return await invoke("adjust_stock", { productId, delta, reason, operator, managerPin });
 }
 
 export interface BackupInfo {
@@ -402,6 +470,30 @@ export async function listCashUps(day: string): Promise<CashUp[]> {
   );
 }
 
+/** The day's opening float, saved as soon as it's typed — independent of the
+ * end-of-day cash-up so the dashboard sees it immediately. */
+export async function getTillFloat(day: string): Promise<number | null> {
+  const d = await initDb();
+  const rows = await d.select<{ amount: number }[]>(
+    "SELECT amount FROM till_floats WHERE day = $1",
+    [day],
+  );
+  return rows.length > 0 ? Number(rows[0].amount) : null;
+}
+
+export async function setTillFloat(
+  day: string,
+  amount: number,
+  operator: string | null,
+): Promise<void> {
+  const d = await initDb();
+  await d.execute(
+    `INSERT INTO till_floats (day, amount, operator) VALUES ($1, $2, $3)
+     ON CONFLICT(day) DO UPDATE SET amount = excluded.amount, operator = excluded.operator`,
+    [day, amount || 0, operator],
+  );
+}
+
 /** Write CSV rows (client-rendered) to the path the user chose in the
  * native Save dialog; returns the written path. */
 export async function exportReport(path: string, rows: string[][]): Promise<string> {
@@ -430,6 +522,7 @@ export interface StockImportRow {
   selling_price?: number | null;
   stock_qty?: number | null;
   reorder_level?: number | null;
+  pack_size?: number | null;
   fda_reg_no?: string | null;
   is_controlled?: number | null;
 }
@@ -869,27 +962,21 @@ export async function supplierBalances(): Promise<SupplierBalance[]> {
 // ---- Patient discount tier ----
 
 export async function updatePatientDiscount(name: string, discountPct: number): Promise<void> {
-  try {
-    const d = await initDb();
-    await d.execute(
-      "UPDATE patients SET discount_tier = $1 WHERE name = $2",
-      [discountPct, name],
-    );
-  } catch {
-    // Column may not exist yet if migration hasn't run.
+  const d = await initDb();
+  const res = await d.execute(
+    "UPDATE patients SET discount_tier = $1 WHERE name = $2",
+    [discountPct, name],
+  );
+  if (res.rowsAffected === 0) {
+    throw new Error(`No customer named "${name}" to update.`);
   }
 }
 
 export async function getPatientDiscount(name: string): Promise<number> {
-  try {
-    const d = await initDb();
-    const [row] = await d.select<{ discount_tier: number | null }[]>(
-      "SELECT discount_tier FROM patients WHERE name = $1",
-      [name],
-    );
-    return Number(row?.discount_tier ?? 0);
-  } catch {
-    // Column may not exist yet if migration hasn't run.
-    return 0;
-  }
+  const d = await initDb();
+  const [row] = await d.select<{ discount_tier: number | null }[]>(
+    "SELECT discount_tier FROM patients WHERE name = $1",
+    [name],
+  );
+  return Number(row?.discount_tier ?? 0);
 }

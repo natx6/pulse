@@ -25,7 +25,7 @@ interface AppState {
 
   setPage(p: PageId): void;
   setSearch(q: string): void;
-  addToCart(p: Product): void;
+  addToCart(p: Product, units?: number): void;
   setQty(productId: number, qty: number): void;
   removeLine(productId: number): void;
   clearCart(): void;
@@ -51,7 +51,7 @@ interface AppState {
 }
 
 export const useStore = create<AppState>((set, get) => ({
-  page: "pos",
+  page: "dashboard",
   cart: [],
   patient: null,
   products: [],
@@ -73,20 +73,24 @@ export const useStore = create<AppState>((set, get) => ({
   setPage: (page) => set({ page }),
   setSearch: (q) => set({ searchQuery: q }),
 
-  addToCart: (p) => {
+  /** Add to the cart in sell units — `units` lets a pack/carton button add a
+   * whole multiple at once. Stock is counted in sell units, so the cap is
+   * always products.stock_qty. */
+  addToCart: (p, units = 1) => {
     if (p.stock_qty <= 0) return;
+    const add = Math.max(1, Math.floor(units));
     const cart = [...get().cart];
     const i = cart.findIndex((l) => l.productId === p.id);
     if (i >= 0) {
       const cap = Math.max(p.stock_qty, cart[i].qty);
-      cart[i] = { ...cart[i], qty: Math.min(cart[i].qty + 1, cap) };
+      cart[i] = { ...cart[i], qty: Math.min(cart[i].qty + add, cap) };
     } else {
       cart.push({
         productId: p.id,
         name: p.name,
         unit: p.unit,
         unitPrice: p.selling_price,
-        qty: 1,
+        qty: Math.min(add, p.stock_qty),
       });
     }
     set({ cart });

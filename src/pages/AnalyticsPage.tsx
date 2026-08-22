@@ -5,6 +5,9 @@ import {
   backupDb,
   exportReport,
   voidLastSale,
+  isManagerPinSet,
+  getTillFloat,
+  setTillFloat,
   saveCashUp as dbSaveCashUp,
   listCashUps,
   loadControlledRegister,
@@ -24,6 +27,7 @@ import { beep } from "../lib/audio";
 import { round2 } from "../lib/price";
 import { ReceiptModal } from "../components/ReceiptModal";
 import { ReturnModal } from "../components/ReturnModal";
+import { PinPromptModal } from "../components/PinPromptModal";
 import { supplierBalances, expenseSummary, type SupplierBalance } from "../db";
 
 type Range = "today" | "yesterday" | "week7" | "month30" | "month" | "custom";
@@ -117,6 +121,12 @@ async function fetchReport(
              OR (NOT EXISTS (SELECT 1 FROM sale_payments sp2 WHERE sp2.sale_id = s.id) AND s.payment_method = $${idx}))`;
     p.push(method);
   }
+  // For the per-method breakdown the payment ROWS themselves must match the
+  // filter — the EXISTS form would keep sibling methods of a split sale and
+  // inflate that method's revenue. Reuses the already-bound method param.
+  const methodIdx = p.length;
+  const mCPay = method ? ` AND sp.method = $${methodIdx}` : "";
+  const mCLegacy = method ? ` AND s.payment_method = $${methodIdx}` : "";
 
   const [summary] = await db.select<{ n: number; revenue: number }[]>(
     `SELECT COUNT(*) AS n, COALESCE(SUM(total_amount),0) AS revenue FROM sales s WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}`,
@@ -138,10 +148,10 @@ async function fetchReport(
     `SELECT method, SUM(amount) AS amt, COUNT(*) AS n FROM (
        SELECT sp.method AS method, sp.amount AS amount
        FROM sale_payments sp JOIN sales s ON s.id = sp.sale_id
-       WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}
+       WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mCPay}
        UNION ALL
        SELECT s.payment_method, s.total_amount FROM sales s
-       WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mC}
+       WHERE date(s.timestamp) BETWEEN $1 AND $2${opC}${mCLegacy}
          AND NOT EXISTS (SELECT 1 FROM sale_payments sp2 WHERE sp2.sale_id = s.id)
      ) GROUP BY method ORDER BY amt DESC`,
     p,
@@ -256,6 +266,8 @@ export function AnalyticsPage() {
     timestamp: string;
   } | null>(null);
   const [voidArmed, setVoidArmed] = useState<string | null>(null);
+  /** Sale awaiting the manager-PIN prompt for its void. */
+  const [pinVoidTarget, setPinVoidTarget] = useState<{ id: number; receiptNo: string } | null>(null);
   const [notice, setNotice] = useState("");
   const [suppliers, setSuppliers] = useState<SupplierBalance[]>([]);
   const [expenses, setExpenses] = useState<{ total: number; byCategory: { category: string; total: number }[] } | null>(null);
@@ -308,8 +320,12 @@ export function AnalyticsPage() {
         });
         const ups = await listCashUps(cashDay);
         setCashUps(ups);
-        if (ups.length > 0 && cashFloat === "") {
-          setCashFloat(String(ups[0].opening_float));
+        if (cashFloat === "") {
+          // The standalone till float (saved as typed) wins; fall back to the
+          // opening float recorded by a completed cash-up.
+          const f = await getTillFloat(cashDay);
+          if (f !== null) setCashFloat(String(f));
+          else if (ups.length > 0) setCashFloat(String(ups[0].opening_float));
         }
         setCashErr("");
       } catch (e) {
@@ -339,6 +355,8 @@ export function AnalyticsPage() {
         variance: cashVariance,
         operator,
       });
+      // Keep the standalone float in step with the committed cash-up.
+      await setTillFloat(cashDay, Number(cashFloat) || 0, operator);
       setCashUps(await listCashUps(cashDay));
       setCashSaved(true);
       setTimeout(() => setCashSaved(false), 1500);
@@ -399,14 +417,22 @@ export function AnalyticsPage() {
     lines: { productId: number; name: string; unit: string | null; unitPrice: number; qty: number }[];
     subtotal: number;
     tax: number;
+    /** Discount snapshot (migration 0024) so reprints explain subtotal > total. */
+    discountPct?: number;
+    discountAmt?: number;
     method: string;
     payments?: PaymentLine[];
   } | null>(null);
 
-  const { from, to } = useMemo(
+  const { from: rawFrom, to: rawTo } = useMemo(
     () => rangeDates(range, customFrom, customTo),
     [range, customFrom, customTo],
   );
+  // A reversed custom range would silently render an empty report — clamp
+  // it so "from" never passes "to".
+  const rangeReversed = rawFrom > rawTo;
+  const from = rangeReversed ? rawTo : rawFrom;
+  const to = rangeReversed ? rawFrom : rawTo;
 
 
   const rangeLabel = useMemo(() => {
@@ -508,28 +534,46 @@ export function AnalyticsPage() {
     }
   };
 
-  /** Two-step void (mirrors the operator delete pattern): tap once to arm, again within 2.5s to execute. */
-  const armVoid = (receiptNo: string) => {
+  /** Returns the failure message (for the PIN modal to show inline), or null
+   * on success. */
+  const runVoid = async (saleId: number, managerPin?: string | null): Promise<string | null> => {
+    try {
+      const r = await voidLastSale(saleId, operator, managerPin);
+      await refreshProducts();
+      await load();
+      setErr("");
+      setNotice(`${r.receipt_no} voided — stock returned.`);
+      setTimeout(() => setNotice(""), 5000);
+      return null;
+    } catch (e) {
+      const msg = String(e).replace(/^Error: /, "");
+      setErr(msg);
+      return msg;
+    }
+  };
+
+  /** Two-step void (mirrors the operator delete pattern): tap once to arm,
+   * again within 2.5s to execute. The sale's exact id travels with the
+   * request so a stale list can never void a different receipt; when a
+   * manager PIN is configured the second tap asks for it first. */
+  const armVoid = async (saleId: number, receiptNo: string) => {
     if (voidArmed !== receiptNo) {
       setVoidArmed(receiptNo);
       window.setTimeout(() => setVoidArmed((v) => (v === receiptNo ? null : v)), 2500);
       return;
     }
     setVoidArmed(null);
-    void (async () => {
-      try {
-        const r = await voidLastSale(operator);
-        await refreshProducts();
-        await load();
-        setErr("");
-        setNotice(`${r.receipt_no} voided — stock returned.`);
-        setTimeout(() => setNotice(""), 5000);
-        beep(true);
-      } catch (e) {
-        setErr(String(e).replace(/^Error: /, ""));
-        beep(false);
+    try {
+      if (await isManagerPinSet()) {
+        setPinVoidTarget({ id: saleId, receiptNo });
+        return;
       }
-    })();
+    } catch {
+      // Can't tell whether the gate is on → run ungated; Rust re-checks.
+    }
+    // No gate → run straight through; this path owns its own audio (the PIN
+    // prompt beeps for the gated one).
+    void runVoid(saleId).then((failure) => beep(!failure));
   };
 
   const doExport = async () => {
@@ -625,8 +669,12 @@ export function AnalyticsPage() {
     try {
       const db = await initDb();
       const [sale] = await db.select<
-        { id: number; receipt_no: string; total_amount: number; payment_method: string }[]
-      >("SELECT id, receipt_no, total_amount, payment_method FROM sales WHERE receipt_no = $1", [
+        { id: number; receipt_no: string; total_amount: number; payment_method: string;
+          change_given: number | null; subtotal: number | null; discount_amount: number | null;
+          tax_amount: number | null }[]
+      >(`SELECT id, receipt_no, total_amount, payment_method,
+                change_given, subtotal, discount_amount, tax_amount
+         FROM sales WHERE receipt_no = $1`, [
         receiptNo,
       ]);
       if (!sale) return;
@@ -640,12 +688,20 @@ export function AnalyticsPage() {
       >("SELECT method, amount, reference FROM sale_payments WHERE sale_id = $1 ORDER BY id", [
         sale.id,
       ]);
+      // Stored snapshot (migration 0024); legacy rows predate it, so fall
+      // back to the old total-as-subtotal derivation. The percent is
+      // re-derived from the stored amount — patient tiers are whole numbers,
+      // so this recovers the original figure exactly.
+      const sub = sale.subtotal !== null && Number(sale.subtotal) > 0 ? Number(sale.subtotal) : Number(sale.total_amount);
+      const discountAmt = Number(sale.discount_amount ?? 0);
+      const discountPct =
+        discountAmt > 0 && sub > 0 ? Math.round((discountAmt / sub) * 100) : 0;
       setReprint({
         result: {
           receipt_no: sale.receipt_no,
           sale_id: sale.id,
           total: Number(sale.total_amount),
-          change: 0,
+          change: Number(sale.change_given ?? 0),
         },
         lines: items.map((i) => ({
           productId: 0,
@@ -654,8 +710,10 @@ export function AnalyticsPage() {
           unitPrice: Number(i.unit_price),
           qty: Number(i.quantity),
         })),
-        subtotal: Number(sale.total_amount),
-        tax: 0,
+        subtotal: sub,
+        tax: Number(sale.tax_amount ?? 0),
+        discountPct,
+        discountAmt,
         method: sale.payment_method,
         payments: pays.length
           ? pays.map((p) => ({
@@ -1038,7 +1096,7 @@ export function AnalyticsPage() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      armVoid(r.receipt_no);
+                      armVoid(r.id, r.receipt_no);
                     }}
                     title="Delete today's last sale entirely — stock returns (two taps)"
                     className={`rounded px-2 py-0.5 text-[11px] font-bold transition-colors ${
@@ -1129,8 +1187,19 @@ export function AnalyticsPage() {
               <input
                 value={cashFloat}
                 onChange={(e) => setCashFloat(e.target.value)}
+                onBlur={() => {
+                  // Saved as typed — but only valid values. An empty or
+                  // half-typed field must not silently zero the float;
+                  // type 0 to zero it explicitly.
+                  const raw = cashFloat.trim();
+                  if (raw === "") return;
+                  const n = Number(raw);
+                  if (!Number.isFinite(n) || n < 0) return;
+                  void setTillFloat(cashDay, n, operator);
+                }}
                 inputMode="decimal"
                 placeholder="0.00"
+                title="Saved as soon as you leave the field — the dashboard picks it up"
                 className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-right font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
               />
             </label>
@@ -1347,6 +1416,8 @@ export function AnalyticsPage() {
           lines={reprint.lines}
           subtotal={reprint.subtotal}
           tax={reprint.tax}
+          discountPct={reprint.discountPct}
+          discountAmt={reprint.discountAmt}
           paymentMethod={reprint.method}
           payments={reprint.payments}
           onClose={() => setReprint(null)}
@@ -1360,6 +1431,20 @@ export function AnalyticsPage() {
             void refreshProducts();
             void load();
           }}
+        />
+      )}
+      {pinVoidTarget && (
+        <PinPromptModal
+          title="Manager PIN"
+          detail={`Void ${pinVoidTarget.receiptNo} — erases the sale and puts the stock back.`}
+          onSubmit={async (pin) => {
+            const target = pinVoidTarget;
+            const err = await runVoid(target.id, pin);
+            // Keep the prompt open with an inline message on failure.
+            if (!err) setPinVoidTarget(null);
+            return err;
+          }}
+          onClose={() => setPinVoidTarget(null)}
         />
       )}
     </div>

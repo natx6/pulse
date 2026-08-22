@@ -18,6 +18,16 @@ export interface Product {
   fda_reg_no: string | null;
   is_controlled: number;
   active: number;
+  /** Sell units per purchase pack (carton of 10 strips = 10). 1 = none. */
+  pack_size?: number;
+}
+
+/** One batch row of a product (the FEFO ledger behind stock_qty). */
+export interface BatchRow {
+  id: number;
+  batch_no: string | null;
+  expiry_date: string | null;
+  quantity: number;
 }
 
 export interface CartLine {
@@ -44,7 +54,7 @@ export interface PaymentLine {
 
 export type PaymentMethod = "Cash" | "Card" | "MoMo" | "Credit";
 
-export type PageId = "pos" | "inventory" | "restock" | "analytics" | "support" | "settings" | "expenses";
+export type PageId = "dashboard" | "pos" | "inventory" | "restock" | "analytics" | "support" | "settings" | "expenses";
 
 export interface SaleResult {
   receipt_no: string;

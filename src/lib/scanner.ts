@@ -13,6 +13,10 @@ export function initScanner(handler: (code: string) => void): () => void {
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
+    // OS key auto-repeat fires ~30ms apart — inside the scan-burst window.
+    // Without this, holding a letter builds a junk "barcode".
+    if (e.repeat) return;
+
     if (e.key === "Enter") {
       if (buf.length >= 6) {
         e.preventDefault();

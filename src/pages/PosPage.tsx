@@ -74,6 +74,8 @@ export function PosPage() {
   const [patientInput, setPatientInput] = useState("");
   const [patientHits, setPatientHits] = useState<{ name: string; phone: string | null }[]>([]);
   const [showAddCustomer, setShowAddCustomer] = useState(false);
+  /** Per-line "step by whole packs" toggle for products with pack_size > 1. */
+  const [packStep, setPackStep] = useState<Record<number, boolean>>({});
   const reorderDialogRef = useFocusTrap<HTMLDivElement>();
 
   // Live patient suggestions while typing the customer name (click to attach).
@@ -185,22 +187,30 @@ export function PosPage() {
     await refreshProducts();
   };
 
-  /** Adds to cart if there's room; returns whether it actually did, so
+  /** Adds to the cart if there's room; returns whether it actually did, so
    * callers (e.g. the barcode-scan path) know whether the add was real or
-   * silently blocked at the stock cap. */
-  const tryAdd = (p: Product): boolean => {
+   * silently blocked at the stock cap. `asPack` adds a whole purchase pack
+   * (carton) — pack_size sell units in one tap. */
+  const tryAdd = (p: Product, asPack = false): boolean => {
     if (p.stock_qty <= 0) {
       beep(false);
       useToast.getState().show(`${p.name} is out of stock`, "error");
       return false;
     }
+    const units = asPack ? Math.max(1, p.pack_size ?? 1) : 1;
     const line = cart.find((l) => l.productId === p.id);
-    if (line && line.qty >= p.stock_qty) {
+    const want = (line?.qty ?? 0) + units;
+    if (want > p.stock_qty) {
       beep(false);
-      useToast.getState().show(`Max stock reached for ${p.name}`, "error");
+      useToast.getState().show(
+        asPack
+          ? `Only ${p.stock_qty} of ${p.name} in stock — a whole ${p.unit ?? "pack"} won't fit`
+          : `Max stock reached for ${p.name}`,
+        "error",
+      );
       return false;
     }
-    addToCart(p);
+    addToCart(p, units);
     beep(true);
     useToast.getState().show(`${p.name} added`, "success", { duration: 1500 });
     return true;
@@ -420,6 +430,20 @@ export function PosPage() {
                           <span className="material-symbols-outlined text-[16px]">add</span>
                         </button>
                       </Tip>
+                      {(p.pack_size ?? 1) > 1 && (
+                        <Tip label={`Add a whole pack — ${p.pack_size} × ${p.unit ?? "unit"}`}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              tryAdd(p, true);
+                            }}
+                            className="flex h-6 items-center gap-0.5 rounded bg-secondary-container px-1.5 text-[10px] font-bold text-on-secondary-container opacity-0 transition-opacity hover:brightness-95 group-hover:opacity-100"
+                          >
+                            <span className="material-symbols-outlined text-[13px]">inventory_2</span>
+                            ×{p.pack_size}
+                          </button>
+                        </Tip>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -555,7 +579,11 @@ export function PosPage() {
                 : "Cart is empty. Scan a barcode to start."}
             </p>
           )}
-          {cart.map((l) => (
+          {cart.map((l) => {
+            const packSize = products.find((p) => p.id === l.productId)?.pack_size ?? 1;
+            const byPack = packSize > 1 && packStep[l.productId];
+            const step = byPack ? packSize : 1;
+            return (
             <div
               key={l.productId}
               className="group relative flex flex-col border-b border-outline-variant/30 p-2"
@@ -573,11 +601,11 @@ export function PosPage() {
                   {fmtMoney(l.unitPrice)}
                 </span>
               </div>
-              <div className="mt-1 flex items-center justify-between">
+              <div className="mt-1 flex items-center justify-between gap-2">
                 <div className="flex items-center rounded border border-outline-variant bg-surface">
                   <Tip label="Fewer">
                     <button
-                      onClick={() => setQty(l.productId, l.qty - 1)}
+                      onClick={() => setQty(l.productId, Math.max(1, l.qty - step))}
                       className="flex h-8 w-8 items-center justify-center rounded-l text-on-surface hover:bg-surface-variant"
                     >
                       <span className="material-symbols-outlined text-[16px]">remove</span>
@@ -604,7 +632,7 @@ export function PosPage() {
                     <button
                       onClick={() => {
                         const max = stockFor(l.productId);
-                        setQty(l.productId, max !== undefined ? Math.min(l.qty + 1, max) : l.qty + 1);
+                        setQty(l.productId, max !== undefined ? Math.min(l.qty + step, max) : l.qty + step);
                       }}
                       className="flex h-8 w-8 items-center justify-center rounded-r text-on-surface hover:bg-surface-variant"
                     >
@@ -612,7 +640,22 @@ export function PosPage() {
                     </button>
                   </Tip>
                 </div>
-                <span className="font-data-mono text-data-mono font-bold text-on-surface">
+                {packSize > 1 && (
+                  <Tip label={byPack ? `+ / − steps a whole ${l.unit ?? "pack"} (${packSize})` : "+ / − steps one unit"}>
+                    <button
+                      onClick={() => setPackStep((m) => ({ ...m, [l.productId]: !m[l.productId] }))}
+                      className={`flex h-6 items-center gap-0.5 rounded border px-1.5 text-[10px] font-bold transition-colors ${
+                        byPack
+                          ? "border-primary/40 bg-primary/10 text-primary"
+                          : "border-outline-variant text-on-surface-variant hover:bg-surface-container-low"
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[12px]">inventory_2</span>
+                      {byPack ? `×${packSize}` : "×1"}
+                    </button>
+                  </Tip>
+                )}
+                <span className="ml-auto font-data-mono text-data-mono font-bold text-on-surface">
                   {fmtMoney(l.unitPrice * l.qty)}
                 </span>
               </div>
@@ -624,7 +667,8 @@ export function PosPage() {
                 <span className="material-symbols-outlined text-[16px]">close</span>
               </button>
             </div>
-          ))}
+            );
+          })}
           <button
             onClick={() => setQuickAdd({ barcode: null })}
             className="flex w-full items-center justify-center gap-1 border-b border-dashed border-outline-variant/30 py-2 text-primary transition-colors hover:bg-surface-container-low"

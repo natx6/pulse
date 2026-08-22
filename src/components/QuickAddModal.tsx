@@ -53,7 +53,12 @@ export function QuickAddModal() {
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
       onKeyDown={(e) => {
-        if (e.key === "Enter") void submit();
+        // preventDefault: Enter on a focused button would otherwise fire the
+        // native click AND this handler — two submits from one keypress.
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void submit();
+        }
         if (e.key === "Escape") close();
       }}
     >

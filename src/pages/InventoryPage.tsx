@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useStore } from "../store/useStore";
 import { stockStatus } from "../lib/stock";
 import { fmtMoney } from "../lib/money";
-import { adjustStock, loadProductsAll, saveReorderLevel, setProductActive } from "../db";
+import { adjustStock, isManagerPinSet, loadBatches, loadProductsAll, savePackSize, saveReorderLevel, setProductActive } from "../db";
 import { beep } from "../lib/audio";
 import { useToast } from "../store/toast";
 import { useFocusTrap } from "../lib/focusTrap";
 import { LabelModal } from "../components/LabelModal";
 import { ImportStockModal } from "../components/ImportStockModal";
-import type { Product } from "../types";
+import { StockTakeModal } from "../components/StockTakeModal";
+import type { BatchRow, Product } from "../types";
 
 function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reorder_level"> }) {
   const st = stockStatus(p as Product);
@@ -45,6 +46,7 @@ export function InventoryPage() {
   const [busy, setBusy] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [stockTakeOpen, setStockTakeOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [archived, setArchived] = useState<Product[]>([]);
   const [archiveArmed, setArchiveArmed] = useState<number | null>(null);
@@ -52,7 +54,26 @@ export function InventoryPage() {
   const [sortAsc, setSortAsc] = useState(true);
   const [editingReorder, setEditingReorder] = useState<number | null>(null);
   const [reorderVal, setReorderVal] = useState("");
+  /** Expanded product row → its FEFO batches (loaded lazily). */
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const [batchRows, setBatchRows] = useState<Record<number, BatchRow[]>>({});
   const adjustDialogRef = useFocusTrap<HTMLDivElement>();
+
+  const toggleBatches = async (p: Product) => {
+    if (expanded === p.id) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(p.id);
+    if (!batchRows[p.id]) {
+      try {
+        const rows = await loadBatches(p.id);
+        setBatchRows((m) => ({ ...m, [p.id]: rows }));
+      } catch {
+        setBatchRows((m) => ({ ...m, [p.id]: [] }));
+      }
+    }
+  };
 
   // Load archived products when the toggle is on (active ones come from the store).
   useEffect(() => {
@@ -137,6 +158,14 @@ export function InventoryPage() {
   };
 
   const [adjustReorder, setAdjustReorder] = useState("");
+  const [adjustPack, setAdjustPack] = useState("");
+  /** Manager PIN — required for reductions when one is configured. */
+  const [pinRequired, setPinRequired] = useState(false);
+  const [adjustPin, setAdjustPin] = useState("");
+
+  useEffect(() => {
+    void isManagerPinSet().then(setPinRequired).catch(() => setPinRequired(false));
+  }, []);
 
   const openAdjust = (p: Product) => {
     setAdjust(p);
@@ -145,6 +174,8 @@ export function InventoryPage() {
     setNote("");
     setAdjustErr("");
     setAdjustReorder(String(p.reorder_level));
+    setAdjustPack(String(p.pack_size ?? 1));
+    setAdjustPin("");
   };
 
   const doAdjust = async () => {
@@ -153,8 +184,15 @@ export function InventoryPage() {
     const hasDelta = delta.trim() && !Number.isNaN(d) && d !== 0;
     const newLevel = Math.max(0, Math.floor(Number(adjustReorder)) || 0);
     const hasReorderChange = newLevel !== adjust.reorder_level;
-    if (!hasDelta && !hasReorderChange) {
+    const newPack = Math.max(1, Math.floor(Number(adjustPack)) || 1);
+    const hasPackChange = newPack !== (adjust.pack_size ?? 1);
+    if (!hasDelta && !hasReorderChange && !hasPackChange) {
       setAdjustErr("Nothing to save — enter a quantity change or adjust the reorder level.");
+      beep(false);
+      return;
+    }
+    if (hasDelta && d < 0 && pinRequired && adjustPin.trim().length < 4) {
+      setAdjustErr("Manager PIN required to reduce stock.");
       beep(false);
       return;
     }
@@ -163,10 +201,13 @@ export function InventoryPage() {
     try {
       if (hasDelta) {
         const fullReason = note.trim() ? `${reason} — ${note.trim()}` : reason;
-        await adjustStock(adjust.id, d, fullReason, operator);
+        await adjustStock(adjust.id, d, fullReason, operator, adjustPin.trim() || null);
       }
       if (hasReorderChange) {
         await saveReorderLevel(adjust.id, newLevel);
+      }
+      if (hasPackChange) {
+        await savePackSize(adjust.id, newPack);
       }
       await refreshProducts();
       beep(true);
@@ -220,6 +261,14 @@ export function InventoryPage() {
             <span className="text-label-md font-label-md">
               {showArchived ? "Archived on" : "Show archived"}
             </span>
+          </button>
+          <button
+            onClick={() => setStockTakeOpen(true)}
+            className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
+            title="Count the whole shelf, commit the differences in one go"
+          >
+            <span className="material-symbols-outlined text-[16px]">checklist</span>
+            <span className="text-label-md font-label-md">Stock take</span>
           </button>
           <button
             onClick={() => setImportOpen(true)}
@@ -286,14 +335,23 @@ export function InventoryPage() {
           {filtered.map((p) => {
             const st = stockStatus(p);
             return (
+              <Fragment key={p.id}>
               <div
-                key={p.id}
                 className={`group flex items-center border-b border-outline-variant px-4 transition-colors hover:bg-surface-container-low ${
                   st === "critical" ? "border-l-[3px] border-l-error bg-error/5" : ""
                 }`}
                 style={{ height: 36 }}
               >
                 <div className="flex min-w-0 flex-1 items-center gap-2 pr-4">
+                  <button
+                    onClick={() => void toggleBatches(p)}
+                    title="Show batches (FEFO order — nearest expiry first)"
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-outline hover:bg-surface-variant hover:text-on-surface"
+                  >
+                    <span className={`material-symbols-outlined text-[16px] transition-transform ${expanded === p.id ? "rotate-90" : ""}`}>
+                      chevron_right
+                    </span>
+                  </button>
                   <span className="truncate text-body-sm font-medium text-on-surface">
                     {p.name}
                   </span>
@@ -400,6 +458,34 @@ export function InventoryPage() {
                   )}
                 </div>
               </div>
+              {expanded === p.id && (
+                <div className="border-b border-outline-variant bg-surface-container-low px-4 py-2 pl-12">
+                  <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
+                    Batches — sold nearest expiry first (FEFO)
+                    {(p.pack_size ?? 1) > 1 ? ` · 1 pack = ${p.pack_size} units` : ""}
+                  </p>
+                  {!(batchRows[p.id] ?? []).some((b) => b.quantity > 0) && (
+                    <p className="text-body-sm text-on-surface-variant">Nothing on the shelf.</p>
+                  )}
+                  {(batchRows[p.id] ?? [])
+                    .filter((b) => b.quantity > 0 || b.batch_no)
+                    .map((b) => (
+                      <div key={b.id} className="flex items-center gap-4 py-0.5 font-data-mono text-data-mono text-body-sm">
+                        <span className="w-32 truncate text-on-surface">{b.batch_no ?? "(no batch)"}</span>
+                        <span className={`w-28 ${b.expiry_date && new Date(b.expiry_date + "T00:00:00") <= new Date() ? "font-bold text-error" : "text-on-surface-variant"}`}>
+                          exp {b.expiry_date ?? "—"}
+                        </span>
+                        <span className="ml-auto text-right text-on-surface">
+                          {b.quantity}
+                          {(p.pack_size ?? 1) > 1 && b.quantity >= (p.pack_size ?? 1)
+                            ? ` (${Math.floor(b.quantity / (p.pack_size ?? 1))} pk)`
+                            : ""}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
+              </Fragment>
             );
           })}
         </div>
@@ -486,6 +572,31 @@ export function InventoryPage() {
               onChange={(e) => setAdjustReorder(e.target.value)}
               className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             />
+            <label className="mb-1 mt-3 block text-label-md font-label-md text-on-surface">
+              Units per pack (carton) — 1 = none
+            </label>
+            <input
+              type="number"
+              min="1"
+              value={adjustPack}
+              onChange={(e) => setAdjustPack(e.target.value)}
+              className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            {pinRequired && delta.trim() && Number(delta) < 0 && (
+              <label className="mb-1 mt-3 block">
+                <span className="mb-1 block text-label-md font-label-md text-on-surface">
+                  Manager PIN — reducing stock is protected
+                </span>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  value={adjustPin}
+                  onChange={(e) => setAdjustPin(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                  placeholder="••••"
+                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 font-data-mono text-data-mono tracking-[0.3em] text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </label>
+            )}
             {adjustErr && <p className="mt-2 text-body-sm font-body-sm text-error">{adjustErr}</p>}
             <div className="mt-4 flex justify-end gap-2">
               <button
@@ -513,6 +624,7 @@ export function InventoryPage() {
           onDone={() => void refreshProducts()}
         />
       )}
+      {stockTakeOpen && <StockTakeModal onClose={() => setStockTakeOpen(false)} />}
     </div>
   );
 }

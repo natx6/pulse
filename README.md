@@ -56,7 +56,8 @@ Demo seed products ship with the first migration — delete the rows to start cl
 ## Roadmap (intentionally not built)
 
 - NHIS claims, full shift handover, e-invoicing
-- ESC/POS direct thermal printing (currently browser print)
+- USB-serial thermal printing (ESC/POS over TCP 9100 is built in; share a
+  USB printer onto the network from its host)
 - Live MoMo API (the merchant number is shown on receipts; Pulse doesn't
   move money itself)
 
