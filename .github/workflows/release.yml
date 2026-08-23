@@ -94,6 +94,11 @@ jobs:
         shell: bash
         env:
           OPENSSL_NO_ASM: ${{ matrix.platform == 'windows-latest' && '1' || '' }}
+          # shell:bash on Windows puts MSYS's stripped-down perl (/usr/bin)
+          # ahead of everything on PATH, and that perl lacks
+          # Locale::Maketext::Simple so vendored OpenSSL can't Configure.
+          # openssl-sys honours the PERL variable — point it at Strawberry.
+          PERL: C:\Strawberry\perl\bin\perl.exe
         run: |
           set +e
           for i in 1 2 3 4; do
