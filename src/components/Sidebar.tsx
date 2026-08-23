@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
 import { activeOperatorAt } from "../lib/shift";
+import { verifyManagerPin } from "../db";
 import { Tip } from "./Tip";
+import { PinPromptModal } from "./PinPromptModal";
 import type { PageId } from "../types";
 
 const NAV: { id: PageId; icon: string; label: string }[] = [
@@ -22,7 +24,11 @@ export function Sidebar() {
   const autoOperator = useStore((s) => s.autoOperator);
   const loadOperators = useStore((s) => s.loadOperators);
   const setOperator = useStore((s) => s.setOperator);
+  const role = useStore((s) => s.role);
+  const setRole = useStore((s) => s.setRole);
   const [pickerOpen, setPickerOpen] = useState(false);
+  /** Manager-PIN prompt for unlocking Manager mode. */
+  const [unlockOpen, setUnlockOpen] = useState(false);
 
   useEffect(() => {
     void loadOperators();
@@ -80,15 +86,17 @@ export function Sidebar() {
       </nav>
 
       <div className="mt-auto flex flex-col gap-1 border-t border-outline/30 pt-4">
-        <button
-          onClick={() => setPage("settings")}
-          className="group flex items-center gap-3 rounded-xl px-3 py-2 text-left text-white/60 transition-colors duration-150 hover:bg-white/10 hover:text-white"
-        >
-          <span className="material-symbols-outlined text-[20px] transition-transform group-hover:scale-110">
-            settings
-          </span>
-          <span className="text-label-md font-label-md">Settings</span>
-        </button>
+        {role === "manager" && (
+          <button
+            onClick={() => setPage("settings")}
+            className="group flex items-center gap-3 rounded-xl px-3 py-2 text-left text-white/60 transition-colors duration-150 hover:bg-white/10 hover:text-white"
+          >
+            <span className="material-symbols-outlined text-[20px] transition-transform group-hover:scale-110">
+              settings
+            </span>
+            <span className="text-label-md font-label-md">Settings</span>
+          </button>
+        )}
         <div className="relative mt-4 px-3">
           <Tip label="Tap to switch who is on duty" dir="top">
             <button
@@ -99,8 +107,17 @@ export function Sidebar() {
                 {operator ? operator.charAt(0).toUpperCase() : "?"}
               </div>
               <div className="min-w-0">
-                <span className="block truncate text-[12px] font-semibold text-white">
-                  {operator || "No operator set"}
+                <span className="flex items-center gap-1">
+                  <span className="block truncate text-[12px] font-semibold text-white">
+                    {operator || "No operator set"}
+                  </span>
+                  <span
+                    className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase tracking-wider ${
+                      role === "manager" ? "bg-primary/25 text-primary-fixed" : "bg-white/10 text-white/60"
+                    }`}
+                  >
+                    {role}
+                  </span>
                 </span>
                 <span className="block text-[10px] text-white/50">{sub}</span>
               </div>
@@ -163,21 +180,65 @@ export function Sidebar() {
                     </p>
                   )}
                 </div>
-                <button
-                  onClick={() => {
-                    setPickerOpen(false);
-                    setPage("settings");
-                  }}
-                  className="flex w-full items-center gap-2 border-t border-outline-variant bg-surface-container-low px-3 py-2 text-left text-label-md font-label-md text-primary hover:bg-surface-container-lowest"
-                >
-                  <span className="material-symbols-outlined text-[16px]">settings</span>
-                  Manage operators in Settings
-                </button>
+                {role === "manager" && (
+                  <button
+                    onClick={() => {
+                      setPickerOpen(false);
+                      setPage("settings");
+                    }}
+                    className="flex w-full items-center gap-2 border-t border-outline-variant bg-surface-container-low px-3 py-2 text-left text-label-md font-label-md text-primary hover:bg-surface-container-lowest"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">settings</span>
+                    Manage operators in Settings
+                  </button>
+                )}
               </div>
             </>
           )}
+
+          {/* Role switch — the loss-prevention gate itself. Unlocking asks
+              for the manager PIN (wrong PIN keeps the prompt open); locking
+              drops back to cashier and leaves any manager-only page. */}
+          {pickerOpen && (
+            <button
+              onClick={() => {
+                if (role === "manager") {
+                  setPickerOpen(false);
+                  setRole("cashier");
+                  if (page === "settings") setPage("dashboard");
+                } else {
+                  setPickerOpen(false);
+                  setUnlockOpen(true);
+                }
+              }}
+              className={`relative z-50 mt-2 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-label-md font-label-md transition-colors ${
+                role === "manager"
+                  ? "text-white/70 hover:bg-white/10 hover:text-white"
+                  : "bg-white/10 text-white hover:bg-white/20"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[18px]">
+                {role === "manager" ? "lock" : "admin_panel_settings"}
+              </span>
+              {role === "manager" ? "Lock — back to cashier" : "Unlock Manager mode"}
+            </button>
+          )}
         </div>
       </div>
+
+      {unlockOpen && (
+        <PinPromptModal
+          title="Unlock Manager mode"
+          detail="Enter the manager PIN to reach Settings."
+          onSubmit={async (pin) => {
+            const ok = await verifyManagerPin(pin).catch(() => false);
+            if (!ok) return "Wrong PIN — try again.";
+            setRole("manager");
+            return null;
+          }}
+          onClose={() => setUnlockOpen(false)}
+        />
+      )}
     </nav>
   );
 }

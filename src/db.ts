@@ -369,18 +369,20 @@ export async function isManagerPinSet(): Promise<boolean> {
   return Boolean(rows[0]?.value?.trim());
 }
 
-/** Set (or clear with null) the manager PIN that gates voids and refunds. */
-export async function setManagerPin(pin: string | null): Promise<void> {
-  const d = await initDb();
-  const trimmed = pin?.trim() || null;
-  if (trimmed === null) {
-    await d.execute("DELETE FROM settings WHERE key = 'manager_pin'");
-  } else {
-    await d.execute(
-      "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      ["manager_pin", trimmed],
-    );
-  }
+/** Set (or clear with null) the manager PIN that gates voids, refunds,
+ * supplier payments and credit settlements. Changing/clearing an ACTIVE pin
+ * requires `currentPin` — the Rust side stores only a salted hash. */
+export async function setManagerPin(
+  currentPin: string | null,
+  newPin: string | null,
+): Promise<void> {
+  await invoke("set_manager_pin", { currentPin, newPin });
+}
+
+/** Whether `pin` verifies against the configured manager PIN. Used to unlock
+ * Manager mode; with no PIN configured it is trivially true. */
+export async function verifyManagerPin(pin: string | null): Promise<boolean> {
+  return await invoke<boolean>("verify_manager_pin", { pin });
 }
 
 export interface StockTakeCount {
@@ -738,14 +740,16 @@ export async function cancelPurchase(
   return await invoke("cancel_purchase", { purchaseId, reason });
 }
 
-/** Settle a customer's book balance — a payment against outstanding credit. */
+/** Settle a customer's book balance — a payment against outstanding credit.
+ * Money out the door: `managerPin` is required when one is configured. */
 export async function settleCredit(
   patientName: string,
   amount: number,
   method: string,
   operator: string | null,
+  managerPin?: string | null,
 ): Promise<{ patient_name: string; paid: number; balance: number }> {
-  return await invoke("settle_credit", { patientName, amount, method, operator });
+  return await invoke("settle_credit", { patientName, amount, method, operator, managerPin });
 }
 
 /** Outstanding customer credit (book) balances: what each customer owes. */
@@ -859,14 +863,16 @@ export async function loadControlledRegister(
   };
 }
 
-/** Record a payment against a supplier invoice (atomic in Rust). */
+/** Record a payment against a supplier invoice (atomic in Rust). Money out
+ * the door: `managerPin` is required when one is configured. */
 export async function recordPayment(
   purchaseId: string,
   amount: number,
   method: string,
   operator: string | null,
+  managerPin?: string | null,
 ): Promise<{ reference_no: string | null; paid: number; balance: number }> {
-  return await invoke("record_payment", { purchaseId, amount, method, operator });
+  return await invoke("record_payment", { purchaseId, amount, method, operator, managerPin });
 }
 
 // ---- Expenses (petty cash) ----

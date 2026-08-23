@@ -232,19 +232,34 @@ what needs attention.
 - **Thermal printer** card: address + port of an ESC/POS receipt printer on
   the LAN; once set, every receipt modal shows a one-tap Thermal button.
 - Operator chip in the sidebar: tap to change who is on duty; the operator's
-  name is stamped on every sale and feeds the per-operator report. No login,
-  no passwords — the data exists, the flow forces nothing.
-- **Loss prevention**: an optional manager PIN (4–8 digits, set/clear in
-  Settings) gates the shrinkage paths — voiding a sale, refunds (returns),
-  and negative stock adjustments all prompt for it when configured. The
-  check is enforced in Rust on every gated command, not just in the UI.
-  No PIN = today's friction-free flow, untouched.
+  name is stamped on every sale and feeds the per-operator report. The chip
+  also shows the current **role** and is where Manager mode is unlocked.
+- **Loss prevention**: an optional manager PIN (4–8 digits, set in Settings)
+  gates the money-and-shrinkage paths — voiding a sale, refunds (returns),
+  negative stock adjustments, supplier payments, and credit settlements all
+  prompt for it when configured. Changing or clearing the PIN requires
+  re-entering the current one. The PIN itself is never stored: only a salted,
+  stretched SHA-256 hash lives in the database, and every check runs in Rust.
+- **Roles**: with a PIN configured the app starts locked as **cashier** —
+  Settings disappears from the sidebar (and its route refuses to render) —
+  and "Unlock Manager mode" on the operator chip asks for the PIN. Locking
+  drops back to cashier instantly; there's no persistent manager session to
+  forget to end. No PIN = single-user mode with everything open.
+- **Encryption at rest**: the whole database (sales, patients, credit) is
+  AES-256 encrypted via SQLCipher with a random per-install key kept in
+  `pulse.key` next to it — a copied/stolen `pulse.db` alone is unreadable.
+  Existing plaintext databases are encrypted automatically on first launch of
+  this version. External backups are encrypted too, so keep `pulse.key`
+  somewhere safe: restoring onto another machine needs both files.
+  Complementary layer for laptop theft: OS disk encryption.
 - **Backups card**: every backup in `backups/` (name, size, date) with a
   two-tap Restore. Restoring snapshots the current database to
   `backups/pre-restore-<ts>.db` first, swaps the file, and restarts the app.
   Auto-backups keep the newest 20 files. "Save to flash drive…" copies a
   fresh WAL-safe snapshot to any folder — flash drive or second disk — for
-  offsite insurance against theft and fire.
+  offsite insurance against theft and fire. Backups are encrypted with the
+  same key as the database: a restore onto another machine needs that
+  machine's `pulse.key` replaced with this install's copy too.
 - **Dark mode**: a toggle in an Appearance card switches the whole app
   between light and dark via a CSS custom-property token system (colors
   only, no separate dark-mode components), saved as a setting so it
@@ -284,7 +299,7 @@ what needs attention.
   book settlements), expenses (category, description, amount, payment
   method, operator, timestamp), settings key/value.
 - Migrations run through an in-app runner keyed by PRAGMA user_version
-  (currently v22 — 22 migration files) — the plugin's own runner and its
+  (currently v24 — 24 migration files) — the plugin's own runner and its
   leftover `_sqlx_migrations` table were dropped.
 - Fonts (Inter + Material Symbols) are self-hosted in `public/fonts/` — no
   Google Fonts at runtime.
@@ -319,7 +334,8 @@ problem is visual.
 
 ## 12. Deliberately NOT included (v1 scope decisions)
 
-- No login / passwords / user roles (operator name only).
+- No per-user login (roles are app-level manager/cashier, unlocked by the
+  manager PIN rather than named accounts).
 - No NHIS/insurance claims or e-invoicing.
 - No live MoMo API integration (the merchant number is displayed; Pulse
   doesn't move money itself).

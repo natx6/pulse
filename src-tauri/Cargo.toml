@@ -1,6 +1,6 @@
 [package]
 name = "pulse"
-version = "0.1.0"
+version = "0.4.0"
 description = "Pulse Pharmacy Management System"
 edition = "2021"
 
@@ -13,15 +13,28 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+# Vendored + patched: keys the sqlx pool with the SQLCipher database key.
+# Do not bump to a crates.io version — see vendor/README.md.
+tauri-plugin-sql = { path = "vendor/tauri-plugin-sql", features = ["sqlite"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.31", features = ["bundled", "backup"] }
+sha2 = "0.10"
+rand = "0.8"
 calamine = "0.26"
 csv = "1"
+
+# SQLCipher (AES-256 encryption at rest). The feature unifies across
+# libsqlite3-sys, so the plugin's sqlx build is SQLCipher-enabled too.
+# Crypto provider: system OpenSSL via pkg-config on Unix (GH runners ship it);
+# vendored OpenSSL on Windows, which has no system-wide OpenSSL.
+[target.'cfg(not(windows))'.dependencies]
+rusqlite = { version = "0.31", features = ["bundled-sqlcipher", "backup"] }
+
+[target.'cfg(windows)'.dependencies]
+rusqlite = { version = "0.31", features = ["bundled-sqlcipher-vendored-openssl", "backup"] }
 
 [profile.release]
 opt-level = "s"

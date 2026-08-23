@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
 import { fmtMoney } from "../lib/money";
-import { recordPayment } from "../db";
+import { isManagerPinSet, recordPayment } from "../db";
 import { beep } from "../lib/audio";
 import type { Purchase } from "../db";
 
@@ -13,7 +13,9 @@ interface Props {
 
 const METHODS = ["Cash", "Mobile Money", "Bank Transfer", "Cheque"] as const;
 
-/** Record a payment against a supplier invoice (the "what do I owe" ledger). */
+/** Record a payment against a supplier invoice (the "what do I owe" ledger).
+ * Money leaves the business — when a manager PIN is configured the field
+ * appears and the backend refuses anything without it. */
 export function PurchasePaymentModal({ p, onClose, onPaid }: Props) {
   const operator = useStore((s) => s.operator);
   const balance = Math.max(0, p.total_amount - p.paid_amount);
@@ -22,6 +24,13 @@ export function PurchasePaymentModal({ p, onClose, onPaid }: Props) {
   const [method, setMethod] = useState<string>("Cash");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  /** Manager PIN — required for payments when one is configured. */
+  const [pinRequired, setPinRequired] = useState(false);
+  const [managerPin, setManagerPin] = useState("");
+
+  useEffect(() => {
+    void isManagerPinSet().then(setPinRequired).catch(() => setPinRequired(false));
+  }, []);
 
   const save = async () => {
     const a = Number(amount);
@@ -33,10 +42,14 @@ export function PurchasePaymentModal({ p, onClose, onPaid }: Props) {
       setErr(`Can't exceed the ${fmtMoney(balance)} balance left on this invoice.`);
       return;
     }
+    if (pinRequired && managerPin.trim().length < 4) {
+      setErr("Manager PIN required to pay a supplier.");
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
-      const r = await recordPayment(p.id, a, method, operator || null);
+      const r = await recordPayment(p.id, a, method, operator || null, managerPin.trim() || null);
       beep(true);
       await onPaid(r);
     } catch (e) {
@@ -119,7 +132,25 @@ export function PurchasePaymentModal({ p, onClose, onPaid }: Props) {
             </select>
           </label>
 
-          {err && <p className="text-body-sm text-error">{err}</p>}
+          {pinRequired && (
+            <label className="block">
+              <span className="mb-1 flex items-center gap-1 text-label-md font-label-md text-on-surface">
+                <span className="material-symbols-outlined text-[16px]">shield</span>
+                Manager PIN — supplier payments are protected
+              </span>
+              <input
+                type="password"
+                inputMode="numeric"
+                value={managerPin}
+                onChange={(e) => setManagerPin(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                placeholder="••••"
+                aria-label="Manager PIN"
+                className={`${inputCls} w-40 text-center font-data-mono text-data-mono tracking-[0.3em]`}
+              />
+            </label>
+          )}
+
+          {err && <p className="text-body-sm text-error" role="alert">{err}</p>}
         </div>
 
         <div className="flex gap-2 border-t border-outline-variant bg-surface-container px-6 py-4">

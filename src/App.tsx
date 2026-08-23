@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { initDb, getSettings } from "./db";
+import { initDb, getSettings, isManagerPinSet } from "./db";
 import { useStore } from "./store/useStore";
 import { initScanner } from "./lib/scanner";
 import { beep } from "./lib/audio";
@@ -23,6 +23,7 @@ import { useToast } from "./store/toast";
 
 export default function App() {
   const page = useStore((s) => s.page);
+  const role = useStore((s) => s.role);
   const [updating, setUpdating] = useState<{
     version: string;
     pct: number | null;
@@ -78,6 +79,12 @@ export default function App() {
         useStore.getState().applySettings(s);
         await useStore.getState().refreshProducts();
         await useStore.getState().loadOperators();
+        // Role at boot: a configured manager PIN means every launch starts
+        // locked as cashier — Settings stays out of reach until someone with
+        // the PIN unlocks Manager mode. No PIN → single-user mode, full trust.
+        await isManagerPinSet()
+          .then((pinSet) => useStore.getState().setRole(pinSet ? "cashier" : "manager"))
+          .catch(() => useStore.getState().setRole("cashier"));
         if (!scannerReady.current) {
           scannerReady.current = true;
           initScanner((code) => {
@@ -217,7 +224,18 @@ export default function App() {
           {page === "analytics" && <AnalyticsPage />}
           {page === "support" && <SupportPage />}
           {page === "expenses" && <ExpensesPage />}
-          {page === "settings" && <SettingsPage />}
+          {/* Route guard: even if something navigates here programmatically,
+              Settings only renders for Manager mode. */}
+          {page === "settings" && role === "manager" && <SettingsPage />}
+          {page === "settings" && role !== "manager" && (
+            <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+              <span className="material-symbols-outlined text-[40px] text-on-surface-variant">lock</span>
+              <p className="text-headline-md font-headline-md text-on-surface">Manager mode required</p>
+              <p className="max-w-sm text-body-sm font-body-sm text-on-surface-variant">
+                Ask a manager to unlock via the operator chip in the sidebar.
+              </p>
+            </div>
+          )}
         </main>
       </div>
       <QuickAddModal />

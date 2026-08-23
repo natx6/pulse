@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { CartLine, PageId, Patient, Product } from "../types";
+import type { CartLine, PageId, Patient, Product, Role } from "../types";
 import { loadOperators as dbLoadOperators, loadProducts, saveSetting } from "../db";
 import type { Operator } from "../db";
 
@@ -22,8 +22,12 @@ interface AppState {
   searchQuery: string;
   quickAdd: { barcode: string | null } | null;
   intakeOpen: boolean;
+  /** Manager vs cashier mode. Never persisted — a fresh launch starts as
+   * cashier whenever a manager PIN is configured (App decides at boot). */
+  role: Role;
 
   setPage(p: PageId): void;
+  setRole(r: Role): void;
   setSearch(q: string): void;
   addToCart(p: Product, units?: number): void;
   setQty(productId: number, qty: number): void;
@@ -69,8 +73,10 @@ export const useStore = create<AppState>((set, get) => ({
   searchQuery: "",
   quickAdd: null,
   intakeOpen: false,
+  role: "cashier",
 
   setPage: (page) => set({ page }),
+  setRole: (role) => set({ role }),
   setSearch: (q) => set({ searchQuery: q }),
 
   /** Add to the cart in sell units — `units` lets a pack/carton button add a

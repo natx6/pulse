@@ -56,6 +56,10 @@ export type PaymentMethod = "Cash" | "Card" | "MoMo" | "Credit";
 
 export type PageId = "dashboard" | "pos" | "inventory" | "restock" | "analytics" | "support" | "settings" | "expenses";
 
+/** Staff role. Cashiers run the counter; Settings (and everything behind it)
+ * needs Manager mode, unlocked with the manager PIN. */
+export type Role = "manager" | "cashier";
+
 export interface SaleResult {
   receipt_no: string;
   sale_id: number;

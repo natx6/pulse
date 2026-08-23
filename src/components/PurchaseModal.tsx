@@ -553,7 +553,7 @@ export function PurchaseModal({
                     <th className="w-24 px-1 py-1.5 text-right">Line total</th>
                     <th className="w-32 px-1 py-1.5">Expiry</th>
                     <th className="w-32 px-1 py-1.5">Batch no</th>
-                    <th className="w-8 px-1 py-1.5" />
+                    <th className="sticky right-0 w-8 bg-surface-container-low px-1 py-1.5" />
                   </tr>
                 </thead>
                 <tbody>
@@ -663,11 +663,12 @@ export function PurchaseModal({
                           className="h-7 w-full rounded border border-outline-variant bg-surface-container-lowest px-1 text-body-sm text-on-surface focus:border-primary focus:outline-none"
                         />
                       </td>
-                      <td className="px-1 py-1">
+                      <td className="sticky right-0 bg-surface px-1 py-1">
                         <button
                           onClick={() => removeLine(l.key)}
                           title="Remove line"
-                          className="text-outline hover:text-error"
+                          aria-label={`Remove ${l.product_name}`}
+                          className="flex h-6 w-6 items-center justify-center rounded-full border border-outline-variant text-on-surface-variant transition-colors hover:border-error hover:bg-error-container hover:text-error"
                         >
                           <span className="material-symbols-outlined text-[16px]">close</span>
                         </button>

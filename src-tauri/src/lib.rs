@@ -95,6 +95,204 @@ fn db_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(dir.join("pulse.db"))
 }
 
+// ---------------------------------------------------------------------------
+// Encryption at rest (SQLCipher)
+//
+// pulse.db is AES-256 encrypted via SQLCipher. The 256-bit key is generated
+// once per install and kept in pulse.key beside the database:
+//
+//   - protects against the db file being copied/stolen on its own (backups,
+//     sync folders, flash drives) — such copies are opaque without the key
+//   - the key lives on the SAME machine by design: this is data-at-rest
+//     encryption, not per-user access control. Full-disk encryption (BitLocker
+//     / FileVault / LUKS) is the complementary layer for laptop theft.
+//
+// External backups are encrypted with the same key — restoring one onto a
+// fresh machine requires copying pulse.key along with it.
+// ---------------------------------------------------------------------------
+
+/// Path of the SQLCipher key file. Same directory as db_path so they travel
+/// together; tauri-plugin-sql's vendored patch reads this exact location too.
+fn db_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("pulse.key"))
+}
+
+/// Read the install's database key, generating + persisting a fresh 256-bit
+/// key on first run. Idempotent; safe to call from both setup and commands.
+fn ensure_db_key(app: &AppHandle) -> Result<String, String> {
+    let path = db_key_path(app)?;
+    if let Ok(existing) = fs::read_to_string(&path) {
+        let k = existing.trim().to_string();
+        if !k.is_empty() {
+            return Ok(k);
+        }
+    }
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let key: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    fs::write(&path, &key).map_err(|e| format!("Can't write {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        // Only the current user may read the key.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(key)
+}
+
+/// Open a connection to pulse.db and unlock it. `PRAGMA key` MUST be the
+/// first statement on the connection — anything before it reads garbage.
+pub fn open_db(app: &AppHandle) -> Result<rusqlite::Connection, String> {
+    let conn = rusqlite::Connection::open(db_path(app)?).map_err(|e| e.to_string())?;
+    apply_db_key(&conn, &ensure_db_key(app)?)?;
+    Ok(conn)
+}
+
+/// Feed `key` to an already-open SQLCipher connection as a raw hex key.
+/// Uses the documented double-quoted x'…' form so the hex can't be
+/// misinterpreted as a passphrase.
+fn apply_db_key(conn: &rusqlite::Connection, key: &str) -> Result<(), String> {
+    conn.execute_batch(&format!("PRAGMA key = \"x'{key}'\";",))
+        .map_err(|e| e.to_string())
+}
+
+/// Probe that a connection can actually read pages — i.e. the key was right.
+fn probe_decrypted(conn: &rusqlite::Connection) -> bool {
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
+        .is_ok()
+}
+
+/// One-time migration: encrypt an existing PLAINTEXT pulse.db in place.
+///
+/// Runs at startup before migrations. If the live db reads fine WITHOUT a key
+/// it is legacy plaintext: copy it into a fresh SQLCipher-encrypted file via
+/// sqlcipher_export (schema + data + user_version), swap files, and shred the
+/// plaintext original plus its WAL/SHM sidecars — leaving plaintext on disk
+/// would defeat the whole exercise.
+fn migrate_plaintext_db(app: &AppHandle) -> Result<(), String> {
+    let path = db_path(app)?;
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    // Leftover from an interrupted migration: the encrypted copy is already
+    // in place, so the stash is redundant — wipe it.
+    let old = dir.join("pulse.db.plaintext");
+    if old.exists() {
+        zero_and_remove(&old);
+    }
+    if !path.exists() {
+        return Ok(()); // first run — nothing to migrate; open_db creates it encrypted
+    }
+    let key = ensure_db_key(app)?;
+
+    // Already encrypted? Then a keyed probe succeeds and we're done.
+    if let Ok(c) = rusqlite::Connection::open(&path) {
+        if apply_db_key(&c, &key).is_ok() && probe_decrypted(&c) {
+            return Ok(());
+        }
+    }
+
+    // Plaintext? Probe without any key.
+    let ver = {
+        let plain = rusqlite::Connection::open(&path)
+            .map_err(|e| format!("can't open database: {e}"))?;
+        if !probe_decrypted(&plain) {
+            return Err(
+                "Database file is neither readable as plaintext nor with this \
+                 install's key — it may be corrupt or belong to another install."
+                    .into(),
+            );
+        }
+        plain
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?
+    };
+
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let tmp = dir.join("pulse.db.encrypting");
+    let _ = fs::remove_file(&tmp);
+
+    {
+        let plain = rusqlite::Connection::open(&path).map_err(|e| e.to_string())?;
+        // ATTACH ... KEY initializes the new file as SQLCipher-encrypted.
+        plain
+            .execute_batch(&format!(
+                "ATTACH DATABASE '{}' AS enc KEY \"x'{key}'\";",
+                tmp.to_string_lossy().replace('\'', "''")
+            ))
+            .map_err(|e| e.to_string())?;
+        // sqlcipher_export returns a NULL row — only the query failing
+        // indicates an error.
+        plain
+            .query_row("SELECT sqlcipher_export('enc')", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })
+            .map_err(|e| format!("sqlcipher_export failed: {e}"))?;
+        // sqlcipher_export does NOT carry user_version across — set it or
+        // every migration re-runs from zero on next launch.
+        plain
+            .pragma_update(
+                Some(rusqlite::DatabaseName::Attached("enc")),
+                "user_version",
+                ver,
+            )
+            .map_err(|e| e.to_string())?;
+        plain
+            .execute_batch("DETACH DATABASE enc;")
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Sanity-check the encrypted copy BEFORE destroying the original.
+    {
+        let check = rusqlite::Connection::open(&tmp).map_err(|e| e.to_string())?;
+        apply_db_key(&check, &key)?;
+        if !probe_decrypted(&check) {
+            let _ = fs::remove_file(&tmp);
+            return Err("Encrypted copy failed verification — original left untouched".into());
+        }
+    }
+
+    // Swap, crash-safe order: stash the plaintext aside, then promote the
+    // verified encrypted copy into place IMMEDIATELY — from this moment the
+    // app always has a readable database, and every remaining step is pure
+    // cleanup. Only then are the plaintext bytes zeroed (recovery tools can't
+    // resurrect them) and deleted.
+    for sidecar in ["-wal", "-shm"] {
+        let _ = fs::remove_file(dir.join(format!("pulse.db{sidecar}")));
+    }
+    fs::rename(&path, &old).map_err(|e| format!("swap failed: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| {
+        // Roll the plaintext back into place so a failed promotion can't
+        // leave the shop with no database at all.
+        let _ = fs::rename(&old, &path);
+        format!("swap failed: {e}")
+    })?;
+    zero_and_remove(&old);
+
+    Ok(())
+}
+
+/// Overwrite a file's bytes with zeros (defeats file-recovery tools), then
+/// delete it. Best-effort on the write; the unlink matters most.
+fn zero_and_remove(path: &std::path::Path) {
+    if let Ok(mut f) = fs::OpenOptions::new().write(true).open(path) {
+        use std::io::{Seek, SeekFrom, Write};
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let _ = f.seek(SeekFrom::Start(0));
+        let zeros = [0u8; 8192];
+        let mut left = len;
+        while left > 0 {
+            let n = zeros.len().min(left as usize);
+            if f.write_all(&zeros[..n]).is_err() {
+                break;
+            }
+            left -= n as u64;
+        }
+        let _ = f.sync_all();
+    }
+    let _ = fs::remove_file(path);
+}
+
 /// One atomic transaction: insert sale + payments + items, deduct stock.
 /// All or nothing. `payments` supports split settlement (e.g. GH₵ 50 Cash +
 /// GH₵ 70 MoMo); the first payment is the sale's primary method.
@@ -108,7 +306,7 @@ fn complete_sale(
     patient_phone: Option<String>,
     discount_pct: Option<f64>,
 ) -> Result<SaleResult, String> {
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     let result = complete_sale_impl(
         &mut conn,
         payments,
@@ -356,20 +554,42 @@ fn write_backup(app: &AppHandle) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .as_millis();
     let dst = bdir.join(format!("pulse-{}.db", epoch));
-    backup_to_path(&src_path, &dst)?;
+    backup_to_path(&src_path, &dst, &ensure_db_key(app)?)?;
     prune_backups(&bdir);
     Ok(dst.to_string_lossy().into_owned())
 }
 
 /// WAL-safe copy of one SQLite file to a destination path (online backup API).
-fn backup_to_path(src_path: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+/// Both connections are keyed: the source must be unlocked to be read, and the
+/// destination must be unlocked BEFORE pages are written or the copy would
+/// land on disk as plaintext.
+fn backup_to_path(
+    src_path: &std::path::Path,
+    dst_path: &std::path::Path,
+    key: &str,
+) -> Result<(), String> {
     let src = rusqlite::Connection::open_with_flags(
         src_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .map_err(|e| e.to_string())?;
-    src.backup(rusqlite::DatabaseName::Main, dst, None)
-        .map_err(|e| e.to_string())?;
+    apply_db_key(&src, key)?;
+    // A stale target would mix old pages into the copy — start clean.
+    let _ = fs::remove_file(dst_path);
+    let mut dst = rusqlite::Connection::open(dst_path).map_err(|e| e.to_string())?;
+    apply_db_key(&dst, key)?;
+    let backup =
+        rusqlite::backup::Backup::new(&src, &mut dst).map_err(|e| e.to_string())?;
+    loop {
+        match backup
+            .step(128)
+            .map_err(|e| format!("backup failed: {e}"))?
+        {
+            rusqlite::backup::StepResult::Done => break,
+            rusqlite::backup::StepResult::More => continue,
+            other => return Err(format!("backup failed: unexpected step result {other:?}")),
+        }
+    }
     Ok(())
 }
 
@@ -807,7 +1027,7 @@ fn save_purchase(
     let (_subtotal, net_total, computed) =
         compute_purchase_pricing(&lines, &discount_type, discount_amount)?;
 
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -915,7 +1135,7 @@ fn receive_purchase(
     if lines.is_empty() {
         return Err("Nothing to receive".into());
     }
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1074,7 +1294,7 @@ fn update_purchase(
     let (_subtotal, net_total, computed) =
         compute_purchase_pricing(&lines, &discount_type, discount_amount)?;
 
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1184,7 +1404,7 @@ fn cancel_purchase(
     purchase_id: String,
     reason: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1216,7 +1436,8 @@ fn cancel_purchase(
 
 /// Record a payment against a supplier invoice. Balance = total_amount −
 /// SUM(payments); overpaying is rejected. Keeps a per-payment history so the
-/// "what do I owe" view is auditable.
+/// "what do I owe" view is auditable. Money leaves the business, so when a
+/// manager PIN is configured it must accompany the request.
 #[tauri::command]
 fn record_payment(
     app: AppHandle,
@@ -1224,6 +1445,21 @@ fn record_payment(
     amount: f64,
     method: Option<String>,
     operator: Option<String>,
+    manager_pin: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut conn = open_db(&app)?;
+    record_payment_impl(&mut conn, purchase_id, amount, method, operator, manager_pin)
+}
+
+/// Actual record_payment logic — split from the command wrapper so tests can
+/// run it against a plain in-memory connection.
+fn record_payment_impl(
+    conn: &mut rusqlite::Connection,
+    purchase_id: String,
+    amount: f64,
+    method: Option<String>,
+    operator: Option<String>,
+    manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if amount <= 0.0 {
         return Err("Payment amount must be positive".into());
@@ -1232,10 +1468,11 @@ fn record_payment(
         Some(m) => m.to_string(),
         None => "Cash".to_string(),
     };
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    // Gate BEFORE any read/write work — mirrors void/return.
+    check_manager_pin(&tx, manager_pin)?;
     let (total, cancelled, ref_no): (f64, i64, Option<String>) = tx
         .query_row(
             "SELECT total_amount, cancelled, reference_no FROM purchases WHERE id = ?1",
@@ -1278,6 +1515,8 @@ fn record_payment(
 
 /// Settle a customer's book balance — a payment against what they owe from
 /// credit sales. Over-settling is rejected; every payment is kept for audit.
+/// Writing off what a customer owes is money out the door, so when a manager
+/// PIN is configured it must accompany the request.
 #[tauri::command]
 fn settle_credit(
     app: AppHandle,
@@ -1285,6 +1524,21 @@ fn settle_credit(
     amount: f64,
     method: Option<String>,
     operator: Option<String>,
+    manager_pin: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut conn = open_db(&app)?;
+    settle_credit_impl(&mut conn, patient_name, amount, method, operator, manager_pin)
+}
+
+/// Actual settle_credit logic — split from the command wrapper so tests can
+/// run it against a plain in-memory connection.
+fn settle_credit_impl(
+    conn: &mut rusqlite::Connection,
+    patient_name: String,
+    amount: f64,
+    method: Option<String>,
+    operator: Option<String>,
+    manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let name = patient_name.trim().to_string();
     if name.is_empty() {
@@ -1297,10 +1551,11 @@ fn settle_credit(
         Some(m) => m.to_string(),
         None => "Cash".to_string(),
     };
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    // Gate BEFORE any read/write work — mirrors void/return.
+    check_manager_pin(&tx, manager_pin)?;
     let owed: f64 = tx
         .query_row(
             "SELECT COALESCE(SUM(sp.amount),0) FROM sale_payments sp
@@ -1356,7 +1611,7 @@ fn return_sale(
     lines: Vec<ReturnLine>,
     manager_pin: Option<String>,
 ) -> Result<ReturnResult, String> {
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     return_sale_impl(&mut conn, sale_id, reason, operator, lines, manager_pin)
 }
 
@@ -1480,7 +1735,7 @@ fn void_last_sale(
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let _ = operator; // nothing to stamp — the rows are deleted
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     void_last_sale_impl(&mut conn, sale_id, manager_pin)
 }
 
@@ -1565,7 +1820,7 @@ fn adjust_stock(
     if delta == 0 {
         return Err("Adjustment can't be zero".into());
     }
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1668,16 +1923,27 @@ fn restore_backup(app: AppHandle, name: String) -> Result<String, String> {
     if !src.is_file() {
         return Err("Backup not found".into());
     }
-    // Must be a real SQLite database.
-    let mut header = [0u8; 16];
+    // Must be a database this install can make sense of: either a
+    // SQLCipher-encrypted backup (probe with our key) or a legacy plaintext
+    // one (classic header — re-encrypted at next startup).
     {
-        use std::io::Read;
-        let mut f = std::fs::File::open(&src).map_err(|e| e.to_string())?;
-        f.read_exact(&mut header)
-            .map_err(|_| "Not a valid backup".to_string())?;
-    }
-    if &header != b"SQLite format 3\0" {
-        return Err("Not a valid SQLite backup file".into());
+        let keyed_ok = rusqlite::Connection::open(&src)
+            .map_err(|e| e.to_string())
+            .and_then(|c| {
+                apply_db_key(&c, &ensure_db_key(&app)?)?;
+                Ok(probe_decrypted(&c))
+            })
+            .unwrap_or(false);
+        if !keyed_ok {
+            use std::io::Read;
+            let mut header = [0u8; 16];
+            let mut f = std::fs::File::open(&src).map_err(|e| e.to_string())?;
+            f.read_exact(&mut header)
+                .map_err(|_| "Not a valid backup".to_string())?;
+            if &header != b"SQLite format 3\0" {
+                return Err("Not a valid Pulse backup (unreadable with this install's key)".into());
+            }
+        }
     }
     // Safety net: snapshot the CURRENT live DB before swapping.
     let epoch = std::time::SystemTime::now()
@@ -1687,6 +1953,7 @@ fn restore_backup(app: AppHandle, name: String) -> Result<String, String> {
     backup_to_path(
         &db_path(&app)?,
         &dir.join("backups").join(format!("pre-restore-{}.db", epoch)),
+        &ensure_db_key(&app)?,
     )?;
     // Swap.
     let live = db_path(&app)?;
@@ -1792,7 +2059,7 @@ fn commit_stock_import(
     if records.len() > 5000 {
         return Err("Too many rows — max 5000 per import".into());
     }
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -2108,13 +2375,105 @@ fn print_receipt(receipt: EscposReceipt) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Loss prevention — manager PIN gate, bulk stock take, external backups
+// Loss prevention — manager PIN gate (hashed), bulk stock take, backups
 // ---------------------------------------------------------------------------
 
-/// Manager PIN gate for sensitive actions (voids, returns). When no PIN is
-/// configured in Settings everything is allowed; when set, `provided` must
-/// match it exactly. This is staff oversight, not encryption — the database
-/// itself is plaintext by design.
+/// Manager PINs are never stored as entered: `sha256$<rounds>$<salt-hex>$<hash-hex>`,
+/// salted + stretched SHA-256 (100k rounds ≈ tens of ms native). This keeps a
+/// database/keyfile dump from revealing the code someone types daily.
+/// Honest scope: 4–8 digit PINs are a small keyspace, so this is deliberate
+/// friction for casual inspection, not protection against an offline
+/// brute-force specialist.
+const PIN_ROUNDS: u32 = 100_000;
+
+fn hash_pin(pin: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut rng = rand::thread_rng();
+    let mut salt = [0u8; 16];
+    use rand::RngCore;
+    rng.fill_bytes(&mut salt);
+    let salt_hex: String = salt.iter().map(|b| format!("{b:02x}")).collect();
+    let mut h = Sha256::new();
+    h.update(salt_hex.as_bytes());
+    h.update(pin.as_bytes());
+    let mut acc = h.finalize();
+    for _ in 1..PIN_ROUNDS {
+        let mut h = Sha256::new();
+        h.update(acc);
+        acc = h.finalize();
+    }
+    let hash_hex: String = acc.iter().map(|b| format!("{b:02x}")).collect();
+    format!("sha256${PIN_ROUNDS}${salt_hex}${hash_hex}")
+}
+
+/// Verify `provided` against a stored value that may be hashed (current
+/// format) or legacy plaintext (pre-hash installs).
+fn pin_matches(stored: &str, provided: &str) -> bool {
+    let stored = stored.trim();
+    if let Some(rest) = stored.strip_prefix("sha256$") {
+        let mut parts = rest.splitn(3, '$');
+        let (Some(rounds), Some(salt), Some(expected)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        let Ok(rounds) = rounds.parse::<u32>() else {
+            return false;
+        };
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(salt.as_bytes());
+        h.update(provided.trim().as_bytes());
+        let mut acc = h.finalize();
+        for _ in 1..rounds.max(1) {
+            let mut h = Sha256::new();
+            h.update(acc);
+            acc = h.finalize();
+        }
+        let hex: String = acc.iter().map(|b| format!("{b:02x}")).collect();
+        // Compare digests (fixed length) rather than raw PINs.
+        constant_time_eq(hex.as_bytes(), expected.as_bytes())
+    } else {
+        constant_time_eq(stored.as_bytes(), provided.trim().as_bytes())
+    }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
+/// One-time upgrade: hash a legacy plaintext manager_pin in place at startup
+/// (after migrations — the settings table must exist first).
+fn migrate_plaintext_pin(conn: &rusqlite::Connection) -> Result<(), String> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'manager_pin'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(v) = stored else { return Ok(()) };
+    let v = v.trim().to_string();
+    if v.is_empty() || v.starts_with("sha256$") {
+        return Ok(()); // nothing to do / already hashed
+    }
+    conn.execute(
+        "UPDATE settings SET value = ?1 WHERE key = 'manager_pin'",
+        [hash_pin(&v)],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Manager PIN gate for sensitive actions (voids, returns, supplier payments,
+/// credit settlements). When no PIN is configured everything is allowed; when
+/// set, `provided` must verify against it exactly.
 fn check_manager_pin(
     conn: &rusqlite::Connection,
     provided: Option<String>,
@@ -2130,10 +2489,87 @@ fn check_manager_pin(
     let Some(expected) = stored.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(());
     };
-    match provided.as_deref().map(str::trim) {
-        Some(p) if p == expected => Ok(()),
+    match provided.as_deref() {
+        Some(p) if pin_matches(expected, p) => Ok(()),
         _ => Err("Manager PIN required for this action".into()),
     }
+}
+
+/// Set or clear the manager PIN. Changing/clearing an ACTIVE PIN requires the
+/// current one — otherwise anyone at the counter could quietly take over the
+/// gate. Stores only the hash.
+#[tauri::command]
+fn set_manager_pin(
+    app: AppHandle,
+    current_pin: Option<String>,
+    new_pin: Option<String>,
+) -> Result<(), String> {
+    let new_pin = new_pin
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    if let Some(p) = &new_pin {
+        if !p.chars().all(|c| c.is_ascii_digit()) || !(4..=8).contains(&p.chars().count()) {
+            return Err("PIN must be 4–8 digits".into());
+        }
+    }
+    let mut conn = open_db(&app)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let stored: Option<String> = tx
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'manager_pin'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if stored
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some()
+    {
+        // A PIN is active → the operator must prove they know it.
+        check_manager_pin(&tx, current_pin)?;
+    }
+    match &new_pin {
+        Some(p) => {
+            let hashed = hash_pin(p);
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES ('manager_pin', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [&hashed],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        None => {
+            tx.execute("DELETE FROM settings WHERE key = 'manager_pin'", [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// Whether a provided manager PIN verifies — used by the role switcher to
+/// unlock Manager mode. No PIN configured → trivially yes.
+#[tauri::command]
+fn verify_manager_pin(app: AppHandle, pin: Option<String>) -> Result<bool, String> {
+    let conn = open_db(&app)?;
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'manager_pin'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(match stored.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(_) => check_manager_pin(&conn, pin).is_ok(),
+        None => true,
+    })
 }
 
 /// One line of a stock-take sheet: what the shelf actually counted.
@@ -2242,8 +2678,22 @@ fn backup_to_dir(app: AppHandle, dir: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .as_millis();
     let dst = path.join(format!("pulse-{}.db", epoch));
-    backup_to_path(&db_path(&app)?, &dst)?;
-    Ok(dst.to_string_lossy().into_owned())
+    let key = ensure_db_key(&app)?;
+    backup_to_path(&db_path(&app)?, &dst, &key)?;
+    // The database is unreadable without its key — copy pulse.key alongside
+    // so one flash-drive save is a complete, restorable pair.
+    let key_dst = path.join("pulse.key");
+    let key_src = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("pulse.key");
+    std::fs::copy(&key_src, &key_dst)
+        .map_err(|e| format!("couldn't copy pulse.key: {e}"))?;
+    Ok(format!(
+        "{} (+ pulse.key)",
+        dst.to_string_lossy().into_owned()
+    ))
 }
 
 /// Commit a completed physical stock count atomically (variance corrections
@@ -2255,7 +2705,7 @@ fn commit_stock_take(
     operator: Option<String>,
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     commit_stock_take_impl(&mut conn, counts, operator, manager_pin)
 }
 
@@ -2300,7 +2750,7 @@ fn intake_stock(app: AppHandle, input: IntakePayload) -> Result<serde_json::Valu
     if input.quantity <= 0 {
         return Err("Quantity must be positive".into());
     }
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -2368,7 +2818,7 @@ fn quick_add_product(app: AppHandle, name: String, selling_price: f64) -> Result
     if name.is_empty() {
         return Err("Product name is required".into());
     }
-    let mut conn = rusqlite::Connection::open(db_path(&app)?).map_err(|e| e.to_string())?;
+    let mut conn = open_db(&app)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -2456,8 +2906,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
 fn run_migrations(app: &tauri::App) -> Result<(), String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let mut conn = rusqlite::Connection::open(dir.join("pulse.db")).map_err(|e| e.to_string())?;
-    apply_migrations(&mut conn)
+    // Encrypt a legacy plaintext database BEFORE touching it, then migrate
+    // through the same keyed path every command uses.
+    let handle = app.handle().clone();
+    migrate_plaintext_db(&handle)?;
+    let mut conn = open_db(&handle)?;
+    apply_migrations(&mut conn)?;
+    // Settings table exists by now — upgrade a legacy plaintext PIN to its
+    // stored hash form.
+    migrate_plaintext_pin(&conn)?;
+    Ok(())
 }
 
 /// Applies pending migrations to an already-open connection — split out from
@@ -2558,6 +3016,8 @@ pub fn run() {
             cancel_purchase,
             record_payment,
             settle_credit,
+            set_manager_pin,
+            verify_manager_pin,
             print_receipt,
             commit_stock_take,
             backup_to_dir,
@@ -3079,6 +3539,80 @@ mod tests {
     }
 
     #[test]
+    fn sqlcipher_roundtrip_and_plaintext_migration() {
+        // Exercises the exact mechanics migrate_plaintext_db uses: a legacy
+        // plaintext file becomes an encrypted one, is unreadable without the
+        // key, readable with it, and keeps its user_version across the copy.
+        let dir = std::env::temp_dir().join(format!("pulse-sqlcipher-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let plain_path = dir.join("plain.db");
+        let enc_path = dir.join("enc.db");
+        let _ = fs::remove_file(&plain_path);
+        let _ = fs::remove_file(&enc_path);
+        let key = "a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8";
+
+        // 1. Legacy plaintext database with data + schema version.
+        {
+            let c = rusqlite::Connection::open(&plain_path).unwrap();
+            c.execute_batch("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('secret');")
+                .unwrap();
+            c.pragma_update(None, "user_version", 24).unwrap();
+        }
+
+        // 2. Export into an attached, keyed SQLCipher database.
+        {
+            let c = rusqlite::Connection::open(&plain_path).unwrap();
+            c.execute_batch(&format!(
+                "ATTACH DATABASE '{}' AS enc KEY \"x'{key}'\";",
+                enc_path.display()
+            ))
+            .unwrap();
+            c.query_row("SELECT sqlcipher_export('enc')", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })
+            .unwrap();
+            c.pragma_update(
+                Some(rusqlite::DatabaseName::Attached("enc")),
+                "user_version",
+                24,
+            )
+            .unwrap();
+            c.execute_batch("DETACH DATABASE enc;").unwrap();
+        }
+
+        // 3. The encrypted file refuses to read without the key…
+        let wrong = rusqlite::Connection::open(&enc_path).unwrap();
+        assert!(!probe_decrypted(&wrong), "encrypted db must not open keyless");
+        drop(wrong);
+
+        // 4. …reads with it, with the data intact.
+        let right = rusqlite::Connection::open(&enc_path).unwrap();
+        apply_db_key(&right, key).unwrap();
+        assert!(probe_decrypted(&right));
+        let v: String = right
+            .query_row("SELECT v FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, "secret");
+        let ver: i64 = right
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ver, 24, "user_version must survive sqlcipher_export");
+
+        // 5. The plaintext original can be wiped exactly like production does.
+        {
+            let mut f = fs::OpenOptions::new().write(true).open(&plain_path).unwrap();
+            use std::io::{Seek, SeekFrom, Write};
+            f.rewind().unwrap();
+            let len = f.metadata().unwrap().len();
+            let _ = f.write_all(&vec![0u8; len as usize]);
+            f.sync_all().unwrap();
+        }
+        fs::remove_file(&plain_path).unwrap();
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn escpos_strips_non_ascii() {
         assert_eq!(ascii_only("GH\u{20b5}50 ✓"), "GH?50 ?", "non-printables become ?");
     }
@@ -3089,7 +3623,7 @@ mod tests {
         conn.execute(
             "INSERT INTO settings (key, value) VALUES ('manager_pin', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [pin],
+            [hash_pin(pin)],
         )
         .unwrap();
     }
@@ -3275,6 +3809,163 @@ mod tests {
             Some("1357".into()),
         )
         .expect("correct PIN allows the reduction");
+    }
+
+    #[test]
+    fn pin_is_hashed_at_rest_and_verifies() {
+        let stored = hash_pin("2468");
+        assert!(stored.starts_with("sha256$"), "PIN must never be stored as entered");
+        assert!(!stored.contains("2468"), "plaintext PIN must not appear in storage");
+        assert!(pin_matches(&stored, "2468"));
+        assert!(!pin_matches(&stored, "2467"));
+
+        // Legacy installs stored the raw digits — they keep verifying until
+        // the startup migration rewrites them.
+        assert!(pin_matches("1357", "1357"));
+        assert!(!pin_matches("1357", "1111"));
+
+        // Startup migration converts legacy plaintext to hashed form.
+        let conn = test_db();
+        set_manager_pin_raw(&conn, "2468");
+        migrate_plaintext_pin(&conn).expect("migration succeeds");
+        let row: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'manager_pin'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(row.starts_with("sha256$"));
+        assert!(check_manager_pin(&conn, Some("2468".into())).is_ok());
+        assert!(check_manager_pin(&conn, Some("1111".into())).is_err());
+    }
+
+    /// Write a manager PIN verbatim (test fixture for legacy-format rows).
+    fn set_manager_pin_raw(conn: &rusqlite::Connection, pin: &str) {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('manager_pin', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [pin],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn manager_pin_gates_supplier_payments() {
+        let mut conn = test_db();
+        conn.execute(
+            "INSERT INTO purchases (id, reference_no, purchase_date, total_amount, cancelled)
+             VALUES ('PUR-1', 'INV-9', '2026-01-01', 500.0, 0)",
+            [],
+        )
+        .unwrap();
+        set_manager_pin(&conn, "2468");
+
+        assert!(
+            record_payment_impl(&mut conn, "PUR-1".into(), 200.0, None, None, None).is_err(),
+            "supplier payment without the manager PIN must be refused"
+        );
+        assert!(
+            record_payment_impl(
+                &mut conn,
+                "PUR-1".into(),
+                200.0,
+                None,
+                None,
+                Some("1111".into())
+            )
+            .is_err(),
+            "a wrong manager PIN must be refused"
+        );
+        let paid: i64 = conn
+            .query_row("SELECT COUNT(*) FROM purchase_payments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(paid, 0, "refused payments must not be recorded");
+        let ok = record_payment_impl(
+            &mut conn,
+            "PUR-1".into(),
+            200.0,
+            Some("MoMo".into()),
+            Some("Kwame".into()),
+            Some("2468".into()),
+        )
+        .expect("correct PIN allows the supplier payment");
+        assert_eq!(ok["balance"], 300.0);
+
+        // No PIN configured → payment flows without one.
+        let mut open_conn = test_db();
+        open_conn
+            .execute(
+                "INSERT INTO purchases (id, purchase_date, total_amount, cancelled)
+                 VALUES ('PUR-2', '2026-01-01', 80.0, 0)",
+                [],
+            )
+            .unwrap();
+        record_payment_impl(&mut open_conn, "PUR-2".into(), 80.0, None, None, None)
+            .expect("without a configured PIN supplier payments need no PIN");
+    }
+
+    #[test]
+    fn manager_pin_gates_credit_settlement() {
+        let mut conn = test_db();
+        let pid = insert_product(&conn, "Amox", 3.0, 5.0, 40);
+        let sale = complete_sale_impl(
+            &mut conn,
+            vec![Payment {
+                method: "Credit".into(),
+                amount: 25.0,
+                reference: None,
+            }],
+            vec![line(pid, "Amox", 5, 5.0)],
+            None,
+            Some("Ama".into()),
+            None,
+            None,
+        )
+        .expect("credit sale should succeed");
+        let _ = sale;
+        set_manager_pin(&conn, "9999");
+
+        assert!(
+            settle_credit_impl(
+                &mut conn,
+                "Ama".into(),
+                10.0,
+                None,
+                None,
+                None
+            )
+            .is_err(),
+            "settlement without the manager PIN must be refused"
+        );
+        assert!(
+            settle_credit_impl(
+                &mut conn,
+                "Ama".into(),
+                10.0,
+                None,
+                None,
+                Some("0000".into())
+            )
+            .is_err(),
+            "a wrong manager PIN must be refused"
+        );
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM credit_payments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "refused settlements must not be recorded");
+
+        let ok = settle_credit_impl(
+            &mut conn,
+            "Ama".into(),
+            10.0,
+            Some("Cash".into()),
+            Some("Akosua".into()),
+            Some("9999".into()),
+        )
+        .expect("correct PIN allows the settlement");
+        assert_eq!(ok["paid"], 10.0);
+        assert_eq!(ok["balance"], 15.0);
     }
 
     #[test]

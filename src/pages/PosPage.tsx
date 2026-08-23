@@ -597,7 +597,7 @@ export function PosPage() {
                     <span className="ml-1 text-[10px] text-on-surface-variant">{l.unit}</span>
                   )}
                 </div>
-                <span className="font-data-mono text-data-mono text-on-surface">
+                <span className="mr-8 font-data-mono text-data-mono text-on-surface">
                   {fmtMoney(l.unitPrice)}
                 </span>
               </div>
@@ -655,14 +655,15 @@ export function PosPage() {
                     </button>
                   </Tip>
                 )}
-                <span className="ml-auto font-data-mono text-data-mono font-bold text-on-surface">
+                <span className="mr-8 ml-auto font-data-mono text-data-mono font-bold text-on-surface">
                   {fmtMoney(l.unitPrice * l.qty)}
                 </span>
               </div>
               <button
                 onClick={() => removeLine(l.productId)}
                 title="Remove this line"
-                className="absolute right-2 top-2 text-on-surface-variant/50 transition-colors hover:text-error"
+                aria-label={`Remove ${l.name}`}
+                className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full border border-outline-variant bg-surface-container-low text-on-surface-variant transition-colors hover:border-error hover:bg-error-container hover:text-error"
               >
                 <span className="material-symbols-outlined text-[16px]">close</span>
               </button>

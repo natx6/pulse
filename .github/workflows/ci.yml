@@ -30,10 +30,11 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - name: Linux system deps (webkit2gtk)
+      - name: Linux system deps (webkit2gtk, SQLCipher crypto)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # libssl-dev/pkg-config: SQLCipher links the system OpenSSL provider.
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf pkg-config libssl-dev
       - name: cargo check
         working-directory: src-tauri
         run: cargo check --all-targets

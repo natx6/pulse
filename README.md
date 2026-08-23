@@ -35,9 +35,16 @@ stock check -> receipt number (per-day sequence) -> insert sale -> insert items
 ## Data
 
 SQLite lives in the OS config dir (`~/.config/com.pulse.pharmacy/pulse.db` on
-Linux) — tauri-plugin-sql resolves relative sqlite paths there, and the Rust
-commands must (and do) use the same path. Backups and CSV exports land in
-`backups/` and `exports/` next to the database file.
+Linux) — tauri-plugin-sql (vendored, patched to key the pool) resolves
+relative sqlite paths there, and the Rust commands must (and do) use the same
+path. Backups and CSV exports land in `backups/` and `exports/` next to the
+database file.
+
+The database is **encrypted at rest** (SQLCipher, AES-256). The key lives in
+`pulse.key` beside it — generated on first run, never leaves the machine.
+Deleting `pulse.key` makes the data unrecoverable; copying `pulse.db` alone
+makes it useless. A pre-encryption plaintext database is migrated
+automatically on first launch of an encrypted build.
 Demo seed products ship with the first migration — delete the rows to start clean:
 
     DELETE FROM products;

@@ -379,6 +379,13 @@ export function AnalyticsPage() {
   const [settleMethod, setSettleMethod] = useState("Cash");
   const [settleBusy, setSettleBusy] = useState(false);
   const [settleErr, setSettleErr] = useState("");
+  /** Manager PIN — required for settlements when one is configured. */
+  const [settlePinRequired, setSettlePinRequired] = useState(false);
+  const [settlePin, setSettlePin] = useState("");
+
+  useEffect(() => {
+    void isManagerPinSet().then(setSettlePinRequired).catch(() => setSettlePinRequired(false));
+  }, []);
 
   const SETTLE_METHODS = ["Cash", "Mobile Money", "Bank Transfer", "Cheque"];
   const kindCls = (k: ControlledTxn["kind"]) =>
@@ -397,13 +404,20 @@ export function AnalyticsPage() {
       beep(false);
       return;
     }
+    if (settlePinRequired && settlePin.trim().length < 4) {
+      setSettleErr("Manager PIN required to settle a credit balance.");
+      beep(false);
+      return;
+    }
     setSettleBusy(true);
     setSettleErr("");
     try {
-      await settleCredit(c.name, a, settleMethod, operator || null);
+      await settleCredit(c.name, a, settleMethod, operator || null, settlePin.trim() || null);
       beep(true);
       setCredit(await loadCustomerCredit());
       setSettling(null);
+      setSettleAmt("");
+      setSettlePin("");
     } catch (e) {
       setSettleErr(String(e).replace(/^Error: /, ""));
       beep(false);
@@ -924,6 +938,18 @@ export function AnalyticsPage() {
                         </option>
                       ))}
                     </select>
+                    {settlePinRequired && (
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        value={settlePin}
+                        onChange={(e) => setSettlePin(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                        placeholder="PIN"
+                        aria-label="Manager PIN"
+                        title="Manager PIN — settlements are protected"
+                        className="h-7 w-16 rounded border border-outline-variant bg-surface-container-lowest px-1 text-center font-data-mono text-data-mono tracking-[0.2em] focus:border-primary focus:outline-none"
+                      />
+                    )}
                     <button
                       onClick={() => void doSettle(c)}
                       disabled={settleBusy}

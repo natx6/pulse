@@ -69,10 +69,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
+      # SQLCipher's crypto provider: system OpenSSL on Unix (pkg-config finds
+      # it on Ubuntu out of the box; Homebrew's openssl@3 is keg-only on macOS
+      # so its .pc path must be handed over explicitly). Windows has no
+      # system-wide OpenSSL, so the build vendors it — perl only, no nasm.
+      - name: Point pkg-config at OpenSSL (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+
       - run: npm ci
 
       - name: Build installers (retries on flaky tool downloads)
         shell: bash
+        env:
+          OPENSSL_NO_ASM: ${{ matrix.platform == 'windows-latest' && '1' || '' }}
         run: |
           set +e
           for i in 1 2 3 4; do

@@ -44,6 +44,8 @@ export function SettingsPage() {
   /** Manager PIN gate (loss prevention). */
   const [pinActive, setPinActive] = useState(false);
   const [pinInput, setPinInput] = useState("");
+  /** Current PIN — required to change/clear an ACTIVE pin. */
+  const [currentPinInput, setCurrentPinInput] = useState("");
   const [pinMsg, setPinMsg] = useState("");
   /** Second tap required to actually clear an active PIN. */
   const [pinArmClear, setPinArmClear] = useState(false);
@@ -72,10 +74,17 @@ export function SettingsPage() {
       setPinMsg("PIN must be 4–8 digits.");
       return;
     }
+    if (pinActive && currentPinInput.trim().length < 4) {
+      setPinMsg("Enter the current PIN to make this change.");
+      return;
+    }
     try {
-      await setManagerPin(p || null);
+      // The Rust side re-verifies `current` against the stored hash — the UI
+      // check above is UX, not the gate.
+      await setManagerPin(pinActive ? currentPinInput.trim() : null, p || null);
       setPinActive(Boolean(p));
       setPinInput("");
+      setCurrentPinInput("");
       setPinMsg(p ? "Manager PIN is now active." : "Manager PIN cleared.");
     } catch (e) {
       setPinMsg(String(e).replace(/^Error: /, ""));
@@ -504,6 +513,12 @@ export function SettingsPage() {
             database — the current data is backed up first, then the app
             restarts.
           </p>
+          <p className="mb-3 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-body-sm font-body-sm text-primary">
+            Your data is encrypted. "Save to flash drive…" copies{" "}
+            <span className="font-data-mono">pulse.key</span> next to the
+            backup — keep the two together: a backup without its key file can
+            never be opened.
+          </p>
           {backupErr && (
             <p className="mb-2 text-body-sm font-body-sm text-error">{backupErr}</p>
           )}
@@ -567,11 +582,26 @@ export function SettingsPage() {
             </span>
           </div>
           <p className="mb-3 text-body-sm font-body-sm text-on-surface-variant">
-            When a manager PIN is set, voiding a sale, refunding (returns), and
-            reducing stock all ask for it first — so day-to-day counter work
-            stays untouched while the sensitive paths are watched. The PIN is
-            stored locally; it's oversight, not encryption.
+            When a manager PIN is set, voiding, refunds, supplier payments,
+            credit settlements and stock reductions all ask for it first — so
+            day-to-day counter work stays untouched while the sensitive paths
+            are watched. The PIN itself is stored only as a salted hash.
           </p>
+          {pinActive && (
+            <label className="mb-3 block max-w-xs">
+              <span className="mb-1 block text-body-md font-body-md text-on-surface">
+                Current PIN (required to change or clear)
+              </span>
+              <input
+                type="password"
+                inputMode="numeric"
+                value={currentPinInput}
+                onChange={(e) => setCurrentPinInput(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                placeholder="Current PIN"
+                className={`${field} font-data-mono tracking-[0.3em]`}
+              />
+            </label>
+          )}
           <div className="flex items-end gap-2">
             <label className="block flex-1">
               <span className="mb-1 block text-body-md font-body-md text-on-surface">
