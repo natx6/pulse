@@ -433,6 +433,13 @@ export async function restoreBackup(name: string): Promise<string> {
   return await invoke("restore_backup", { name });
 }
 
+/** Disaster-recovery restore: `dir` is a flash-drive folder holding a
+ * pulse-*.db + pulse.key pair (from backupDbToDir). Validates the pair,
+ * swaps both into place; call restartApp() right after. */
+export async function restoreFromDir(dir: string): Promise<string> {
+  return await invoke("restore_from_dir", { dir });
+}
+
 /** Restart the whole app (never resolves). */
 export async function restartApp(): Promise<void> {
   return await invoke("restart_app");

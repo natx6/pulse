@@ -1969,6 +1969,89 @@ fn restart_app(app: AppHandle) -> Result<(), String> {
     app.restart()
 }
 
+/// Restore a flash-drive pair produced by backup_to_dir: `dir` holds a
+/// pulse-*.db and the matching pulse.key. Copies BOTH into the config dir
+/// (the live key is stashed aside first so a wrong-key restore is itself
+/// recoverable), then the caller restarts. This is the disaster-recovery
+/// path — moving an install to a new machine.
+#[tauri::command]
+fn restore_from_dir(app: AppHandle, dir: String) -> Result<String, String> {
+    let path = std::path::Path::new(&dir);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err("Pick the folder that holds the flash-drive backup".into());
+    }
+    // Find the newest pulse-*.db in the folder.
+    let mut candidates: Vec<std::path::PathBuf> = fs::read_dir(path)
+        .map_err(|e| format!("Can't read {}: {}", dir, e))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("pulse-") && n.ends_with(".db"))
+                    .unwrap_or(false)
+        })
+        .collect();
+    candidates.sort();
+    let Some(src_db) = candidates.pop() else {
+        return Err("No pulse-*.db backup found in that folder".into());
+    };
+    let src_key = path.join("pulse.key");
+    if !src_key.is_file() {
+        return Err(
+            "pulse.key is missing from that folder — a backup without its key can't be opened"
+                .into(),
+        );
+    }
+
+    // Validate BEFORE touching anything: the incoming key must open the
+    // incoming database.
+    let key = fs::read_to_string(&src_key)
+        .map_err(|e| format!("Can't read pulse.key: {e}"))?
+        .trim()
+        .to_string();
+    if key.is_empty() {
+        return Err("pulse.key in that folder is empty".into());
+    }
+    {
+        let probe = rusqlite::Connection::open(&src_db).map_err(|e| e.to_string())?;
+        apply_db_key(&probe, &key)?;
+        if !probe_decrypted(&probe) {
+            return Err(
+                "That backup doesn't match its key file — check you copied the whole pair"
+                    .into(),
+            );
+        }
+    }
+
+    let conf = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    // Stash this install's current key/db aside (best-effort) so the swap is
+    // reversible if the wrong pair was picked.
+    let stash = conf.join(format!("pre-external-restore-{}", std::process::id()));
+    let _ = fs::create_dir_all(&stash);
+    for name in ["pulse.db", "pulse.key"] {
+        let p = conf.join(name);
+        if p.is_file() {
+            let _ = fs::rename(&p, stash.join(name));
+        }
+    }
+    // Copy the pair into place. If the db copy fails, put the key back.
+    if fs::copy(&src_db, conf.join("pulse.db")).is_err() {
+        let _ = fs::copy(stash.join("pulse.key"), conf.join("pulse.key"));
+        return Err(format!("Couldn't copy {} into place", src_db.display()));
+    }
+    fs::copy(&src_key, conf.join("pulse.key"))
+        .map_err(|e| format!("Couldn't copy pulse.key into place: {e}"))?;
+    // Drop stale sidecars from the previous install.
+    let _ = fs::remove_file(conf.join("pulse.db-wal"));
+    let _ = fs::remove_file(conf.join("pulse.db-shm"));
+    Ok(format!(
+        "Restored {}. Pulse will restart.",
+        src_db.file_name().unwrap_or_default().to_string_lossy()
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Stock import from the old system (Excel/CSV export)
 // ---------------------------------------------------------------------------
@@ -3007,6 +3090,7 @@ pub fn run() {
             adjust_stock,
             list_backups,
             restore_backup,
+            restore_from_dir,
             restart_app,
             parse_stock_file,
             commit_stock_import,

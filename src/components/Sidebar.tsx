@@ -137,6 +137,12 @@ export function Sidebar() {
                 <div className="max-h-56 overflow-y-auto py-1">
                   <button
                     onClick={() => {
+                      // Switching who is on duty ends the manager session —
+                      // the next person starts locked as cashier.
+                      if (role === "manager") {
+                        setRole("cashier");
+                        if (page === "settings") setPage("dashboard");
+                      }
                       setOperator("");
                       setPickerOpen(false);
                     }}
@@ -151,6 +157,12 @@ export function Sidebar() {
                     <button
                       key={op.id}
                       onClick={() => {
+                        // Switching who is on duty ends the manager session —
+                        // the next person starts locked as cashier.
+                        if (role === "manager") {
+                          setRole("cashier");
+                          if (page === "settings") setPage("dashboard");
+                        }
                         setOperator(op.name);
                         setPickerOpen(false);
                       }}
@@ -234,6 +246,9 @@ export function Sidebar() {
             const ok = await verifyManagerPin(pin).catch(() => false);
             if (!ok) return "Wrong PIN — try again.";
             setRole("manager");
+            // The point of unlocking is to manage — land on Settings no
+            // matter which tab the previous operator left open.
+            setPage("settings");
             return null;
           }}
           onClose={() => setUnlockOpen(false)}

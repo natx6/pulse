@@ -32,6 +32,9 @@ export default function App() {
   /** Startup failure that survived every retry — shown with a Retry button
    * instead of leaving the app silently empty (all-defaults UI). */
   const [initError, setInitError] = useState("");
+  /** Splash screen: shown from first paint until the DB, settings and
+   * products have loaded (or init failed). */
+  const [ready, setReady] = useState(false);
   const scannerReady = useRef(false);
 
   // Auto-update: installed builds check for a newer release on launch, download
@@ -85,6 +88,7 @@ export default function App() {
         await isManagerPinSet()
           .then((pinSet) => useStore.getState().setRole(pinSet ? "cashier" : "manager"))
           .catch(() => useStore.getState().setRole("cashier"));
+        if (!disposed) setReady(true);
         if (!scannerReady.current) {
           scannerReady.current = true;
           initScanner((code) => {
@@ -183,6 +187,55 @@ export default function App() {
     const t = window.setInterval(tick, 30_000);
     return () => window.clearInterval(t);
   }, [autoOperator, operators]);
+
+  // Splash: covers the shell until init completes. Branded, quiet, no
+  // spinner theatre — just the mark and the pharmacy's name.
+  if (!ready) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background text-on-background font-body-md antialiased">
+        <div className="flex items-center gap-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded bg-primary text-headline-lg font-bold text-on-primary">
+            P
+          </div>
+          <div>
+            <p className="text-headline-lg font-headline-lg leading-none tracking-tight text-on-surface">
+              Pulse
+            </p>
+            <p className="mt-1 text-[10px] uppercase tracking-wider text-on-surface-variant">
+              Pharmacy MS
+            </p>
+          </div>
+        </div>
+        {initError ? (
+          <div className="mt-4 flex max-w-sm flex-col items-center gap-3 text-center">
+            <p className="text-body-sm font-body-sm text-error">Startup problem: {initError}</p>
+            <button
+              onClick={() => {
+                setInitError("");
+                void (async () => {
+                  try {
+                    await initDb();
+                    const s = await getSettings();
+                    useStore.getState().applySettings(s);
+                    await useStore.getState().refreshProducts();
+                    await useStore.getState().loadOperators();
+                    setReady(true);
+                  } catch (e) {
+                    setInitError(String(e).replace(/^Error: /, ""));
+                  }
+                })();
+              }}
+              className="rounded bg-primary px-4 py-2 text-label-md font-label-md text-on-primary hover:bg-on-primary-fixed-variant"
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <p className="text-body-sm font-body-sm text-on-surface-variant">Opening…</p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-on-background font-body-md text-body-md antialiased">

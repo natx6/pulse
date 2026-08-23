@@ -11,6 +11,7 @@ import {
   setManagerPin,
   listBackups,
   restoreBackup,
+  restoreFromDir,
   restartApp,
 } from "../db";
 import type { Operator, BackupInfo } from "../db";
@@ -52,6 +53,36 @@ export function SettingsPage() {
   /** Flash-drive backup. */
   const [driveBusy, setDriveBusy] = useState(false);
   const [driveMsg, setDriveMsg] = useState("");
+  /** Two-tap confirm for the flash-drive restore (it replaces everything). */
+  const [restoreArm, setRestoreArm] = useState(false);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreMsg, setRestoreMsg] = useState("");
+
+  const restoreFromDrive = async () => {
+    setRestoreMsg("");
+    if (!restoreArm) {
+      // First tap arms; the second commits. Resets after 5s of inaction.
+      setRestoreArm(true);
+      window.setTimeout(() => setRestoreArm(false), 5000);
+      return;
+    }
+    setRestoreArm(false);
+    try {
+      const picked = await openDialog({
+        directory: true,
+        title: "Pick the folder holding the pulse-*.db + pulse.key pair",
+      });
+      if (!picked) return; // dialog cancelled
+      setRestoreBusy(true);
+      await restoreFromDir(String(picked));
+      await restartApp(); // never returns
+    } catch (e) {
+      setRestoreMsg(String(e).replace(/^Error: /, ""));
+      beep(false);
+    } finally {
+      setRestoreBusy(false);
+    }
+  };
 
   useEffect(() => {
     void getSettings().then((s) => {
@@ -519,6 +550,38 @@ export function SettingsPage() {
             backup — keep the two together: a backup without its key file can
             never be opened.
           </p>
+          {/* Disaster recovery: move this pharmacy onto THIS machine from a
+              flash-drive pair. Replaces everything on this install. */}
+          <div className="mb-3 rounded border border-outline-variant bg-surface-container-low p-3">
+            <p className="text-body-md font-body-md text-on-surface">
+              Moving to a new computer?
+            </p>
+            <p className="mt-1 mb-3 text-body-sm font-body-sm text-on-surface-variant">
+              Install Pulse here, plug in the flash drive, then tap Restore.
+              Everything on this machine is replaced with the flash drive's
+              copy — sales, patients, credit books, all of it.
+            </p>
+            <button
+              onClick={() => void restoreFromDrive()}
+              disabled={restoreBusy}
+              className={`h-9 rounded px-4 text-label-md font-label-md shadow-sm transition-colors disabled:opacity-50 ${
+                restoreArm
+                  ? "bg-error text-on-error hover:bg-error/90"
+                  : "border border-outline-variant bg-surface text-on-surface hover:bg-surface-variant"
+              }`}
+            >
+              {restoreBusy
+                ? "Restoring…"
+                : restoreArm
+                  ? "Tap again to replace everything"
+                  : "Restore from flash drive…"}
+            </button>
+            {restoreMsg && (
+              <p className="mt-2 text-body-sm font-body-sm text-error" role="alert">
+                {restoreMsg}
+              </p>
+            )}
+          </div>
           {backupErr && (
             <p className="mb-2 text-body-sm font-body-sm text-error">{backupErr}</p>
           )}
