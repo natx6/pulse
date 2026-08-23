@@ -77,14 +77,16 @@ jobs:
         if: matrix.platform == 'macos-latest'
         run: echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
 
-      # Vendored OpenSSL (Windows) builds from source and needs a full Perl —
-      # the runner's MSYS perl lacks Locale::Maketext::Simple, so install
-      # Strawberry Perl and put it first on PATH.
-      - name: Install Strawberry Perl (Windows)
+      # Vendored OpenSSL (Windows) builds from source and needs a full Perl.
+      # Strawberry Perl is preinstalled on the runner but NOT first on PATH —
+      # the MSYS /usr/bin/perl found first lacks Locale::Maketext::Simple.
+      - name: Prefer Strawberry Perl (Windows)
         if: matrix.platform == 'windows-latest'
+        shell: pwsh
         run: |
-          choco install strawberryperl -y --no-progress
-          echo "C:\Strawberry\perl\bin" >> "$GITHUB_PATH"
+          $sp = "C:\Strawberry\perl\bin"
+          if (-not (Test-Path "$sp\perl.exe")) { choco install strawberryperl -y --no-progress }
+          echo $sp | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - run: npm ci
 
