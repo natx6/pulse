@@ -31,15 +31,14 @@ describe("code39Bars / code39Width", () => {
     expect(a).toBeGreaterThan(0);
   });
 
-  it("a code with any invalid character is not fully encodable", () => {
-    // This is the exact gap PUL-027 flagged: code39Bars silently drops
-    // unsupported characters instead of failing, so callers must check
-    // code39Valid() first rather than trusting a non-zero width.
+  it("a code with any invalid character throws instead of mis-encoding", () => {
+    // PUL-027's original gap: the encoder used to silently drop unsupported
+    // characters, printing a barcode that scans as different data. It now
+    // refuses — callers gate with code39Valid() before ever reaching here.
     const mixed = "ABC#123";
     expect(code39Valid(mixed)).toBe(false);
-    // The encoder still produces *something* for the valid characters —
-    // proving why a width-only check would wrongly allow printing this.
-    expect(code39Width(mixed)).toBeGreaterThan(0);
+    expect(() => code39Bars(mixed)).toThrow(/cannot encode/);
+    expect(() => code39Width(mixed)).toThrow();
   });
 
   it("bars are non-overlapping and increase in x position", () => {

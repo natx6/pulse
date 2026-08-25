@@ -88,8 +88,7 @@ export const useStore = create<AppState>((set, get) => ({
     const cart = [...get().cart];
     const i = cart.findIndex((l) => l.productId === p.id);
     if (i >= 0) {
-      const cap = Math.max(p.stock_qty, cart[i].qty);
-      cart[i] = { ...cart[i], qty: Math.min(cart[i].qty + add, cap) };
+      cart[i] = { ...cart[i], qty: Math.min(cart[i].qty + add, p.stock_qty) };
     } else {
       cart.push({
         productId: p.id,
@@ -103,8 +102,15 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setQty: (productId, qty) => {
+    const stock = get().products.find((p) => p.id === productId)?.stock_qty;
     const cart = get().cart.map((l) =>
-      l.productId === productId ? { ...l, qty: Math.max(1, Math.floor(qty)) } : l,
+      l.productId === productId
+        ? {
+            ...l,
+            // Clamp up to 1, and down to what's actually on the shelf.
+            qty: Math.max(1, Math.min(Math.floor(qty), stock ?? Number.MAX_SAFE_INTEGER)),
+          }
+        : l,
     );
     set({ cart });
   },

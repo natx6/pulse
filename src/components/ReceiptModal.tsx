@@ -72,7 +72,7 @@ export function ReceiptModal({ result, lines, subtotal, discountPct, discountAmt
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      data-modal-open className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
       onKeyDown={(e) => {
         // stopPropagation matters here specifically: this modal is sometimes
         // rendered nested inside another (e.g. PatientModal's reprint), and

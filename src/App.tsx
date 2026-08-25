@@ -37,6 +37,59 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const scannerReady = useRef(false);
 
+  // Barcode scanning: started exactly once per session, by whichever init
+  // path succeeds first (boot, splash retry, or banner retry). Keeping this
+  // in ONE shared place is what stops retry paths from silently dropping it.
+  const startScannerOnce = () => {
+    if (scannerReady.current) return;
+    scannerReady.current = true;
+    initScanner((code) => {
+      const st = useStore.getState();
+      const toast = useToast.getState();
+      const p = st.products.find((x) => x.barcode === code);
+      if (p) {
+        if (p.stock_qty <= 0) {
+          beep(false);
+          toast.show(`${p.name} is out of stock`, "error");
+          return;
+        }
+        // Same at-cart-max guard as PosPage's tryAdd — addToCart silently
+        // no-ops once the cart hits stock_qty, so without this a repeat
+        // scan past available stock would still play a success beep.
+        const line = st.cart.find((l) => l.productId === p.id);
+        if (line && line.qty >= p.stock_qty) {
+          beep(false);
+          toast.show(`Max stock reached for ${p.name}`, "error");
+          return;
+        }
+        st.addToCart(p);
+        beep(true);
+        toast.show(`${p.name} added`, "success", { duration: 1500 });
+      } else {
+        beep(false);
+        toast.show(`Unknown barcode ${code} — quick add`, "info");
+        st.setQuickAdd({ barcode: code });
+      }
+    });
+  };
+
+  // THE startup sequence — db, settings, products, operators, role gate,
+  // scanner. Every entry point (clean launch and every retry) runs exactly
+  // this so none of them can drift. Resolves true on success.
+  const runStartupInit = async (): Promise<boolean> => {
+    await initDb();
+    const s = await getSettings();
+    useStore.getState().applySettings(s);
+    await useStore.getState().refreshProducts();
+    await useStore.getState().loadOperators();
+    // Role gate: a configured manager PIN means every entry point starts as
+    // cashier, retries included. Fail closed if the check itself errors.
+    const pinSet = await isManagerPinSet().catch(() => true);
+    useStore.getState().setRole(pinSet ? "cashier" : "manager");
+    startScannerOnce();
+    return true;
+  };
+
   // Auto-update: installed builds check for a newer release on launch, download
   // it (with a small progress overlay), install, and restart. The dev app never
   // checks — you don't want the dev server pulling a release build.
@@ -74,53 +127,12 @@ export default function App() {
   useEffect(() => {
     let disposed = false;
 
-    const runInit = async (): Promise<boolean> => {
+    const attempt = async (): Promise<boolean> => {
       try {
-        await initDb();
-        const s = await getSettings();
+        await runStartupInit();
         if (disposed) return true;
-        useStore.getState().applySettings(s);
-        await useStore.getState().refreshProducts();
-        await useStore.getState().loadOperators();
-        // Role at boot: a configured manager PIN means every launch starts
-        // locked as cashier — Settings stays out of reach until someone with
-        // the PIN unlocks Manager mode. No PIN → single-user mode, full trust.
-        await isManagerPinSet()
-          .then((pinSet) => useStore.getState().setRole(pinSet ? "cashier" : "manager"))
-          .catch(() => useStore.getState().setRole("cashier"));
-        if (!disposed) setReady(true);
-        if (!scannerReady.current) {
-          scannerReady.current = true;
-          initScanner((code) => {
-            const st = useStore.getState();
-            const toast = useToast.getState();
-            const p = st.products.find((x) => x.barcode === code);
-            if (p) {
-              if (p.stock_qty <= 0) {
-                beep(false);
-                toast.show(`${p.name} is out of stock`, "error");
-                return;
-              }
-              // Same at-cart-max guard as PosPage's tryAdd — addToCart silently
-              // no-ops once the cart hits stock_qty, so without this a repeat
-              // scan past available stock would still play a success beep.
-              const line = st.cart.find((l) => l.productId === p.id);
-              if (line && line.qty >= p.stock_qty) {
-                beep(false);
-                toast.show(`Max stock reached for ${p.name}`, "error");
-                return;
-              }
-              st.addToCart(p);
-              beep(true);
-              toast.show(`${p.name} added`, "success", { duration: 1500 });
-            } else {
-              beep(false);
-              toast.show(`Unknown barcode ${code} — quick add`, "info");
-              st.setQuickAdd({ barcode: code });
-            }
-          });
-        }
-        if (!disposed) setInitError("");
+        setReady(true);
+        setInitError("");
         return true;
       } catch (e) {
         console.error("init failed", e);
@@ -139,7 +151,7 @@ export default function App() {
       for (const d of delays) {
         if (d) await new Promise((r) => setTimeout(r, d));
         if (disposed) return;
-        if (await runInit()) return;
+        if (await attempt()) return;
       }
     })();
 
@@ -150,6 +162,9 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Never fire while a modal owns the screen (payment, PIN prompt, …) —
+      // F2 opening Intake mid-checkout is a mis-key, not an intent.
+      if (document.querySelector("[data-modal-open]")) return;
       const st = useStore.getState();
       if (e.key === "F2") {
         e.preventDefault();
@@ -212,18 +227,9 @@ export default function App() {
             <button
               onClick={() => {
                 setInitError("");
-                void (async () => {
-                  try {
-                    await initDb();
-                    const s = await getSettings();
-                    useStore.getState().applySettings(s);
-                    await useStore.getState().refreshProducts();
-                    await useStore.getState().loadOperators();
-                    setReady(true);
-                  } catch (e) {
-                    setInitError(String(e).replace(/^Error: /, ""));
-                  }
-                })();
+                void runStartupInit()
+                  .then(() => setReady(true))
+                  .catch((e) => setInitError(String(e).replace(/^Error: /, "")));
               }}
               className="rounded bg-primary px-4 py-2 text-label-md font-label-md text-on-primary hover:bg-on-primary-fixed-variant"
             >
@@ -250,17 +256,9 @@ export default function App() {
             <button
               onClick={() => {
                 setInitError("");
-                void (async () => {
-                  try {
-                    await initDb();
-                    const s = await getSettings();
-                    useStore.getState().applySettings(s);
-                    await useStore.getState().refreshProducts();
-                    await useStore.getState().loadOperators();
-                  } catch (e) {
-                    setInitError(String(e).replace(/^Error: /, ""));
-                  }
-                })();
+                void runStartupInit().catch((e) =>
+                  setInitError(String(e).replace(/^Error: /, "")),
+                );
               }}
               className="shrink-0 rounded border border-on-error-container/40 px-2 py-1 text-label-md font-label-md hover:bg-black/5"
             >

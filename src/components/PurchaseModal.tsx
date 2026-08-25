@@ -313,7 +313,7 @@ export function PurchaseModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      data-modal-open className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
       onKeyDown={(e) => {
         // The search box below handles its own Escape (clear search) and
         // stops propagation while there's text to clear; once it's empty,

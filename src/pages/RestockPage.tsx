@@ -245,7 +245,7 @@ export function RestockPage() {
 
       {/* Purchase detail / receive */}
       {detail && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+        <div data-modal-open className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
           <div className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
             <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
               <div>

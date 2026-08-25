@@ -21,13 +21,18 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  # Stacked pushes on the same tag/ref cancel the superseded build instead of
+  # queueing redundant full Rust compiles.
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 # Needed so the runner's GITHUB_TOKEN can create the draft release and attach
 # installers (default token is read-only in this repo).
-permissions:
-  contents: write
-
 jobs:
   build:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -143,6 +148,9 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    # Only this job touches releases — the build matrix stays read-only.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
 

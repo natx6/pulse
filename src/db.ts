@@ -134,9 +134,10 @@ export async function addPatient(
     [trimmed],
   );
   if (existing.length > 0) {
-    // Same name → top up contact details rather than duplicating the customer.
+    // Same name → top up ONLY blank fields on that exact row; never overwrite
+    // contact details already recorded for this customer.
     await d.execute(
-      "UPDATE patients SET email = COALESCE($1, email), phone = COALESCE($2, phone) WHERE id = $3",
+      "UPDATE patients SET email = COALESCE(email, $1), phone = COALESCE(phone, $2) WHERE id = $3",
       [em, ph, existing[0].id],
     );
   } else {
@@ -145,6 +146,18 @@ export async function addPatient(
       em,
       ph,
     ]);
+    // Two rapid saves (double-tap, remount) can both miss the SELECT above
+    // and each insert — collapse any duplicates to the oldest record.
+    const counts = await d.select<{ n: number }[]>(
+      "SELECT COUNT(*) AS n FROM patients WHERE name = $1 COLLATE NOCASE",
+      [trimmed],
+    );
+    if ((counts[0]?.n ?? 0) > 1) {
+      await d.execute(
+        "DELETE FROM patients WHERE name = $1 COLLATE NOCASE AND id != (SELECT MIN(id) FROM patients WHERE name = $1 COLLATE NOCASE)",
+        [trimmed],
+      );
+    }
   }
 }
 
@@ -428,16 +441,19 @@ export async function listBackups(): Promise<BackupInfo[]> {
   return await invoke("list_backups");
 }
 
-/** Swap the live DB for a backup; call restartApp() right after. */
-export async function restoreBackup(name: string): Promise<string> {
-  return await invoke("restore_backup", { name });
+/** Swap the live DB for a backup; call restartApp() right after. Gated by
+ * the manager PIN on the Rust side when one is configured. */
+export async function restoreBackup(name: string, pin: string | null): Promise<string> {
+  return await invoke("restore_backup", { name, managerPin: pin });
 }
 
 /** Disaster-recovery restore: `dir` is a flash-drive folder holding a
  * pulse-*.db + pulse.key pair (from backupDbToDir). Validates the pair,
- * swaps both into place; call restartApp() right after. */
-export async function restoreFromDir(dir: string): Promise<string> {
-  return await invoke("restore_from_dir", { dir });
+ * swaps both into place; call restartApp() right after. Gated by the
+ * manager PIN on the Rust side when one is configured — same as the
+ * backup-list restore. */
+export async function restoreFromDir(dir: string, pin: string | null): Promise<string> {
+  return await invoke("restore_from_dir", { dir, managerPin: pin });
 }
 
 /** Restart the whole app (never resolves). */
@@ -570,22 +586,26 @@ export async function loadSuppliers(): Promise<Supplier[]> {
   return await d.select<Supplier[]>("SELECT id, name, phone, location FROM suppliers ORDER BY name");
 }
 
-/** Find-or-insert a supplier by name (case-insensitive); returns its id. */
+/** Find-or-insert a supplier by name (case-insensitive); returns its id.
+ * The upsert is authoritative — the id comes back from the same statement
+ * via RETURNING, so a concurrent insert or a NOCASE collision can never
+ * yield a mismatched (or sentinel 0) id. */
 export async function addSupplier(
   name: string,
   phone?: string,
   location?: string,
 ): Promise<number> {
   const d = await initDb();
-  await d.execute(
-    "INSERT INTO suppliers (name, phone, location) VALUES ($1, $2, $3) ON CONFLICT(name) DO UPDATE SET phone = COALESCE($2, suppliers.phone), location = COALESCE($3, suppliers.location)",
+  const rows = await d.select<{ id: number }[]>(
+    "INSERT INTO suppliers (name, phone, location) VALUES ($1, $2, $3) " +
+      "ON CONFLICT(name) DO UPDATE SET phone = COALESCE($2, suppliers.phone), location = COALESCE($3, suppliers.location) " +
+      "RETURNING id",
     [name.trim(), phone?.trim() || null, location?.trim() || null],
   );
-  const rows = await d.select<{ id: number }[]>(
-    "SELECT id FROM suppliers WHERE name = $1 COLLATE NOCASE",
-    [name.trim()],
-  );
-  return rows[0]?.id ?? 0;
+  if (!rows[0]?.id) {
+    throw new Error(`Couldn't resolve supplier "${name.trim()}"`);
+  }
+  return rows[0].id;
 }
 
 export interface Purchase {
@@ -768,16 +788,20 @@ export interface CustomerCredit {
 
 export async function loadCustomerCredit(): Promise<CustomerCredit[]> {
   const d = await initDb();
+  // Group on a NOCASE-normalized key so "john" and "John" are one debtor;
+  // settlements already matched by NOCASE, so the grouping must too.
   const rows = await d.select<{ name: string; owed: number; settled: number }[]>(
-    `SELECT s.patient_name AS name,
+    `SELECT MIN(s.patient_name) AS name,
             SUM(sp.amount) AS owed,
             COALESCE((SELECT SUM(cp.amount) FROM credit_payments cp
-                      WHERE cp.patient_name = s.patient_name COLLATE NOCASE), 0) AS settled
-     FROM sales s
-     JOIN sale_payments sp ON sp.sale_id = s.id
-     WHERE sp.method = 'Credit' AND s.patient_name IS NOT NULL AND s.patient_name != ''
-     GROUP BY s.patient_name
-     ORDER BY s.patient_name`,
+                      WHERE cp.patient_name COLLATE NOCASE = s2.name), 0) AS settled
+     FROM (SELECT DISTINCT patient_name FROM sales
+           WHERE patient_name IS NOT NULL AND patient_name != ''
+             AND id IN (SELECT sale_id FROM sale_payments WHERE method = 'Credit')) s2
+     JOIN sales s ON s.patient_name = s2.name COLLATE NOCASE
+     JOIN sale_payments sp ON sp.sale_id = s.id AND sp.method = 'Credit'
+     GROUP BY s2.name
+     ORDER BY name`,
   );
   return rows
     .map((r) => ({ name: r.name, owed: Number(r.owed), settled: Number(r.settled) }))
@@ -854,7 +878,7 @@ export async function loadControlledRegister(
        SELECT sa.timestamp, 'Adjusted', sa.product_name, sa.delta, sa.reason, sa.operator
        FROM stock_adjustments sa JOIN products p ON p.id = sa.product_id
        WHERE p.is_controlled = 1 AND date(sa.timestamp) BETWEEN $1 AND $2
-     ) ORDER BY ts DESC LIMIT 300`,
+     ) ORDER BY ts DESC LIMIT 2000`,
     [from, to],
   );
   return {
@@ -966,7 +990,7 @@ export async function supplierBalances(): Promise<SupplierBalance[]> {
        MIN(p.purchase_date) AS oldest_date
      FROM purchases p
      LEFT JOIN pay py ON py.purchase_id = p.id
-     WHERE p.supplier_name IS NOT NULL AND p.supplier_name != ''
+     WHERE p.supplier_name IS NOT NULL AND p.supplier_name != '' AND p.cancelled = 0
      GROUP BY p.supplier_name
      ORDER BY balance DESC`,
   );
@@ -976,6 +1000,9 @@ export async function supplierBalances(): Promise<SupplierBalance[]> {
 
 export async function updatePatientDiscount(name: string, discountPct: number): Promise<void> {
   const d = await initDb();
+  if (!Number.isFinite(discountPct) || discountPct < 0 || discountPct > 100) {
+    throw new Error("Discount must be between 0 and 100");
+  }
   const res = await d.execute(
     "UPDATE patients SET discount_tier = $1 WHERE name = $2",
     [discountPct, name],

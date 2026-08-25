@@ -72,7 +72,7 @@ export function PosPage() {
     payments: PaymentLine[];
   } | null>(null);
   const [patientInput, setPatientInput] = useState("");
-  const [patientHits, setPatientHits] = useState<{ name: string; phone: string | null }[]>([]);
+  const [patientHits, setPatientHits] = useState<{ id: number; name: string; phone: string | null }[]>([]);
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   /** Per-line "step by whole packs" toggle for products with pack_size > 1. */
   const [packStep, setPackStep] = useState<Record<number, boolean>>({});
@@ -89,8 +89,8 @@ export function PosPage() {
     void (async () => {
       try {
         const d = await initDb();
-        const rows = await d.select<{ name: string; phone: string | null }[]>(
-          "SELECT name, phone FROM patients WHERE name LIKE $1 OR phone LIKE $1 ORDER BY name LIMIT 6",
+        const rows = await d.select<{ name: string; phone: string | null; id: number }[]>(
+          "SELECT id, name, phone FROM patients WHERE name LIKE $1 OR phone LIKE $1 ORDER BY name LIMIT 6",
           [`%${q}%`],
         );
         if (!cancelled) setPatientHits(rows);
@@ -217,7 +217,7 @@ export function PosPage() {
   };
 
   const doReorder = async () => {
-    if (!reorder) return;
+    if (!reorder || orderBusy) return;
     setOrderBusy(true);
     try {
       const r = await savePurchase({
@@ -357,8 +357,17 @@ export function PosPage() {
               {filtered.map((p) => (
                 <div
                   key={p.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Add ${p.name} to sale`}
                   onClick={() => tryAdd(p)}
-                  className="group relative flex min-h-[120px] cursor-pointer flex-col justify-between rounded border border-outline-variant bg-surface-container-lowest p-3 transition-colors hover:border-primary/50"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      tryAdd(p);
+                    }
+                  }}
+                  className="group relative flex min-h-[120px] cursor-pointer flex-col justify-between rounded border border-outline-variant bg-surface-container-lowest p-3 transition-colors hover:border-primary/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
                 >
                   <div>
                     <div className="mb-1 flex items-start justify-between">
@@ -525,7 +534,7 @@ export function PosPage() {
                     <div className="absolute left-0 right-0 top-9 z-50 overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-lg">
                       {patientHits.map((h) => (
                         <button
-                          key={h.name}
+                          key={h.id}
                           onClick={() => {
                             setPatient({ name: h.name, phone: h.phone ?? "" });
                             setPatientInput("");
@@ -804,7 +813,7 @@ export function PosPage() {
       {showAddCustomer && <AddCustomerModal onClose={() => setShowAddCustomer(false)} />}
 
       {reorder && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+        <div data-modal-open className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
           <div
             ref={reorderDialogRef}
             role="dialog"
@@ -829,7 +838,7 @@ export function PosPage() {
               value={orderQty}
               onChange={(e) => setOrderQty(Math.max(1, Number(e.target.value) || 1))}
               onKeyDown={(e) => {
-                if (e.key === "Enter") void doReorder();
+                if (e.key === "Enter" && !orderBusy) void doReorder();
               }}
               className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             />

@@ -7,8 +7,9 @@ export function nowHm(d: Date = new Date()): string {
 
 /**
  * The single operator whose shift window covers the given time, or null when
- * none (or more than one — ambiguous) does. Handles overnight shifts where
- * shift_end < shift_start.
+ * none does. Handles overnight shifts where shift_end < shift_start. A
+ * boundary minute that falls in two abutting windows resolves to the LATER
+ * shift (its start) rather than going ambiguous-null at exactly handover.
  */
 export function activeOperatorAt(operators: Operator[], d: Date = new Date()): Operator | null {
   const cur = nowHm(d);
@@ -17,5 +18,9 @@ export function activeOperatorAt(operators: Operator[], d: Date = new Date()): O
     if (op.shift_start <= op.shift_end) return cur >= op.shift_start && cur <= op.shift_end;
     return cur >= op.shift_start || cur <= op.shift_end; // overnight
   });
-  return active.length === 1 ? active[0] : null;
+  if (active.length === 1) return active[0];
+  // Ambiguous (abutting shifts overlap on a shared minute): prefer the one
+  // whose window STARTS now — i.e. the incoming operator owns the handover.
+  const startingNow = active.find((op) => op.shift_start === cur);
+  return startingNow ?? null;
 }

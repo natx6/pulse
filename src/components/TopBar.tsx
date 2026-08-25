@@ -178,7 +178,7 @@ export function TopBar() {
         </h1>
       </div>
 
-      <div className="relative mx-8 hidden max-w-md flex-1 lg:block">
+      <div className="relative mx-8 hidden min-w-[16rem] max-w-md flex-1 md:block">
         <span className="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-sm text-outline">
           search
         </span>

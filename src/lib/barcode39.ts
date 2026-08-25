@@ -21,14 +21,18 @@ const PATTERNS: Record<string, string> = {
 
 const VALID = new Set(Object.keys(PATTERNS));
 
-/** Bars for `code`, wrapped in the * start/stop markers, in narrow units. */
+/** Bars for `code`, wrapped in the * start/stop markers, in narrow units.
+ * Throws on characters outside the Code39 charset — silently dropping them
+ * would print a barcode that scans as different data. */
 export function code39Bars(code: string): { x: number; width: number }[] {
   const src = `*${code.toUpperCase()}*`;
   const bars: { x: number; width: number }[] = [];
   let x = 0;
   for (const ch of src) {
     const pat = PATTERNS[ch];
-    if (!pat) continue; // unsupported chars are skipped (space is supported)
+    if (!pat) {
+      throw new Error(`Code39 cannot encode "${ch}" — use A–Z, 0–9, - . space $ / + %`);
+    }
     for (let i = 0; i < 9; i++) {
       if (i % 2 === 0) bars.push({ x, width: pat[i] === "1" ? 3 : 1 });
       x += pat[i] === "1" ? 3 : 1;

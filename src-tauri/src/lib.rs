@@ -132,14 +132,46 @@ fn ensure_db_key(app: &AppHandle) -> Result<String, String> {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     let key: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    fs::write(&path, &key).map_err(|e| format!("Can't write {}: {e}", path.display()))?;
+    // Create the file with 0600 from the start — never a world-readable
+    // window between write and chmod. O_EXCL also closes the first-run race:
+    // two concurrent callers can't each mint a different key; the loser of
+    // the create re-reads the winner's key.
     #[cfg(unix)]
     {
-        // Only the current user may read the key.
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                f.write_all(key.as_bytes())
+                    .map_err(|e| format!("Can't write {}: {e}", path.display()))?;
+                return Ok(key);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Another caller won the race — read what they wrote.
+                if let Ok(existing) = fs::read_to_string(&path) {
+                    let k = existing.trim().to_string();
+                    if !k.is_empty() {
+                        return Ok(k);
+                    }
+                }
+                return Err(format!(
+                    "{} exists but is empty/unreadable — delete it and restart",
+                    path.display()
+                ));
+            }
+            Err(e) => return Err(format!("Can't write {}: {e}", path.display())),
+        }
     }
-    Ok(key)
+    #[cfg(not(unix))]
+    {
+        fs::write(&path, &key).map_err(|e| format!("Can't write {}: {e}", path.display()))?;
+        Ok(key)
+    }
 }
 
 /// Open a connection to pulse.db and unlock it. `PRAGMA key` MUST be the
@@ -252,11 +284,16 @@ fn migrate_plaintext_db(app: &AppHandle) -> Result<(), String> {
         }
     }
 
-    // Swap, crash-safe order: stash the plaintext aside, then promote the
-    // verified encrypted copy into place IMMEDIATELY — from this moment the
-    // app always has a readable database, and every remaining step is pure
-    // cleanup. Only then are the plaintext bytes zeroed (recovery tools can't
-    // resurrect them) and deleted.
+    // Flush any committed-but-uncheckpointed WAL frames back into the main
+    // file BEFORE deleting the sidecars — otherwise recent transactions that
+    // lived only in the -wal would silently vanish from the encrypted copy.
+    // (sqlcipher_export above reads through the same connection's WAL view,
+    // so the export itself was correct; this protects the plaintext original
+    // and keeps the on-disk main file self-contained.)
+    {
+        let flush = rusqlite::Connection::open(&path).map_err(|e| e.to_string())?;
+        let _ = flush.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get::<_, i64>(0));
+    }
     for sidecar in ["-wal", "-shm"] {
         let _ = fs::remove_file(dir.join(format!("pulse.db{sidecar}")));
     }
@@ -377,38 +414,54 @@ fn complete_sale_impl(
     // selling price and cost (for the profit snapshot below) from the
     // catalog, the same principle save_purchase already applies to purchases.
     let mut catalog: std::collections::HashMap<i64, (f64, f64)> = std::collections::HashMap::new();
+    // Aggregate duplicate product lines first — each line must not be checked
+    // against original stock in isolation or two lines of the same product can
+    // pass individually and drive stock negative on deduct.
+    let mut qty_by_product: std::collections::HashMap<i64, (i64, String)> =
+        std::collections::HashMap::new();
     for l in &lines {
         if l.quantity <= 0 {
             return Err(format!("Quantity for {} must be positive", l.name));
         }
+        let e = qty_by_product
+            .entry(l.product_id)
+            .or_insert((0, l.name.clone()));
+        e.0 += l.quantity;
+    }
+    for (pid, (qty, name)) in &qty_by_product {
         let (st, price, cost): (i64, f64, f64) = tx
             .query_row(
                 "SELECT stock_qty, selling_price, cost_price FROM products WHERE id = ?1",
-                [l.product_id],
+                [pid],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
-            .map_err(|_| format!("Unknown product: {}", l.name))?;
-        if st < l.quantity {
+            .map_err(|_| format!("Unknown product: {}", name))?;
+        if st < *qty {
             return Err(format!(
                 "Not enough stock for {} (have {}, need {})",
-                l.name, st, l.quantity
+                name, st, qty
             ));
         }
-        catalog.insert(l.product_id, (price, cost));
+        catalog.insert(*pid, (price, cost));
     }
 
     // 2. Receipt number: per-day sequence, computed inside the transaction.
     // BEGIN IMMEDIATE serializes writers across app instances on this file,
-    // so two counters can never compute the same next number.
-    let n: i64 = tx
-        .query_row(
-            "SELECT COUNT(*) FROM sales WHERE date(timestamp) = date('now', 'localtime')",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
+    // so two counters can never compute the same next number. The next number
+    // comes from the highest existing suffix, not COUNT(*) — a void hard-deletes
+    // its sale row, so counting would hand out an already-printed number again
+    // and trip sales.receipt_no's UNIQUE index.
     let date: String = tx
         .query_row("SELECT strftime('%Y%m%d', 'now', 'localtime')", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let prefix = format!("RCPT-{}-", date);
+    let n: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(CAST(substr(receipt_no, ?1) AS INTEGER)), 0)
+             FROM sales WHERE receipt_no LIKE ?2 || '%'",
+            rusqlite::params![prefix.len() as i64 + 1, prefix],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     let receipt_no = format!("RCPT-{}-{:03}", date, n + 1);
 
@@ -1643,6 +1696,20 @@ fn return_sale_impl(
             |r| r.get(0),
         )
         .map_err(|_| "Sale not found".to_string())?;
+    // What the customer ACTUALLY paid per cedi of list price — the sale's
+    // point-in-time snapshot already folds in discount and tax (migration
+    // 0024). Refunding raw unit_price would hand back money never collected
+    // on a discounted sale.
+    let paid_ratio: f64 = {
+        let (subtotal, total): (f64, f64) = tx
+            .query_row(
+                "SELECT COALESCE(subtotal, total_amount), total_amount FROM sales WHERE id = ?1",
+                [sale_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        if subtotal > 0.0 { (total / subtotal).max(0.0) } else { 1.0 }
+    };
 
     // FIFO consumption of the sale's own lines → (product, name, qty, price,
     // unit, batch breakdown) — the breakdown is what goes back on the shelf.
@@ -1688,7 +1755,9 @@ fn return_sale_impl(
             }
             let take = (*qty).min(remaining);
             remaining -= take;
-            total_refunded += price * take as f64;
+            // Refund what was actually collected for these units (discount +
+            // tax folded in), not the pre-discount list price.
+            total_refunded += price * paid_ratio * take as f64;
             to_restock.push((l.product_id, name.clone(), take, *price, unit.clone(), batches.clone()));
         }
     }
@@ -1914,9 +1983,15 @@ fn list_backups(app: AppHandle) -> Result<Vec<BackupInfo>, String> {
 /// and stale WAL/SHM sidecars removed. The JS side restarts the app right
 /// after — nothing writes through the old connection post-swap.
 #[tauri::command]
-fn restore_backup(app: AppHandle, name: String) -> Result<String, String> {
+fn restore_backup(app: AppHandle, name: String, manager_pin: Option<String>) -> Result<String, String> {
     if name.contains('/') || name.contains('\\') || name.contains("..") || !name.ends_with(".db") {
         return Err("Invalid backup name".into());
+    }
+    // Restoring replaces the ENTIRE database (sales history included), so it
+    // is gated like every other destructive action.
+    {
+        let conn = open_db(&app)?;
+        check_manager_pin(&conn, manager_pin)?;
     }
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     let src = dir.join("backups").join(&name);
@@ -1955,9 +2030,17 @@ fn restore_backup(app: AppHandle, name: String) -> Result<String, String> {
         &dir.join("backups").join(format!("pre-restore-{}.db", epoch)),
         &ensure_db_key(&app)?,
     )?;
-    // Swap.
+    // Swap — atomically. fs::copy straight onto pulse.db truncates the live
+    // file first, so a mid-copy crash (power loss, disk full) would leave a
+    // corrupt main db. Copy to a temp name on the same filesystem, then
+    // rename (atomic on POSIX and Windows).
     let live = db_path(&app)?;
-    fs::copy(&src, &live).map_err(|e| e.to_string())?;
+    let tmp = live.with_extension("db.restore-tmp");
+    fs::copy(&src, &tmp).map_err(|e| e.to_string())?;
+    if let Err(e) = fs::rename(&tmp, &live) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
     let _ = fs::remove_file(dir.join("pulse.db-wal"));
     let _ = fs::remove_file(dir.join("pulse.db-shm"));
     Ok(format!("Restored {}. Pulse will restart.", name))
@@ -1975,7 +2058,17 @@ fn restart_app(app: AppHandle) -> Result<(), String> {
 /// recoverable), then the caller restarts. This is the disaster-recovery
 /// path — moving an install to a new machine.
 #[tauri::command]
-fn restore_from_dir(app: AppHandle, dir: String) -> Result<String, String> {
+fn restore_from_dir(
+    app: AppHandle,
+    dir: String,
+    manager_pin: Option<String>,
+) -> Result<String, String> {
+    // Same gate as restore_backup: this replaces the ENTIRE database, so a
+    // flash drive plugged into the till must not bypass the manager PIN.
+    {
+        let conn = open_db(&app)?;
+        check_manager_pin(&conn, manager_pin)?;
+    }
     let path = std::path::Path::new(&dir);
     if !path.is_absolute() || !path.is_dir() {
         return Err("Pick the folder that holds the flash-drive backup".into());
@@ -2036,13 +2129,22 @@ fn restore_from_dir(app: AppHandle, dir: String) -> Result<String, String> {
             let _ = fs::rename(&p, stash.join(name));
         }
     }
-    // Copy the pair into place. If the db copy fails, put the key back.
+    // Copy the pair into place. Any failure here must roll BOTH files back
+    // from the stash — a db copied without its matching key would leave this
+    // install unable to open its own database on next startup.
     if fs::copy(&src_db, conf.join("pulse.db")).is_err() {
         let _ = fs::copy(stash.join("pulse.key"), conf.join("pulse.key"));
         return Err(format!("Couldn't copy {} into place", src_db.display()));
     }
-    fs::copy(&src_key, conf.join("pulse.key"))
-        .map_err(|e| format!("Couldn't copy pulse.key into place: {e}"))?;
+    if let Err(e) = fs::copy(&src_key, conf.join("pulse.key")) {
+        // Roll back: put the original pair back exactly as it was.
+        let _ = fs::remove_file(conf.join("pulse.db"));
+        let _ = fs::copy(stash.join("pulse.key"), conf.join("pulse.key"));
+        if stash.join("pulse.db").is_file() {
+            let _ = fs::rename(stash.join("pulse.db"), conf.join("pulse.db"));
+        }
+        return Err(format!("Couldn't copy pulse.key into place: {e}"));
+    }
     // Drop stale sidecars from the previous install.
     let _ = fs::remove_file(conf.join("pulse.db-wal"));
     let _ = fs::remove_file(conf.join("pulse.db-shm"));
@@ -2184,17 +2286,17 @@ fn commit_stock_import(
         };
         // Fall back to a name match (case-insensitive) when barcode is
         // missing or didn't hit.
-        let existing = existing.or_else(|| {
-            tx.query_row(
-                "SELECT id FROM products WHERE lower(name) = lower(?1) ORDER BY id LIMIT 1",
-                [&name],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())
-            .ok()
-            .flatten()
-        });
+        let existing = match existing {
+            Some(id) => Some(id),
+            None => tx
+                .query_row(
+                    "SELECT id FROM products WHERE lower(name) = lower(?1) ORDER BY id LIMIT 1",
+                    [&name],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?,
+        };
 
         match existing {
             Some(id) => {
@@ -2556,11 +2658,63 @@ fn migrate_plaintext_pin(conn: &rusqlite::Connection) -> Result<(), String> {
 
 /// Manager PIN gate for sensitive actions (voids, returns, supplier payments,
 /// credit settlements). When no PIN is configured everything is allowed; when
-/// set, `provided` must verify against it exactly.
+/// set, `provided` must verify against it exactly. Wrong attempts are
+/// rate-limited in-process: 5 failures trip a 30-second lockout so a 4-digit
+/// PIN can't be brute-forced from repeated command calls.
+const PIN_MAX_FAILURES: u32 = 5;
+const PIN_LOCKOUT_MS: u64 = 30_000;
+
 fn check_manager_pin(
     conn: &rusqlite::Connection,
     provided: Option<String>,
 ) -> Result<(), String> {
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    // The limiter is deliberately NOT active under `cargo test`: the test
+    // suite runs many PIN-gated paths in parallel against one process, and a
+    // shared counter would make unrelated tests lock each other out.
+    #[cfg(not(test))]
+    {
+        static FAILURES: AtomicU32 = AtomicU32::new(0);
+        static LOCKED_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let locked_until = LOCKED_UNTIL.load(Ordering::Relaxed);
+        if locked_until > now_ms {
+            return Err(format!(
+                "Too many wrong PIN attempts — try again in {}s",
+                (locked_until - now_ms + 999) / 1000
+            ));
+        }
+
+        match verify(conn, provided)? {
+            Ok(()) => {
+                FAILURES.store(0, Ordering::Relaxed);
+                return Ok(());
+            }
+            Err(e) => {
+                let fails = FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+                if fails >= PIN_MAX_FAILURES {
+                    LOCKED_UNTIL.store(now_ms + PIN_LOCKOUT_MS, Ordering::Relaxed);
+                    FAILURES.store(0, Ordering::Relaxed);
+                    return Err("Too many wrong PIN attempts — locked for 30 seconds".into());
+                }
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(test)]
+    verify(conn, provided)?
+}
+
+/// Shared verification body used by both the rate-limited (production) and
+/// direct (test) paths.
+fn verify(
+    conn: &rusqlite::Connection,
+    provided: Option<String>,
+) -> Result<Result<(), String>, String> {
     let stored: Option<String> = conn
         .query_row(
             "SELECT value FROM settings WHERE key = 'manager_pin'",
@@ -2570,11 +2724,12 @@ fn check_manager_pin(
         .optional()
         .map_err(|e| e.to_string())?;
     let Some(expected) = stored.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
-        return Ok(());
+        // No gate configured.
+        return Ok(Ok(()));
     };
     match provided.as_deref() {
-        Some(p) if pin_matches(expected, p) => Ok(()),
-        _ => Err("Manager PIN required for this action".into()),
+        Some(p) if pin_matches(expected, p) => Ok(Ok(())),
+        _ => Ok(Err("Manager PIN required for this action".into())),
     }
 }
 
@@ -2833,19 +2988,26 @@ fn intake_stock(app: AppHandle, input: IntakePayload) -> Result<serde_json::Valu
     if input.quantity <= 0 {
         return Err("Quantity must be positive".into());
     }
+    if input.selling_price < 0.0 {
+        return Err("Selling price can't be negative".into());
+    }
+    if let Some(c) = input.cost_price {
+        if c < 0.0 {
+            return Err("Cost price can't be negative".into());
+        }
+    }
     let mut conn = open_db(&app)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let bc = trim_opt(&input.barcode);
-    let existing: Option<i64> = bc
-        .as_deref()
-        .and_then(|b| {
-            tx.query_row("SELECT id FROM products WHERE barcode = ?1", [b], |r| r.get(0))
-                .optional()
-                .ok()
-                .flatten()
-        });
+    let existing: Option<i64> = match bc.as_deref() {
+        Some(b) => tx
+            .query_row("SELECT id FROM products WHERE barcode = ?1", [b], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?,
+        None => None,
+    };
     let pack = input.pack_size.filter(|p| *p >= 1);
     let id;
     let created;

@@ -6,6 +6,7 @@ import { beep } from "../lib/audio";
 import { fmtMoney } from "../lib/money";
 import { round2 } from "../lib/price";
 import { Tip } from "./Tip";
+import { useFocusTrap } from "../lib/focusTrap";
 
 interface Props {
   total: number;
@@ -45,6 +46,7 @@ export function PaymentModal({ total, lines, discountPct, initialMethod, onClose
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const dialogRef = useFocusTrap<HTMLDivElement>();
 
   // Clear stale errors when total or split mode changes.
   const [lastTotal, setLastTotal] = useState(total);
@@ -62,7 +64,7 @@ export function PaymentModal({ total, lines, discountPct, initialMethod, onClose
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { onClose(); return; }
+      if (e.key === "Escape") { if (!busy) onClose(); return; }
       if (split) {
         // In split mode, only Enter from a non-input (or the confirm button) submits.
         const tag = (e.target as HTMLElement | null)?.tagName;
@@ -90,12 +92,16 @@ export function PaymentModal({ total, lines, discountPct, initialMethod, onClose
   const setRow = (i: number, patch: Partial<SplitRow>) => {
     setRows((rs) => {
       const next = rs.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
-      // Auto-fill: when exactly one row is still empty, put the remainder there.
+      // Auto-fill: when exactly one row is still empty, put the remainder
+      // there. Computed from `next` (this update's state), not the render-
+      // scope values, so fast consecutive edits can't use stale totals.
+      const paidSoFar = next.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+      const remaining = round2(total - paidSoFar);
       const empty = next.filter((r) => !r.amount);
-      if (empty.length === 1 && splitPaid < total) {
+      if (empty.length === 1 && paidSoFar < total) {
         const idx = next.indexOf(empty[0]);
         if (patch.amount !== undefined || idx !== i) {
-          next[idx] = { ...next[idx], amount: splitRemaining > 0 ? String(splitRemaining) : "" };
+          next[idx] = { ...next[idx], amount: remaining > 0 ? String(remaining) : "" };
         }
       }
       return next;
@@ -174,10 +180,16 @@ export function PaymentModal({ total, lines, discountPct, initialMethod, onClose
   const splitChange = Math.max(0, splitPaid - total);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
-      <div className="w-full max-w-md rounded-xl border border-outline-variant bg-surface shadow-lg">
+    <div data-modal-open className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="payment-dialog-title"
+        className="w-full max-w-md rounded-xl border border-outline-variant bg-surface shadow-lg"
+      >
         <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
-          <h3 className="text-headline-md font-headline-md text-on-surface">
+          <h3 id="payment-dialog-title" className="text-headline-md font-headline-md text-on-surface">
             Payment — {fmtMoney(total)}
           </h3>
           <button
@@ -358,7 +370,8 @@ export function PaymentModal({ total, lines, discountPct, initialMethod, onClose
           <div className="flex justify-end gap-3 pt-2">
             <button
               onClick={onClose}
-              className="rounded border border-outline px-4 py-2 text-on-surface hover:bg-surface-variant"
+              disabled={busy}
+              className="rounded border border-outline px-4 py-2 text-on-surface hover:bg-surface-variant disabled:opacity-50"
             >
               <span className="text-label-md font-label-md">Cancel</span>
             </button>

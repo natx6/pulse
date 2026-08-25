@@ -27,7 +27,7 @@ export function PrintPOModal({ p, items, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      data-modal-open className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.stopPropagation();

@@ -16,6 +16,7 @@ import {
 } from "../db";
 import type { Operator, BackupInfo } from "../db";
 import { beep } from "../lib/audio";
+import { PinPromptModal } from "../components/PinPromptModal";
 
 export function SettingsPage() {
   const pharmacyName = useStore((s) => s.pharmacyName);
@@ -57,6 +58,10 @@ export function SettingsPage() {
   const [restoreArm, setRestoreArm] = useState(false);
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreMsg, setRestoreMsg] = useState("");
+  /** Backup-list restore awaiting its manager-PIN confirmation. */
+  const [pinTargetBackup, setPinTargetBackup] = useState<string | null>(null);
+  /** Flash-drive restore awaiting its manager-PIN confirmation. */
+  const [pinDriveRestore, setPinDriveRestore] = useState<string | null>(null);
 
   const restoreFromDrive = async () => {
     setRestoreMsg("");
@@ -73,12 +78,29 @@ export function SettingsPage() {
         title: "Pick the folder holding the pulse-*.db + pulse.key pair",
       });
       if (!picked) return; // dialog cancelled
+      // Same gate as the backup-list restore: Rust re-verifies regardless of UI.
+      if (await isManagerPinSet()) {
+        setPinDriveRestore(String(picked));
+        return;
+      }
+      await runDriveRestore(String(picked), null);
+    } catch (e) {
+      setRestoreMsg(String(e).replace(/^Error: /, ""));
+      beep(false);
+    }
+  };
+
+  /** The actual flash-drive swap. Rethrows so PinPromptModal can render a
+   * wrong-PIN failure instead of reporting success. */
+  const runDriveRestore = async (dir: string, pin: string | null) => {
+    try {
       setRestoreBusy(true);
-      await restoreFromDir(String(picked));
+      await restoreFromDir(dir, pin);
       await restartApp(); // never returns
     } catch (e) {
       setRestoreMsg(String(e).replace(/^Error: /, ""));
       beep(false);
+      throw e;
     } finally {
       setRestoreBusy(false);
     }
@@ -172,26 +194,40 @@ export function SettingsPage() {
   const fmtDate = (epoch: number) =>
     epoch ? new Date(epoch * 1000).toLocaleString() : "—";
 
-  /** Two-step restore: tap once to arm, again to run. Current DB is backed up first, then the app restarts. */
-  const armRestore = (name: string) => {
+  /** Two-step restore: tap once to arm, again to run. If a manager PIN is
+   * active, a PIN prompt confirms first — the Rust side re-checks it. */
+  const armRestore = async (name: string) => {
     if (confirmRestore !== name) {
       setConfirmRestore(name);
       window.setTimeout(() => setConfirmRestore((c) => (c === name ? null : c)), 4000);
       return;
     }
     setConfirmRestore(null);
-    setRestoring(true);
-    void (async () => {
-      try {
-        await restoreBackup(name);
-        beep(true);
-        await restartApp(); // never resolves — the app relaunches
-      } catch (e) {
-        setBackupErr(String(e).replace(/^Error: /, ""));
-        setRestoring(false);
-        beep(false);
+    try {
+      if (await isManagerPinSet()) {
+        setPinTargetBackup(name);
+        return;
       }
-    })();
+    } catch {
+      /* fall through — the Rust gate still protects the command */
+    }
+    await runRestore(name, null);
+  };
+
+  const runRestore = async (name: string, pin: string | null) => {
+    setRestoring(true);
+    try {
+      await restoreBackup(name, pin);
+      beep(true);
+      await restartApp(); // never resolves — the app relaunches
+    } catch (e) {
+      setBackupErr(String(e).replace(/^Error: /, ""));
+      setRestoring(false);
+      beep(false);
+      // Rethrow so PinPromptModal.onSubmit can render the failure — a helper
+      // that swallows errors makes the modal report success on a wrong PIN.
+      throw e;
+    }
   };
 
   const save = async () => {
@@ -737,6 +773,38 @@ export function SettingsPage() {
           </span>
         </button>
       </div>
+
+      {pinTargetBackup !== null && (
+        <PinPromptModal
+          title="Restore backup"
+          detail={`Restoring "${pinTargetBackup}" replaces the whole database — today's sales included. Enter the manager PIN to continue.`}
+          onSubmit={async (pin) => {
+            try {
+              await runRestore(pinTargetBackup, pin);
+              return null;
+            } catch (e) {
+              return String(e).replace(/^Error: /, "");
+            }
+          }}
+          onClose={() => setPinTargetBackup(null)}
+        />
+      )}
+
+      {pinDriveRestore !== null && (
+        <PinPromptModal
+          title="Restore from flash drive"
+          detail="Restoring this backup replaces the whole database — today's sales included. Enter the manager PIN to continue."
+          onSubmit={async (pin) => {
+            try {
+              await runDriveRestore(pinDriveRestore, pin);
+              return null;
+            } catch (e) {
+              return String(e).replace(/^Error: /, "");
+            }
+          }}
+          onClose={() => setPinDriveRestore(null)}
+        />
+      )}
     </div>
   );
 }

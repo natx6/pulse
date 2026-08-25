@@ -507,7 +507,7 @@ export function InventoryPage() {
       </div>
 
       {adjust && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+        <div data-modal-open className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
           <div
             ref={adjustDialogRef}
             role="dialog"

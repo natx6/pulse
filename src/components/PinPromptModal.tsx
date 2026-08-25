@@ -43,7 +43,7 @@ export function PinPromptModal({ title, detail, onSubmit, onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
+    <div data-modal-open className="fixed inset-0 z-[60] flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]">
       <div
         ref={dialogRef}
         role="dialog"
