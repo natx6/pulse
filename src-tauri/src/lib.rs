@@ -2052,6 +2052,49 @@ fn restart_app(app: AppHandle) -> Result<(), String> {
     app.restart()
 }
 
+/// Move a validated flash-drive pair (db + key) into the config dir, with
+/// full rollback. The db lands via copy-to-temp + rename so a mid-copy crash
+/// can never truncate the live file; ANY failure rolls BOTH files back from
+/// the stash — above all it must never leave this install without its own
+/// database file. Split from restore_from_dir so tests can exercise every
+/// failure branch against plain paths.
+fn swap_in_restored_pair(
+    conf: &std::path::Path,
+    src_db: &std::path::Path,
+    src_key: &std::path::Path,
+    stash: &std::path::Path,
+) -> Result<(), String> {
+    let live_db = conf.join("pulse.db");
+    // Roll BOTH files back from the stash. Only move the stashed db back if
+    // no live db exists — after a partial copy we must not clobber a file
+    // that might be mid-write.
+    let rollback = || {
+        if stash.join("pulse.db").is_file() && !conf.join("pulse.db").exists() {
+            let _ = fs::rename(stash.join("pulse.db"), conf.join("pulse.db"));
+        }
+        if stash.join("pulse.key").is_file() {
+            let _ = fs::copy(stash.join("pulse.key"), conf.join("pulse.key"));
+        }
+    };
+    let tmp = conf.join("pulse.db.restore-tmp");
+    if let Err(e) = fs::copy(src_db, &tmp) {
+        rollback();
+        return Err(format!("Couldn't copy {}: {e}", src_db.display()));
+    }
+    if let Err(e) = fs::rename(&tmp, &live_db) {
+        let _ = fs::remove_file(&tmp);
+        rollback();
+        return Err(format!("Couldn't put restored db into place: {e}"));
+    }
+    if let Err(e) = fs::copy(src_key, conf.join("pulse.key")) {
+        // Roll back: put the original pair back exactly as it was.
+        let _ = fs::remove_file(&live_db);
+        rollback();
+        return Err(format!("Couldn't copy pulse.key into place: {e}"));
+    }
+    Ok(())
+}
+
 /// Restore a flash-drive pair produced by backup_to_dir: `dir` holds a
 /// pulse-*.db and the matching pulse.key. Copies BOTH into the config dir
 /// (the live key is stashed aside first so a wrong-key restore is itself
@@ -2119,31 +2162,29 @@ fn restore_from_dir(
     }
 
     let conf = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    // Flush any committed-but-uncheckpointed WAL frames back into the main
+    // file BEFORE stashing it — otherwise recent transactions that lived only
+    // in the -wal would silently vanish from the stashed snapshot if this
+    // restore has to be rolled back.
+    let live_db = conf.join("pulse.db");
+    if live_db.is_file() {
+        let flush = rusqlite::Connection::open(&live_db).map_err(|e| e.to_string())?;
+        let _ = flush.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get::<_, i64>(0));
+        drop(flush);
+    }
     // Stash this install's current key/db aside (best-effort) so the swap is
-    // reversible if the wrong pair was picked.
+    // reversible if the wrong pair was picked. Sidecars go too — stale ones
+    // left behind would corrupt whichever db lands next to them.
     let stash = conf.join(format!("pre-external-restore-{}", std::process::id()));
     let _ = fs::create_dir_all(&stash);
-    for name in ["pulse.db", "pulse.key"] {
+    for name in ["pulse.db", "pulse.key", "pulse.db-wal", "pulse.db-shm"] {
         let p = conf.join(name);
         if p.is_file() {
             let _ = fs::rename(&p, stash.join(name));
         }
     }
-    // Copy the pair into place. Any failure here must roll BOTH files back
-    // from the stash — a db copied without its matching key would leave this
-    // install unable to open its own database on next startup.
-    if fs::copy(&src_db, conf.join("pulse.db")).is_err() {
-        let _ = fs::copy(stash.join("pulse.key"), conf.join("pulse.key"));
-        return Err(format!("Couldn't copy {} into place", src_db.display()));
-    }
-    if let Err(e) = fs::copy(&src_key, conf.join("pulse.key")) {
-        // Roll back: put the original pair back exactly as it was.
-        let _ = fs::remove_file(conf.join("pulse.db"));
-        let _ = fs::copy(stash.join("pulse.key"), conf.join("pulse.key"));
-        if stash.join("pulse.db").is_file() {
-            let _ = fs::rename(stash.join("pulse.db"), conf.join("pulse.db"));
-        }
-        return Err(format!("Couldn't copy pulse.key into place: {e}"));
+    if let Err(e) = swap_in_restored_pair(&conf, &src_db, &src_key, &stash) {
+        return Err(e);
     }
     // Drop stale sidecars from the previous install.
     let _ = fs::remove_file(conf.join("pulse.db-wal"));
@@ -4055,6 +4096,67 @@ mod tests {
             Some("1357".into()),
         )
         .expect("correct PIN allows the reduction");
+    }
+
+    #[test]
+    fn external_restore_swap_rolls_back_both_files_on_failure() {
+        let dir = std::env::temp_dir().join(format!("pulse-swap-test-{}", std::process::id()));
+        let conf = dir.join("conf");
+        fs::create_dir_all(&conf).unwrap();
+
+        // Live install: original db + key.
+        fs::write(conf.join("pulse.db"), b"ORIGINAL-DB").unwrap();
+        fs::write(conf.join("pulse.key"), "original-key").unwrap();
+        let stash = dir.join("stash");
+        fs::create_dir_all(&stash).unwrap();
+        // The command stashes both before calling the swap.
+        fs::rename(conf.join("pulse.db"), stash.join("pulse.db")).unwrap();
+        fs::rename(conf.join("pulse.key"), stash.join("pulse.key")).unwrap();
+
+        // Incoming pair: valid db, but a key path that DOESN'T EXIST — the
+        // key-copy step fails after the db has already been swapped in.
+        let drive = dir.join("drive");
+        fs::create_dir_all(&drive).unwrap();
+        fs::write(drive.join("pulse-1.db"), b"RESTORED-DB").unwrap();
+
+        let result = swap_in_restored_pair(&conf, &drive.join("pulse-1.db"), &drive.join("nope.key"), &stash);
+        assert!(result.is_err(), "missing key must fail the swap");
+
+        // THE regression: the live db must be back — an install must never
+        // be left without its own database file.
+        assert_eq!(
+            fs::read(conf.join("pulse.db")).unwrap(),
+            b"ORIGINAL-DB",
+            "failed restore must roll the ORIGINAL db back into place"
+        );
+        assert_eq!(
+            fs::read_to_string(conf.join("pulse.key")).unwrap(),
+            "original-key",
+            "failed restore must roll the original key back"
+        );
+        // No temp file left behind.
+        assert!(!conf.join("pulse.db.restore-tmp").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn external_restore_swap_succeeds_happily() {
+        let dir = std::env::temp_dir().join(format!("pulse-swap-ok-test-{}", std::process::id()));
+        let conf = dir.join("conf");
+        fs::create_dir_all(&conf).unwrap();
+        let stash = dir.join("stash");
+        fs::create_dir_all(&stash).unwrap();
+        let drive = dir.join("drive");
+        fs::create_dir_all(&drive).unwrap();
+        fs::write(drive.join("pulse-2.db"), b"RESTORED-DB").unwrap();
+        fs::write(drive.join("key"), "new-key").unwrap();
+
+        swap_in_restored_pair(&conf, &drive.join("pulse-2.db"), &drive.join("key"), &stash)
+            .expect("a valid pair must swap in cleanly");
+
+        assert_eq!(fs::read(conf.join("pulse.db")).unwrap(), b"RESTORED-DB");
+        assert_eq!(fs::read_to_string(conf.join("pulse.key")).unwrap(), "new-key");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
