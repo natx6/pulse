@@ -120,15 +120,56 @@ export function TopBar() {
   const today = fmt(new Date());
   const in60 = fmt(new Date(Date.now() + 60 * 864e5));
 
-  const low = products.filter((p) => p.stock_qty <= p.reorder_level);
-  const expiring = products.filter(
+  // "Mark all as read": alerts are DERIVED from live data (stock, expiry,
+  // purchase status), so there is no read-flag column anywhere. Instead we
+  // keep a persisted set of dismissed alert KEYS — each alert gets a stable
+  // identity (product + type + expiry where relevant) so dismissing hides it
+  // but genuinely NEW problems still raise the badge.
+  const [dismissed, setDismissed] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("pulse.alerts.dismissed") ?? "{}");
+    } catch {
+      return {};
+    }
+  });
+  const persistDismissed = (d: Record<string, boolean>) => {
+    setDismissed(d);
+    try {
+      localStorage.setItem("pulse.alerts.dismissed", JSON.stringify(d));
+    } catch {
+      /* storage full/blocked — dismissal just won't survive restart */
+    }
+  };
+
+  const rawLow = products.filter((p) => p.stock_qty <= p.reorder_level);
+  const rawExpiring = products.filter(
     (p) => p.expiry_date && p.expiry_date > today && p.expiry_date <= in60,
   );
   // Inclusive of today, matching lib/stock.ts's stockStatus() and the
   // Reports page's stock-health widgets — a product expiring exactly today
   // must count as expired everywhere, not just on the pages checked first.
-  const expired = products.filter((p) => p.expiry_date && p.expiry_date <= today);
-  const openPurchases = purchases.filter((p) => p.status === "Ordered" || p.status === "Draft");
+  const rawExpired = products.filter((p) => p.expiry_date && p.expiry_date <= today);
+  const rawOpenPurchases = purchases.filter(
+    (p) => p.status === "Ordered" || p.status === "Draft",
+  );
+
+  const lowKey = (id: number | string) => `low:${id}`;
+  const expKey = (id: number | string, d?: string | null) => `exp:${id}:${d}`;
+  const poKey = (id: number | string) => `po:${id}`;
+
+  const low = rawLow.filter((p) => !dismissed[lowKey(p.id)]);
+  const expiring = rawExpiring.filter((p) => !dismissed[expKey(p.id, p.expiry_date)]);
+  const expired = rawExpired.filter((p) => !dismissed[expKey(p.id, p.expiry_date)]);
+  const openPurchases = rawOpenPurchases.filter((p) => !dismissed[poKey(p.id)]);
+
+  const markAllRead = () => {
+    const next: Record<string, boolean> = { ...dismissed };
+    rawLow.forEach((p) => (next[lowKey(p.id)] = true));
+    rawExpiring.forEach((p) => (next[expKey(p.id, p.expiry_date)] = true));
+    rawExpired.forEach((p) => (next[expKey(p.id, p.expiry_date)] = true));
+    rawOpenPurchases.forEach((p) => (next[poKey(p.id)] = true));
+    persistDismissed(next);
+  };
 
   const alertCount = low.length + expiring.length + expired.length + openPurchases.length;
   const tipLabel = alertCount > 0 ? `${alertCount} alert${alertCount === 1 ? "" : "s"} — tap to view` : "No alerts — all good";
@@ -314,8 +355,16 @@ export function TopBar() {
             <>
               <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
               <div className="absolute right-0 top-10 z-50 w-80 overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
-                <div className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-headline-md font-headline-md text-on-surface">
-                  Alerts
+                <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-3 py-2">
+                  <span className="text-headline-md font-headline-md text-on-surface">Alerts</span>
+                  {alertCount > 0 && (
+                    <button
+                      onClick={markAllRead}
+                      className="text-label-md font-label-md text-primary hover:underline"
+                    >
+                      Mark all as read
+                    </button>
+                  )}
                 </div>
                 <div className="max-h-[22rem] overflow-y-auto">
                   <Section
