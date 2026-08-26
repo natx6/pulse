@@ -13,6 +13,7 @@ import { netUnitCost, lineTotal, profitMarginPct, orderTotal, round2 } from "../
 import { fmtMoney } from "../lib/money";
 import { beep } from "../lib/audio";
 import { Tip } from "./Tip";
+import { DateField } from "./DateField";
 
 interface Line {
   key: string;
@@ -428,10 +429,9 @@ export function PurchaseModal({
                 <span className="mb-1 block text-label-md font-label-md text-on-surface">
                   Date
                 </span>
-                <input
-                  type="date"
+                <DateField
                   value={date}
-                  onChange={(e) => setDate(e.target.value)}
+                  onChange={setDate}
                   className={inputCls}
                 />
               </label>
@@ -647,11 +647,10 @@ export function PurchaseModal({
                         </span>
                       </td>
                       <td className="px-1 py-1">
-                        <input
-                          type="date"
+                        <DateField
                           value={l.expiry_date}
-                          onChange={(e) => updLine(l.key, { expiry_date: e.target.value })}
-                          className="h-7 w-full rounded border border-outline-variant bg-surface-container-lowest px-1 text-body-sm text-on-surface focus:border-primary focus:outline-none"
+                          onChange={(v) => updLine(l.key, { expiry_date: v })}
+                          className="h-7"
                         />
                       </td>
                       <td className="px-1 py-1">

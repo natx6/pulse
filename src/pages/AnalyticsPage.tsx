@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
+import { DateField } from "../components/DateField";
 import {
   initDb,
   backupDb,
@@ -795,18 +796,16 @@ export function AnalyticsPage() {
           </select>
           {range === "custom" && (
             <>
-              <input
-                type="date"
+              <DateField
                 value={customFrom}
-                onChange={(e) => setCustomFrom(e.target.value)}
-                className="h-8 rounded border border-outline-variant bg-surface px-2 font-data-mono text-data-mono text-on-surface"
+                onChange={setCustomFrom}
+                className="h-8"
               />
               <span className="text-on-surface-variant">→</span>
-              <input
-                type="date"
+              <DateField
                 value={customTo}
-                onChange={(e) => setCustomTo(e.target.value)}
-                className="h-8 rounded border border-outline-variant bg-surface px-2 font-data-mono text-data-mono text-on-surface"
+                onChange={setCustomTo}
+                className="h-8"
               />
             </>
           )}
@@ -1190,15 +1189,14 @@ export function AnalyticsPage() {
           <div className="mb-3 flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-body-sm font-body-sm text-on-surface-variant">
               Day
-              <input
-                type="date"
+              <DateField
                 value={cashDay}
-                onChange={(e) => {
-                  setCashDay(e.target.value);
+                onChange={(v) => {
+                  setCashDay(v);
                   setCashFloat("");
                   setCashCounted("");
                 }}
-                className="h-8 rounded border border-outline-variant bg-surface-container-lowest px-2 font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
+                className="h-8 w-40"
               />
             </label>
             <span className="text-body-sm text-on-surface-variant">

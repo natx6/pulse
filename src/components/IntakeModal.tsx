@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import { intakeStock } from "../db";
 import { beep } from "../lib/audio";
+import { DateField } from "./DateField";
 
 /** Receive-stock intake: scan barcode, update existing product or create new. */
 export function IntakeModal() {
@@ -314,11 +315,10 @@ export function IntakeModal() {
               <span className="mb-1 block text-label-md font-label-md text-on-surface">
                 Expiration Date
               </span>
-              <input
-                type="date"
+              <DateField
                 value={expiry}
-                onChange={(e) => setExpiry(e.target.value)}
-                className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                onChange={setExpiry}
+                className="h-9 w-full"
               />
             </label>
             <label className="block">

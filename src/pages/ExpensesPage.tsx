@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
 import { fmtMoney } from "../lib/money";
 import { beep } from "../lib/audio";
+import { DateField } from "../components/DateField";
 import {
   addExpense,
   listExpenses,
@@ -100,17 +101,15 @@ export function ExpensesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <input
-            type="date"
+          <DateField
             value={from}
-            onChange={(e) => setFrom(e.target.value)}
+            onChange={setFrom}
             className={`${field} w-36`}
           />
           <span className="text-on-surface-variant">→</span>
-          <input
-            type="date"
+          <DateField
             value={to}
-            onChange={(e) => setTo(e.target.value)}
+            onChange={setTo}
             className={`${field} w-36`}
           />
         </div>

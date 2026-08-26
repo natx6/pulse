@@ -794,8 +794,8 @@ export async function loadCustomerCredit(): Promise<CustomerCredit[]> {
     `SELECT MIN(s.patient_name) AS name,
             SUM(sp.amount) AS owed,
             COALESCE((SELECT SUM(cp.amount) FROM credit_payments cp
-                      WHERE cp.patient_name COLLATE NOCASE = s2.name), 0) AS settled
-     FROM (SELECT DISTINCT patient_name FROM sales
+                      WHERE cp.patient_name COLLATE NOCASE = s.patient_name), 0) AS settled
+     FROM (SELECT DISTINCT patient_name AS name FROM sales
            WHERE patient_name IS NOT NULL AND patient_name != ''
              AND id IN (SELECT sale_id FROM sale_payments WHERE method = 'Credit')) s2
      JOIN sales s ON s.patient_name = s2.name COLLATE NOCASE

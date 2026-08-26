@@ -179,6 +179,22 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
+  // WebKitGTK quirk: the native date-picker calendar on <input type="date">
+  // only closes via Esc or picking a day — an outside click leaves it open.
+  // Blur the focused date input on any click elsewhere; the popup follows
+  // focus. (Popup-internal clicks happen in a separate native surface and
+  // never reach this handler, so picking a date still works.)
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const el = document.activeElement;
+      if (el instanceof HTMLInputElement && el.type === "date" && e.target !== el) {
+        el.blur();
+      }
+    };
+    window.addEventListener("mousedown", onDown, true);
+    return () => window.removeEventListener("mousedown", onDown, true);
+  }, []);
+
   // Optional shift auto-switch: when enabled, keep the operator matching the
   // current time. Re-evaluates immediately when the toggle or the operator
   // list changes, then every 30s. Handles overnight shifts.
