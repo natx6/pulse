@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import { stockStatus } from "../lib/stock";
 import { fmtMoney } from "../lib/money";
@@ -34,6 +34,8 @@ function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reo
 
 export function InventoryPage() {
   const products = useStore((s) => s.products);
+  const highlight = useStore((s) => s.highlight);
+  const setHighlight = useStore((s) => s.setHighlight);
   const setIntakeOpen = useStore((s) => s.setIntakeOpen);
   const refreshProducts = useStore((s) => s.refreshProducts);
   const operator = useStore((s) => s.operator);
@@ -51,6 +53,16 @@ export function InventoryPage() {
   const [archived, setArchived] = useState<Product[]>([]);
   const [archiveArmed, setArchiveArmed] = useState<number | null>(null);
   const [sortKey, setSortKey] = useState<"name" | "batch" | "supplier" | "barcode" | "expiry" | "qty" | "reorder">("name");
+  const flashRef = useRef<HTMLDivElement>(null);
+
+  // When arriving from a notification deep-link, scroll the targeted product
+  // into view and blink it for a moment.
+  useEffect(() => {
+    if (highlight?.kind !== "product") return;
+    flashRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    const clear = window.setTimeout(() => setHighlight(null), 1500);
+    return () => window.clearTimeout(clear);
+  }, [highlight, setHighlight]);
   const [sortAsc, setSortAsc] = useState(true);
   const [editingReorder, setEditingReorder] = useState<number | null>(null);
   const [reorderVal, setReorderVal] = useState("");
@@ -337,9 +349,10 @@ export function InventoryPage() {
             return (
               <Fragment key={p.id}>
               <div
+                ref={highlight?.kind === "product" && highlight.id === p.id ? flashRef : undefined}
                 className={`group flex items-center border-b border-outline-variant px-4 transition-colors hover:bg-surface-container-low ${
                   st === "critical" ? "border-l-[3px] border-l-error bg-error/5" : ""
-                }`}
+                } ${highlight?.kind === "product" && highlight.id === p.id ? "flash-row" : ""}`}
                 style={{ height: 36 }}
               >
                 <div className="flex min-w-0 flex-1 items-center gap-2 pr-4">

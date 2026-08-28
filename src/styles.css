@@ -294,3 +294,22 @@ body {
     margin: 2mm;
   }
 }
+
+/* Attention pulse used to spotlight a specific row after following a
+ * notification deep-link (e.g. a low-stock product in Inventory). Blinks
+ * repeatedly, then the highlight is cleared by the page after a few seconds. */
+@keyframes pulse-flash {
+  0%,
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    background-color: color-mix(in srgb, var(--color-primary) 28%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 70%, transparent);
+  }
+}
+.flash-row {
+  animation: pulse-flash 0.2s ease-in-out infinite;
+  border-radius: 8px;
+}

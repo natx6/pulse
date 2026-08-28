@@ -26,6 +26,15 @@ interface AppState {
    * cashier whenever a manager PIN is configured (App decides at boot). */
   role: Role;
 
+  /** Deep-link target set when following a notification: the destination page
+   * pulses the matching row. `n` is a nonce so re-clicking the same item
+   * re-triggers the animation. */
+  highlight: { kind: "product" | "purchase"; id: number | string; n: number } | null;
+
+  setHighlight(h: AppState["highlight"]): void;
+  /** Spotlight a specific row after jumping to its page from a notification. */
+  flash(kind: "product" | "purchase", id: number | string): void;
+
   setPage(p: PageId): void;
   setRole(r: Role): void;
   setSearch(q: string): void;
@@ -74,8 +83,11 @@ export const useStore = create<AppState>((set, get) => ({
   quickAdd: null,
   intakeOpen: false,
   role: "cashier",
+  highlight: null,
 
   setPage: (page) => set({ page }),
+  setHighlight: (highlight) => set({ highlight }),
+  flash: (kind, id) => set({ highlight: { kind, id, n: Date.now() } }),
   setRole: (role) => set({ role }),
   setSearch: (q) => set({ searchQuery: q }),
 

@@ -17,6 +17,7 @@ interface PatientHit {
 export function TopBar() {
   const newSale = useStore((s) => s.newSale);
   const setPage = useStore((s) => s.setPage);
+  const flash = useStore((s) => s.flash);
   const setSearch = useStore((s) => s.setSearch);
   const pharmacyName = useStore((s) => s.pharmacyName);
   const products = useStore((s) => s.products);
@@ -178,12 +179,10 @@ export function TopBar() {
     title,
     items,
     to,
-    hint,
   }: {
     title: string;
-    items: { name: string; hint: string }[];
+    items: { name: string; hint: string; id: number | string; kind: "product" | "purchase" }[];
     to: "inventory" | "restock";
-    hint: string;
   }) =>
     items.length === 0 ? null : (
       <div className="border-b border-outline-variant/50 px-3 py-2 last:border-0">
@@ -191,23 +190,22 @@ export function TopBar() {
           {title} ({items.length})
         </p>
         {items.slice(0, 4).map((it) => (
-          <p key={it.name} className="flex justify-between gap-3 py-0.5 text-body-sm text-on-surface">
+          <button
+            key={it.id}
+            onClick={() => {
+              flash(it.kind, it.id);
+              setPage(to);
+              setNotifOpen(false);
+            }}
+            className="flex w-full items-center justify-between gap-3 rounded py-0.5 text-left text-body-sm text-on-surface hover:bg-surface-container-low"
+          >
             <span className="truncate">{it.name}</span>
             <span className="shrink-0 text-on-surface-variant">{it.hint}</span>
-          </p>
+          </button>
         ))}
         {items.length > 4 && (
           <p className="text-[11px] text-on-surface-variant">+{items.length - 4} more</p>
         )}
-        <button
-          onClick={() => {
-            setPage(to);
-            setNotifOpen(false);
-          }}
-          className="mt-1 text-label-md font-label-md text-primary hover:underline"
-        >
-          {hint}
-        </button>
       </div>
     );
 
@@ -369,30 +367,28 @@ export function TopBar() {
                 <div className="max-h-[22rem] overflow-y-auto">
                   <Section
                     title="Low stock"
-                    items={low.map((p) => ({ name: p.name, hint: `${p.stock_qty} left` }))}
+                    items={low.map((p) => ({ name: p.name, hint: `${p.stock_qty} left`, id: p.id, kind: "product" as const }))}
                     to="inventory"
-                    hint="Go to Inventory"
                   />
                   <Section
                     title="Expiring soon"
-                    items={expiring.map((p) => ({ name: p.name, hint: p.expiry_date ?? "" }))}
+                    items={expiring.map((p) => ({ name: p.name, hint: p.expiry_date ?? "", id: p.id, kind: "product" as const }))}
                     to="inventory"
-                    hint="Go to Inventory"
                   />
                   <Section
                     title="Expired"
-                    items={expired.map((p) => ({ name: p.name, hint: p.expiry_date ?? "" }))}
+                    items={expired.map((p) => ({ name: p.name, hint: p.expiry_date ?? "", id: p.id, kind: "product" as const }))}
                     to="inventory"
-                    hint="Go to Inventory"
                   />
                   <Section
                     title="Open purchases"
                     items={openPurchases.map((p) => ({
                       name: p.reference_no ?? p.id,
                       hint: p.supplier_name ?? "no supplier",
+                      id: p.id,
+                      kind: "purchase" as const,
                     }))}
                     to="restock"
-                    hint="Go to Requisitions"
                   />
                   {alertCount === 0 && (
                     <p className="px-3 py-6 text-center text-body-sm text-on-surface-variant">

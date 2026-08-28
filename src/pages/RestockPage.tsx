@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import { fmtMoney } from "../lib/money";
 import { beep } from "../lib/audio";
@@ -47,6 +47,8 @@ function StatusPill({ p }: { p: Purchase }) {
  * detail view when the delivery arrives. */
 export function RestockPage() {
   const refreshProducts = useStore((s) => s.refreshProducts);
+  const highlight = useStore((s) => s.highlight);
+  const setHighlight = useStore((s) => s.setHighlight);
 
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [detail, setDetail] = useState<{ p: Purchase; items: PurchaseItem[] } | null>(null);
@@ -60,6 +62,16 @@ export function RestockPage() {
   const [msg, setMsg] = useState("");
   const [warn, setWarn] = useState("");
   const [detailErr, setDetailErr] = useState("");
+  const flashRef = useRef<HTMLButtonElement>(null);
+
+  // When arriving from a notification deep-link, scroll the targeted purchase
+  // into view and blink it for a moment.
+  useEffect(() => {
+    if (highlight?.kind !== "purchase") return;
+    flashRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    const clear = window.setTimeout(() => setHighlight(null), 1500);
+    return () => window.clearTimeout(clear);
+  }, [highlight, setHighlight]);
 
   const load = async () => {
     const rows = await loadPurchases();
@@ -204,8 +216,11 @@ export function RestockPage() {
           {purchases.map((p) => (
             <button
               key={p.id}
+              ref={highlight?.kind === "purchase" && highlight.id === p.id ? flashRef : undefined}
               onClick={() => void openDetail(p)}
-              className="flex w-full items-center border-b border-surface-variant bg-surface px-4 text-body-sm font-body-sm transition-colors hover:bg-surface-container-low"
+              className={`flex w-full items-center border-b border-surface-variant bg-surface px-4 text-body-sm font-body-sm transition-colors hover:bg-surface-container-low ${
+                highlight?.kind === "purchase" && highlight.id === p.id ? "flash-row" : ""
+              }`}
               style={{ height: 36 }}
             >
               <div className="w-44 truncate text-left font-data-mono text-data-mono text-on-surface">
