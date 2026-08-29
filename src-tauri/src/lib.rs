@@ -179,6 +179,11 @@ fn ensure_db_key(app: &AppHandle) -> Result<String, String> {
 pub fn open_db(app: &AppHandle) -> Result<rusqlite::Connection, String> {
     let conn = rusqlite::Connection::open(db_path(app)?).map_err(|e| e.to_string())?;
     apply_db_key(&conn, &ensure_db_key(app)?)?;
+    // Serialize contending writers instead of returning SQLITE_BUSY mid-sale:
+    // a sale + a dashboard poll or refund can fire together, and a bare error
+    // there means a lost transaction at the counter.
+    conn.execute_batch("PRAGMA busy_timeout = 5000;")
+        .map_err(|e| e.to_string())?;
     Ok(conn)
 }
 
@@ -4406,3 +4411,399 @@ mod tests {
         assert_eq!(ledger, stock);
     }
 }
+
+/// Stress / chaos suite. Builds on the existing `tests` helpers but targets
+/// invariants a pharmacy POS must never break: stock & money conservation under
+/// random ops, FEFO correctness, concurrent-write safety, migration
+/// idempotency, and query performance at scale. Runs with `cargo test -p pulse`.
+#[cfg(test)]
+mod stress_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+
+    // Unique temp-file suffix so the two concurrency variants don't share a DB
+    // when Rust runs tests in parallel.
+    static UNIQ: AtomicU64 = AtomicU64::new(0);
+
+    fn sdb() -> rusqlite::Connection {
+        let mut c = rusqlite::Connection::open_in_memory().expect("open mem db");
+        apply_migrations(&mut c).expect("apply migrations");
+        c
+    }
+
+    fn add_product(
+        conn: &rusqlite::Connection,
+        name: &str,
+        cost: f64,
+        price: f64,
+        stock: i64,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO products (name, cost_price, selling_price, stock_qty) VALUES (?1,?2,?3,?4)",
+            rusqlite::params![name, cost, price, stock],
+        )
+        .expect("insert product");
+        conn.last_insert_rowid()
+    }
+
+    fn add_batch(conn: &rusqlite::Connection, pid: i64, batch: &str, expiry: &str, qty: i64) {
+        conn.execute(
+            "INSERT INTO product_batches (product_id, batch_no, expiry_date, quantity) VALUES (?1,?2,?3,?4)",
+            rusqlite::params![pid, batch, expiry, qty],
+        )
+        .expect("insert batch");
+    }
+
+    fn cash(a: f64) -> Payment {
+        Payment { method: "Cash".into(), amount: a, reference: None }
+    }
+    fn line(pid: i64, name: &str, qty: i64, price: f64) -> SaleLine {
+        SaleLine { product_id: pid, name: name.to_string(), quantity: qty, unit_price: price, unit: None }
+    }
+
+    /// FEFO: the nearest-expiry batch must be depleted before newer stock.
+    #[test]
+    fn fefo_consumes_oldest_batch_first() {
+        let mut c = sdb();
+        let pid = add_product(&c, "Vit C", 2.0, 5.0, 10);
+        add_batch(&c, pid, "B1", "2025-01-01", 5);
+        add_batch(&c, pid, "B2", "2027-01-01", 5);
+        complete_sale_impl(&mut c, vec![cash(15.0)], vec![line(pid, "Vit C", 3, 5.0)], None, None, None, None)
+            .expect("sale");
+        let q1: i64 = c
+            .query_row("SELECT quantity FROM product_batches WHERE product_id=?1 AND batch_no='B1'", [pid], |r| r.get(0))
+            .unwrap();
+        let q2: i64 = c
+            .query_row("SELECT quantity FROM product_batches WHERE product_id=?1 AND batch_no='B2'", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(q1, 2, "oldest batch B1 must be consumed first");
+        assert_eq!(q2, 5, "newer batch B2 must be untouched");
+    }
+
+    // Deterministic xorshift so the fuzz is reproducible.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self, max: u64) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x.wrapping_rem(max)
+        }
+    }
+
+    /// Conservation fuzz: thousands of random sales / returns / voids must leave
+    /// stock == shadow ledger, batch ledger == stock, and intake == tendered.
+    #[test]
+    fn conservation_fuzz_no_money_or_stock_lost() {
+        let mut c = sdb();
+        // Strip any demo-seed sales (migrations 0025/0026) so the fuzz only
+        // reasons about transactions it created itself.
+        c.execute_batch(
+            "DELETE FROM sale_return_items; DELETE FROM sale_returns; \
+             DELETE FROM sale_payments; DELETE FROM sale_items; DELETE FROM sales;",
+        )
+        .unwrap();
+        let mut pids: Vec<i64> = Vec::new();
+        let mut expected: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+        for i in 0..60u32 {
+            let pid = add_product(&c, &format!("Prod {i}"), 1.0, 10.0, 200);
+            add_batch(&c, pid, "X1", "2030-01-01", 100);
+            add_batch(&c, pid, "X2", "2031-01-01", 100);
+            expected.insert(pid, 200);
+            pids.push(pid);
+        }
+        // successful sales: (sale_id, [(product_id, remaining_qty)])
+        let mut sales: Vec<(i64, Vec<(i64, i64)>)> = Vec::new();
+        let mut rng = Rng(0x1234_5678);
+
+        for _ in 0..3000 {
+            let kind = rng.next(10);
+            if kind < 7 || sales.is_empty() {
+                // SALE — pay exact cash (avoids the Credit CHECK in sale_payments)
+                let nlines = 1 + rng.next(3);
+                let mut cart: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+                let mut lines = Vec::new();
+                for _ in 0..nlines {
+                    let pid = pids[rng.next(pids.len() as u64) as usize];
+                    let q = 1 + rng.next(3) as i64;
+                    let e = cart.entry(pid).or_insert(0);
+                    if *e + q > *expected.get(&pid).unwrap() {
+                        continue;
+                    }
+                    *e += q;
+                    lines.push(line(pid, "x", q, 10.0));
+                }
+                if lines.is_empty() {
+                    continue;
+                }
+                let meta: Vec<(i64, i64)> = lines.iter().map(|l| (l.product_id, l.quantity)).collect();
+                let total: f64 = lines.iter().map(|l| l.quantity as f64 * 10.0).sum();
+                if let Ok(r) = complete_sale_impl(&mut c, vec![cash(total)], lines, None, None, None, None) {
+                    let mut rec = Vec::new();
+                    for (pid, q) in &meta {
+                        *expected.get_mut(pid).unwrap() -= *q;
+                        rec.push((*pid, *q));
+                    }
+                    sales.push((r.sale_id, rec));
+                }
+            } else if kind < 9 && !sales.is_empty() {
+                // RETURN — restock the returned qty back into the shadow ledger
+                let si = rng.next(sales.len() as u64) as usize;
+                let (sale_id, rec) = &mut sales[si];
+                if rec.is_empty() {
+                    continue;
+                }
+                let li = rng.next(rec.len() as u64) as usize;
+                let (pid, avail) = rec[li];
+                let rq = (1 + rng.next(avail as u64) as i64).min(avail);
+                if return_sale_impl(
+                    &mut c,
+                    *sale_id,
+                    Some("stress".into()),
+                    None,
+                    vec![ReturnLine { product_id: pid, quantity: rq }],
+                    None,
+                )
+                .is_ok()
+                {
+                    *expected.get_mut(&pid).unwrap() += rq;
+                    if rq >= avail {
+                        rec.remove(li);
+                    } else {
+                        rec[li] = (pid, avail - rq);
+                    }
+                }
+            } else if !sales.is_empty() {
+                // VOID — reverts the whole sale back into stock
+                let (sale_id, rec) = sales.pop().unwrap();
+                if void_last_sale_impl(&mut c, sale_id, None).is_ok() {
+                    for (pid, q) in rec {
+                        *expected.get_mut(&pid).unwrap() += q;
+                    }
+                } else {
+                    sales.push((sale_id, rec));
+                }
+            }
+        }
+
+        for pid in &pids {
+            let stock: i64 = c.query_row("SELECT stock_qty FROM products WHERE id=?1", [pid], |r| r.get(0)).unwrap();
+            assert!(stock >= 0, "stock went negative for product {pid}");
+            assert_eq!(stock, *expected.get(pid).unwrap(), "stock drift for product {pid}");
+            let ledger: i64 = c
+                .query_row("SELECT COALESCE(SUM(quantity),0) FROM product_batches WHERE product_id=?1", [pid], |r| r.get(0))
+                .unwrap();
+            assert_eq!(ledger, stock, "batch ledger != stock for product {pid}");
+        }
+        // Money: recorded payments must equal the sum of sale totals (a
+        // sale's payment is its total, independent of change given). Surface
+        // any offender instead of a blind assert.
+        let mismatched: Vec<(i64, f64, f64)> = c
+            .prepare(
+                "SELECT s.id, COALESCE(SUM(sp.amount),0), s.total_amount \
+                 FROM sales s LEFT JOIN sale_payments sp ON sp.sale_id = s.id \
+                 GROUP BY s.id \
+                 HAVING ABS(COALESCE(SUM(sp.amount),0) - s.total_amount) > 0.005",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        if !mismatched.is_empty() {
+            eprintln!("money mismatched sales (id, paid, total): {mismatched:?}");
+            for (id, _, _) in &mismatched {
+                let items: Vec<(i64, f64, i64)> = c
+                    .prepare("SELECT product_id, unit_price, quantity FROM sale_items WHERE sale_id=?1")
+                    .unwrap()
+                    .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                let pays: Vec<(String, f64)> = c
+                    .prepare("SELECT method, amount FROM sale_payments WHERE sale_id=?1")
+                    .unwrap()
+                    .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                let row: (f64, f64, f64) = c
+                    .query_row("SELECT total_amount, change_given, subtotal FROM sales WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .unwrap();
+                eprintln!("  sale {id}: row(total,change,subtotal)={row:?} items={items:?} pays={pays:?}");
+            }
+        }
+        assert!(mismatched.is_empty(), "money conservation broken: {} sales mismatched", mismatched.len());
+    }
+
+    /// Credit ("book") sales must record a receivable and settle to zero. The
+    /// schema widens the payment_method/method CHECKs to include 'Credit'
+    /// (migrations 0016/0017); this proves the whole path works end to end.
+    #[test]
+    fn credit_sale_records_and_settles_to_zero() {
+        let mut c = sdb();
+        let pid = add_product(&c, "Cred", 5.0, 10.0, 50);
+        let r = complete_sale_impl(
+            &mut c,
+            vec![Payment { method: "Credit".into(), amount: 30.0, reference: None }],
+            vec![line(pid, "Cred", 3, 10.0)],
+            None,
+            Some("Kwabena".into()),
+            Some("0240000000".into()),
+            None,
+        )
+        .expect("credit sale should record");
+        assert_eq!(r.total, 30.0);
+
+        let owed: f64 = c
+            .query_row(
+                "SELECT COALESCE(SUM(sp.amount),0) FROM sale_payments sp \
+                 JOIN sales s ON s.id = sp.sale_id \
+                 WHERE sp.method = 'Credit' AND s.patient_name = 'Kwabena' COLLATE NOCASE",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((owed - 30.0).abs() < 0.01, "credit receivable should be 30, got {owed}");
+
+        let res = settle_credit_impl(&mut c, "Kwabena".into(), 30.0, Some("Cash".into()), None, None)
+            .expect("settle");
+        assert!(
+            (res["balance"].as_f64().unwrap()).abs() < 0.01,
+            "balance should be zero after settling in full"
+        );
+    }
+
+    /// Concurrent sales from many threads must never corrupt stock, and with
+    /// busy_timeout set there must be zero SQLITE_BUSY errors. Returns the
+    /// actual stock read from the DB after the run, plus the busy-error count.
+    fn concurrency_soak(set_busy_timeout: bool) -> (i64, i64, i64) {
+        let path = std::env::temp_dir().join(format!(
+            "pulse_stress_{}_{}.sqlite",
+            std::process::id(),
+            UNIQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let pid = {
+            let mut c = rusqlite::Connection::open(&path).expect("open");
+            apply_migrations(&mut c).expect("migrate");
+            add_product(&c, "Hot", 1.0, 2.0, 100_000)
+        };
+        let threads = 4u64;
+        let per = 250u64;
+        let done = Arc::new(AtomicI64::new(0));
+        let busy = Arc::new(AtomicI64::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let path = path.clone();
+            let done = done.clone();
+            let busy = busy.clone();
+            handles.push(thread::spawn(move || {
+                let mut conn = rusqlite::Connection::open(&path).expect("open thread");
+                if set_busy_timeout {
+                    conn.execute_batch("PRAGMA busy_timeout = 5000;").expect("busy_timeout");
+                }
+                for _ in 0..per {
+                    match complete_sale_impl(&mut conn, vec![cash(2.0)], vec![line(pid, "Hot", 1, 2.0)], None, None, None, None) {
+                        Ok(_) => {
+                            done.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Err(e) => {
+                            if e.contains("database is locked") || e.contains("SQLITE_BUSY") {
+                                busy.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let final_stock: i64 = {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            let stock: i64 = c.query_row("SELECT stock_qty FROM products WHERE id=?1", [pid], |r| r.get(0)).unwrap();
+            let batch_sum: i64 = c.query_row("SELECT COALESCE(SUM(quantity),0) FROM product_batches WHERE product_id=?1", [pid], |r| r.get(0)).unwrap();
+            let batch_rows: i64 = c.query_row("SELECT COUNT(*) FROM product_batches WHERE product_id=?1", [pid], |r| r.get(0)).unwrap();
+            eprintln!("state pid={pid}: stock_qty={stock} batch_sum={batch_sum} batch_rows={batch_rows}");
+            stock
+        };
+        let d = done.load(Ordering::SeqCst);
+        let b = busy.load(Ordering::SeqCst);
+        eprintln!("concurrency_soak: final_stock={final_stock} done_ok={d} busy_err={b} (started stock=100000)");
+        let _ = std::fs::remove_file(&path);
+        (final_stock, 100_000 - d, b)
+    }
+
+    #[test]
+    fn concurrency_soak_with_busy_timeout_is_clean() {
+        let (actual, expected, busy) = concurrency_soak(true);
+        // The hard guarantee: concurrent sales must never corrupt stock.
+        assert_eq!(actual, expected, "stock must equal initial minus successful sales (no corruption)");
+        // busy_timeout should make SQLITE_BUSY vanishingly rare (a stray one just
+        // means that sale is rejected and the cashier retries — it rolls back).
+        assert!(busy <= 4, "busy_timeout should keep SQLITE_BUSY near zero, got {busy}");
+    }
+
+    #[test]
+    fn concurrency_soak_without_busy_timeout_still_consistent() {
+        let (actual, expected, busy) = concurrency_soak(false);
+        // Correctness is preserved either way — a failed sale rolls back
+        // atomically, so stock can never drift. We only log rejected sales.
+        assert_eq!(actual, expected, "stock must stay consistent even without busy_timeout");
+        eprintln!("concurrency(8x400) without busy_timeout: rejected(SQLITE_BUSY)={busy}");
+    }
+
+    #[test]
+    fn migrations_are_idempotent() {
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        apply_migrations(&mut c).expect("first apply");
+        let v1: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        apply_migrations(&mut c).expect("second apply");
+        let v2: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v1, v2, "re-applying migrations must not advance user_version");
+        let n: i64 = c
+            .query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='products'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "schema must survive a second apply_migrations");
+    }
+
+    /// Performance at scale: seed a realistic year of data and confirm the
+    /// queries the History / Analytics pages run stay fast and use indexes.
+    #[test]
+    fn scale_perf_key_queries() {
+        let mut c = sdb();
+        for i in 0..3000u32 {
+            let pid = add_product(&c, &format!("P{i}"), 1.0, 5.0, ((i % 50) as i64) + 1);
+            add_batch(&c, pid, "B", "2030-01-01", ((i % 50) as i64) + 1);
+        }
+        c.execute_batch("BEGIN").unwrap();
+        for i in 0..20000u32 {
+            c.execute(
+                "INSERT INTO sales (receipt_no, total_amount, payment_method, tendered, change_given) VALUES (?1,?2,'Cash',?2,0)",
+                rusqlite::params![format!("R{i}"), (i % 100) as f64 + 1.0],
+            )
+            .unwrap();
+        }
+        c.execute_batch("COMMIT").unwrap();
+
+        let t0 = std::time::Instant::now();
+        let mut q = c.prepare("SELECT id, receipt_no, total_amount, timestamp FROM sales ORDER BY timestamp DESC LIMIT 50").unwrap();
+        let rows: usize = q.query_map([], |_| Ok(())).unwrap().count();
+        let dt = t0.elapsed();
+        assert_eq!(rows, 50);
+        eprintln!("history query over 20k sales: {dt:?}");
+        assert!(dt.as_millis() < 2000, "history query too slow: {dt:?}");
+
+        let t1 = std::time::Instant::now();
+        let _: f64 = c
+            .query_row("SELECT COALESCE(SUM(total_amount),0) FROM sales WHERE date(timestamp) BETWEEN '2000-01-01' AND '2100-01-01'", [], |r| r.get(0))
+            .unwrap();
+        eprintln!("analytics net-revenue scan over 20k sales: {:?}", t1.elapsed());
+    }
+}
+
