@@ -784,6 +784,7 @@ export function AnalyticsPage() {
             onClick={() => void doExport()}
             className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-label-md font-label-md text-on-surface transition-colors hover:bg-surface-container-low"
             title="Write every section to a CSV (choose where to save)"
+            data-tour="tour-export"
           >
             <span className="material-symbols-outlined text-[16px]">download</span>
             Export CSV

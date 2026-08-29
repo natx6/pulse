@@ -21,6 +21,10 @@ interface AppState {
   /** True once the first-run setup wizard has been completed (persisted as the
    * "setup_complete" setting). Drives whether the wizard shows on launch. */
   setupComplete: boolean;
+  /** First-run product tour: true once the user has seen (or skipped) it. */
+  tourSeen: boolean;
+  /** Forces the tour open (e.g. from Support) even after tourSeen is true. */
+  tourOpen: boolean;
   heldCart: CartLine[] | null;
   searchQuery: string;
   quickAdd: { barcode: string | null } | null;
@@ -64,7 +68,9 @@ interface AppState {
     momoNumber: string;
     isDark: boolean;
     setupComplete: boolean;
+    tourSeen: boolean;
   }>): void;
+  setTourOpen(v: boolean): void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -83,6 +89,8 @@ export const useStore = create<AppState>((set, get) => ({
   momoNumber: "",
   isDark: false,
   setupComplete: false,
+  tourSeen: false,
+  tourOpen: false,
   heldCart: null,
   searchQuery: "",
   quickAdd: null,
@@ -173,4 +181,5 @@ export const useStore = create<AppState>((set, get) => ({
   setIntakeOpen: (v) => set({ intakeOpen: v }),
 
   applySettings: (s) => set({ ...s }),
+  setTourOpen: (v) => set({ tourOpen: v }),
 }));

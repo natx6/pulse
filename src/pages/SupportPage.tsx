@@ -9,6 +9,7 @@ import { getDeviceId } from "../db";
 export function SupportPage() {
   const pharmacyName = useStore((s) => s.pharmacyName);
   const supportEmail = useStore((s) => s.supportEmail);
+  const setTourOpen = useStore((s) => s.setTourOpen);
 
   const [phName, setPhName] = useState(pharmacyName);
   const [staffName, setStaffName] = useState("");
@@ -61,6 +62,14 @@ export function SupportPage() {
           Describe the problem — your mail app opens with the message ready to send.
         </p>
       </div>
+
+      <button
+        onClick={() => setTourOpen(true)}
+        className="mb-6 flex h-10 w-fit items-center gap-2 rounded border border-primary/40 bg-primary/5 px-4 text-label-md font-label-md text-primary hover:bg-primary/10"
+      >
+        <span className="material-symbols-outlined text-[18px]">travel_explore</span>
+        Take a product tour
+      </button>
 
       <div className="max-w-xl">
         <label className="mb-4 block">

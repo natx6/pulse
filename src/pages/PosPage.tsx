@@ -727,7 +727,7 @@ export function PosPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-3 gap-2" data-tour="tour-pos">
             {([
               { id: "Cash" as PaymentMethod, icon: "payments", label: "Cash", key: "F9" },
               { id: "Card" as PaymentMethod, icon: "credit_card", label: "Card", key: "F10" },

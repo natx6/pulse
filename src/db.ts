@@ -89,6 +89,7 @@ export interface AppSettings {
   managerPinSet: boolean;
   isDark: boolean;
   setupComplete: boolean;
+  tourSeen: boolean;
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -110,6 +111,7 @@ export async function getSettings(): Promise<AppSettings> {
     managerPinSet: Boolean(map.manager_pin?.trim()),
     isDark: map.is_dark === "1",
     setupComplete: map.setup_complete === "1",
+    tourSeen: map.tour_seen === "1",
   };
 }
 

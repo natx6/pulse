@@ -238,7 +238,7 @@ export function InventoryPage() {
     <div className="flex h-full flex-col overflow-auto bg-surface-container-lowest p-margin-page">
       <div className="mb-4 flex items-end justify-between">
         <div>
-          <h2 className="mb-1 text-headline-md font-headline-md text-on-surface">
+          <h2 className="mb-1 text-headline-md font-headline-md text-on-surface" data-tour="tour-stock">
             Inventory Management
           </h2>
           <p className="text-body-sm font-body-sm text-on-surface-variant">

@@ -102,6 +102,7 @@ export function CustomersPage() {
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search by name or phone…"
             className="h-9 w-full rounded border border-outline-variant bg-surface-container-low pl-8 pr-3 text-body-sm placeholder-outline focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            data-tour="tour-customers"
           />
         </div>
       </div>

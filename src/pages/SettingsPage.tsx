@@ -601,6 +601,7 @@ export function SettingsPage() {
                 disabled={driveBusy}
                 title="Copy the database to a flash drive or second disk — insurance against theft or fire"
                 className="rounded border border-primary/40 bg-primary/5 px-2 py-1 text-label-md font-label-md text-primary hover:bg-primary/10 disabled:opacity-50"
+                data-tour="tour-backup"
               >
                 {driveBusy ? "Copying…" : "Save to flash drive…"}
               </button>
