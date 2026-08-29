@@ -14,6 +14,7 @@ import {
   restoreFromDir,
   restartApp,
   purgeDemoData,
+  hasDemoData,
 } from "../db";
 import type { Operator, BackupInfo } from "../db";
 import { beep } from "../lib/audio";
@@ -68,6 +69,12 @@ export function SettingsPage() {
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [purgeMsg, setPurgeMsg] = useState("");
   const [pinTargetPurge, setPinTargetPurge] = useState(false);
+  /** Whether any demo/sample row exists — gates the "Clear sample data"
+   * control so it stays hidden in release builds (empty database). */
+  const [hasDemo, setHasDemo] = useState(false);
+  useEffect(() => {
+    hasDemoData().then(setHasDemo).catch(() => setHasDemo(false));
+  }, []);
 
   const restoreFromDrive = async () => {
     setRestoreMsg("");
@@ -261,6 +268,7 @@ export function SettingsPage() {
     try {
       const r = await purgeDemoData(pin);
       beep(true);
+      setHasDemo(false);
       setPurgeMsg(
         `Cleared ${r.sales} sample sale(s), ${r.purchases} demo purchase(s), ${r.suppliers} supplier, ${r.products} catalog item(s), ${r.patients} sample patient. The database is now clean.`,
       );
@@ -665,7 +673,10 @@ export function SettingsPage() {
           {/* Hand a clean database to a real client: wipe every sample row the
               seed created (demo sales, the "Demo Wholesale" supplier + its
               purchase, the sample catalog, the "Ama Mensah" sample patient).
-              Real imports are untouched. Manager-PIN gated. */}
+              Real imports are untouched. Manager-PIN gated. Only shown when demo
+              data actually exists — i.e. on dev/debug builds; release ships empty
+              so this control is hidden there. */}
+          {hasDemo && (
           <div className="mt-3 rounded border border-error/30 bg-error/5 p-3">
             <p className="text-body-md font-body-md text-on-surface">Starting fresh?</p>
             <p className="mt-1 mb-3 text-body-sm font-body-sm text-on-surface-variant">
@@ -692,6 +703,7 @@ export function SettingsPage() {
               <p className="mt-2 text-body-sm font-body-sm text-on-surface-variant">{purgeMsg}</p>
             )}
           </div>
+          )}
           {backupErr && (
             <p className="mb-2 text-body-sm font-body-sm text-error">{backupErr}</p>
           )}

@@ -632,6 +632,23 @@ export async function purgeDemoData(managerPin: string | null): Promise<DemoPurg
   return await invoke("purge_demo_data", { managerPin });
 }
 
+/** True when any demo/sample row is present. Used to hide the "Clear sample
+ * data" control in release builds, where the demo/seed migrations are skipped
+ * and the database ships empty — the button would otherwise be a dead no-op. */
+export async function hasDemoData(): Promise<boolean> {
+  const d = await initDb();
+  const rows = await d.select<{ n: number }[]>(
+    `SELECT COUNT(*) AS n FROM (
+       SELECT 1 FROM sales WHERE receipt_no LIKE 'DMO-%'
+       UNION ALL SELECT 1 FROM suppliers WHERE name LIKE 'Demo%'
+       UNION ALL SELECT 1 FROM patients WHERE name = 'Ama Mensah' OR phone = '0241234567'
+       UNION ALL SELECT 1 FROM products WHERE barcode LIKE '6220000000%' OR name LIKE 'Demo —%'
+     )`,
+    [],
+  );
+  return (rows[0]?.n ?? 0) > 0;
+}
+
 // ---- Requisitions (orders + supplier invoices) ----
 
 export interface Supplier {
