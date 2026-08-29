@@ -627,7 +627,7 @@ fn complete_sale_impl(
 /// WAL-safe backup: copy the live database with the SQLite online backup API
 /// (a plain file copy would miss uncheckpointed WAL pages and could capture a
 /// torn state). Used by the manual button, every 10th sale, and app exit.
-/// After writing, backups/ is pruned to the newest 20 files (best-effort —
+/// After writing, backups/ is pruned to the newest 5 files (best-effort —
 /// a prune failure must never fail a sale).
 fn write_backup(app: &AppHandle) -> Result<String, String> {
     let src_path = db_path(app)?;
@@ -678,7 +678,7 @@ fn backup_to_path(
     Ok(())
 }
 
-/// Keep only the newest 20 backup files. Names are timestamped, so lexical
+/// Keep only the newest 5 backup files. Names are timestamped, so lexical
 /// sort == chronological. Best-effort: failures are swallowed.
 fn prune_backups(dir: &std::path::Path) {
     let Ok(entries) = fs::read_dir(dir) else { return };
@@ -688,7 +688,7 @@ fn prune_backups(dir: &std::path::Path) {
         .filter(|p| p.extension().map(|x| x == "db").unwrap_or(false))
         .collect();
     files.sort();
-    while files.len() > 20 {
+    while files.len() > 5 {
         let _ = fs::remove_file(&files.remove(0));
     }
 }
@@ -3480,6 +3480,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0028_supplier_opening_balance",
         include_str!("../migrations/0028_supplier_opening_balance.sql"),
     ),
+    (
+        "0029_seed_products",
+        include_str!("../migrations/0029_seed_products.sql"),
+    ),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.
@@ -3525,12 +3529,13 @@ fn apply_migrations(conn: &mut rusqlite::Connection) -> Result<(), String> {
         if v <= ver {
             continue;
         }
-        // Demo/sample data (migrations whose name contains "demo") exists for
-        // development & evaluation only. Never seed it into a production
-        // (release) build, so shipped databases start clean and a client never
-        // inherits fake sales/customers/suppliers. We still record the version
-        // so numbering stays contiguous.
-        if !cfg!(debug_assertions) && name.contains("demo") {
+        // Demo/sample data (migrations whose name contains "demo" or "seed")
+        // exists for development & evaluation only. Never seed it into a
+        // production (release) build, so shipped databases start completely
+        // empty — no sample sales, customers, suppliers, or catalog — and a
+        // client never inherits anything fake. We still record the version so
+        // numbering stays contiguous.
+        if !cfg!(debug_assertions) && (name.contains("demo") || name.contains("seed")) {
             conn.pragma_update(None, "user_version", v)
                 .map_err(|e| e.to_string())?;
             continue;

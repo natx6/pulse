@@ -88,6 +88,7 @@ export interface AppSettings {
   printerPort: number;
   managerPinSet: boolean;
   isDark: boolean;
+  setupComplete: boolean;
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -108,6 +109,7 @@ export async function getSettings(): Promise<AppSettings> {
     printerPort: Number(map.printer_port ?? 9100) || 9100,
     managerPinSet: Boolean(map.manager_pin?.trim()),
     isDark: map.is_dark === "1",
+    setupComplete: map.setup_complete === "1",
   };
 }
 

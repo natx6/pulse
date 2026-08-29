@@ -10,6 +10,7 @@ import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { QuickAddModal } from "./components/QuickAddModal";
 import { IntakeModal } from "./components/IntakeModal";
+import { SetupWizard } from "./components/SetupWizard";
 import { DashboardPage } from "./pages/DashboardPage";
 import { PosPage } from "./pages/PosPage";
 import { InventoryPage } from "./pages/InventoryPage";
@@ -207,6 +208,7 @@ export default function App() {
 
   const autoOperator = useStore((s) => s.autoOperator);
   const operators = useStore((s) => s.operators);
+  const setupComplete = useStore((s) => s.setupComplete);
   useEffect(() => {
     const tick = () => {
       const st = useStore.getState();
@@ -312,6 +314,8 @@ export default function App() {
       <QuickAddModal />
       <IntakeModal />
       <ToastContainer />
+
+      {!setupComplete && <SetupWizard onDone={() => {}} />}
 
       {updating && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-on-background/40 p-4">

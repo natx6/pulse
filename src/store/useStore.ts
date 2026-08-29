@@ -18,6 +18,9 @@ interface AppState {
   supportEmail: string;
   momoNumber: string;
   isDark: boolean;
+  /** True once the first-run setup wizard has been completed (persisted as the
+   * "setup_complete" setting). Drives whether the wizard shows on launch. */
+  setupComplete: boolean;
   heldCart: CartLine[] | null;
   searchQuery: string;
   quickAdd: { barcode: string | null } | null;
@@ -60,6 +63,7 @@ interface AppState {
     supportEmail: string;
     momoNumber: string;
     isDark: boolean;
+    setupComplete: boolean;
   }>): void;
 }
 
@@ -78,6 +82,7 @@ export const useStore = create<AppState>((set, get) => ({
   supportEmail: "",
   momoNumber: "",
   isDark: false,
+  setupComplete: false,
   heldCart: null,
   searchQuery: "",
   quickAdd: null,
