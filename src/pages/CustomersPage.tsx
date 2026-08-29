@@ -48,8 +48,8 @@ export function CustomersPage() {
          FROM patients p
          WHERE p.name LIKE $1 OR p.phone LIKE $1
          GROUP BY p.name
-         ORDER BY CASE WHEN MAX(timestamp) IS NULL THEN 1 ELSE 0 END,
-                  MAX(timestamp) DESC,
+         ORDER BY CASE WHEN last_visit IS NULL THEN 1 ELSE 0 END,
+                  last_visit DESC,
                   p.name`,
         [like],
       );
