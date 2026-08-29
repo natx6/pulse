@@ -1,0 +1,1 @@
+ALTER TABLE patients ADD COLUMN opening_balance REAL NOT NULL DEFAULT 0;

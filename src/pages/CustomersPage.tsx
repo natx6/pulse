@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { initDb } from "../db";
 import { fmtMoney } from "../lib/money";
 import { PatientModal } from "../components/PatientModal";
+import { ImportCustomersModal } from "../components/ImportCustomersModal";
 
 interface CustomerRow {
   id: number;
@@ -20,6 +21,7 @@ export function CustomersPage() {
   const [q, setQ] = useState("");
   const [err, setErr] = useState("");
   const [sel, setSel] = useState<{ name: string; phone: string | null } | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -44,7 +46,7 @@ export function CustomersPage() {
              (SELECT COALESCE(SUM(cp.amount), 0)
               FROM credit_payments cp WHERE cp.patient_name = p.name),
              0
-           ) AS credit_balance
+           ) + COALESCE(MAX(p.opening_balance), 0) AS credit_balance
          FROM patients p
          WHERE p.name LIKE $1 OR p.phone LIKE $1
          GROUP BY p.name
@@ -84,6 +86,13 @@ export function CustomersPage() {
             {count} {count === 1 ? "person" : "people"} &middot; tap a row to view history &amp; edit
           </p>
         </div>
+        <button
+          onClick={() => setImporting(true)}
+          className="flex h-9 items-center gap-2 rounded border border-outline-variant bg-surface-container-low px-3 text-label-md font-label-md text-on-surface hover:bg-surface-container-lowest"
+        >
+          <span className="material-symbols-outlined text-[18px]">upload</span>
+          Import customers
+        </button>
         <div className="relative min-w-[18rem]">
           <span className="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-sm text-outline">
             search
@@ -166,6 +175,15 @@ export function CustomersPage() {
       </div>
 
       {sel && <PatientModal name={sel.name} phone={sel.phone} onClose={() => setSel(null)} />}
+      {importing && (
+        <ImportCustomersModal
+          onClose={() => setImporting(false)}
+          onDone={() => {
+            setImporting(false);
+            void load();
+          }}
+        />
+      )}
     </div>
   );
 }

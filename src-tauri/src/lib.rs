@@ -71,6 +71,20 @@ pub struct StockImportRow {
     is_controlled: Option<i64>,
 }
 
+/// One row of a customers/patients export from the old system. `phone`,
+/// `discount_tier` and `opening_balance` are optional — an export may only
+/// carry names, or only names + what each customer already owes.
+#[derive(Deserialize)]
+pub struct CustomerImportRow {
+    name: String,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    discount_tier: Option<f64>,
+    #[serde(default)]
+    opening_balance: Option<f64>,
+}
+
 #[derive(Serialize)]
 pub struct ParsedSheet {
     headers: Vec<String>,
@@ -1616,7 +1630,9 @@ fn settle_credit_impl(
     check_manager_pin(&tx, manager_pin)?;
     let owed: f64 = tx
         .query_row(
-            "SELECT COALESCE(SUM(sp.amount),0) FROM sale_payments sp
+            "SELECT COALESCE(SUM(sp.amount),0)
+               + COALESCE((SELECT MAX(opening_balance) FROM patients WHERE name = ?1 COLLATE NOCASE), 0)
+             FROM sale_payments sp
              JOIN sales s ON s.id = sp.sale_id
              WHERE sp.method = 'Credit' AND s.patient_name = ?1 COLLATE NOCASE",
             [&name],
@@ -2442,6 +2458,91 @@ fn commit_stock_import(
     })
 }
 
+/// Commit mapped customer rows in ONE transaction. Matching rule: by name
+/// (case-insensitive) — customers have no barcode, so name is the key, exactly
+/// like the rest of the credit ledger. A match updates phone / discount tier
+/// when provided and RAISES the opening balance to the larger of the two (an
+/// import should never *reduce* what's already owed). No match creates a new
+/// patient. Rows with no name are skipped and reported.
+#[tauri::command]
+fn commit_customer_import(
+    app: AppHandle,
+    records: Vec<CustomerImportRow>,
+) -> Result<ImportSummary, String> {
+    if records.is_empty() {
+        return Err("No rows to import".into());
+    }
+    if records.len() > 5000 {
+        return Err("Too many rows — max 5000 per import".into());
+    }
+    let mut conn = open_db(&app)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let mut created = 0usize;
+    let mut updated = 0usize;
+    let mut skipped = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
+    for (i, r) in records.iter().enumerate() {
+        let row_no = i + 1;
+        let name = r.name.trim().to_string();
+        if name.is_empty() {
+            skipped += 1;
+            if errors.len() < 20 {
+                errors.push(format!("Row {}: missing customer name", row_no));
+            }
+            continue;
+        }
+        let phone = r.phone.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let discount = r.discount_tier.filter(|d| *d > 0.0);
+        // An opening balance can't be negative — clamp, don't import a debt we owe.
+        let opening = r.opening_balance.unwrap_or(0.0);
+        let opening = if opening < 0.0 { 0.0 } else { opening };
+
+        let existing: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM patients WHERE lower(name) = lower(?1) ORDER BY id LIMIT 1",
+                [&name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        match existing {
+            Some(id) => {
+                tx.execute(
+                    "UPDATE patients
+                     SET phone = CASE WHEN (?2 IS NOT NULL AND (phone IS NULL OR phone = '')) THEN ?2 ELSE phone END,
+                         discount_tier = CASE WHEN ?3 IS NOT NULL THEN ?3 ELSE discount_tier END,
+                         opening_balance = MAX(COALESCE(opening_balance, 0), ?4)
+                     WHERE id = ?1",
+                    rusqlite::params![id, phone, discount, opening],
+                )
+                .map_err(|e| e.to_string())?;
+                updated += 1;
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO patients (name, phone, discount_tier, opening_balance, created_at)
+                     VALUES (?1, ?2, COALESCE(?3, 0), ?4, datetime('now', 'localtime'))",
+                    rusqlite::params![name, phone, discount, opening],
+                )
+                .map_err(|e| e.to_string())?;
+                created += 1;
+            }
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ImportSummary {
+        created,
+        updated,
+        skipped,
+        errors,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // ESC/POS thermal receipt printing (network, raw TCP port 9100)
 // ---------------------------------------------------------------------------
@@ -3193,6 +3294,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0026_demo_alerts",
         include_str!("../migrations/0026_demo_alerts.sql"),
     ),
+    (
+        "0027_patient_opening_balance",
+        include_str!("../migrations/0027_patient_opening_balance.sql"),
+    ),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.
@@ -3310,6 +3415,7 @@ pub fn run() {
             restart_app,
             parse_stock_file,
             commit_stock_import,
+            commit_customer_import,
             save_purchase,
             receive_purchase,
             update_purchase,

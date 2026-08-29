@@ -559,6 +559,14 @@ export interface ImportSummary {
   errors: string[];
 }
 
+/** One mapped row of a customers export. */
+export interface CustomerImportRow {
+  name: string;
+  phone?: string | null;
+  discount_tier?: number | null;
+  opening_balance?: number | null;
+}
+
 /** Parse an .xlsx/.xls/.ods/.csv export into headers + raw string rows. */
 export async function parseStockFile(path: string): Promise<ParsedSheet> {
   return await invoke("parse_stock_file", { path });
@@ -570,6 +578,19 @@ export async function commitStockImport(
   records: StockImportRow[],
 ): Promise<ImportSummary> {
   return await invoke("commit_stock_import", { records });
+}
+
+/** Parse a customers export — same file reader as stock. */
+export async function parseCustomerFile(path: string): Promise<ParsedSheet> {
+  return await invoke("parse_stock_file", { path });
+}
+
+/** Commit mapped customers in one transaction. Name match → update phone /
+ * discount / opening balance (take the larger owed); no match → create. */
+export async function commitCustomerImport(
+  records: CustomerImportRow[],
+): Promise<ImportSummary> {
+  return await invoke("commit_customer_import", { records });
 }
 
 // ---- Requisitions (orders + supplier invoices) ----
@@ -790,18 +811,39 @@ export async function loadCustomerCredit(): Promise<CustomerCredit[]> {
   const d = await initDb();
   // Group on a NOCASE-normalized key so "john" and "John" are one debtor;
   // settlements already matched by NOCASE, so the grouping must too.
+  // `owed` includes both credit sale-payments AND a patient's opening_balance
+  // (carry-over debt imported from an old system); a customer who owes purely
+  // from an opening balance and has no credit sales still shows up here.
   const rows = await d.select<{ name: string; owed: number; settled: number }[]>(
-    `SELECT MIN(s.patient_name) AS name,
-            SUM(sp.amount) AS owed,
-            COALESCE((SELECT SUM(cp.amount) FROM credit_payments cp
-                      WHERE cp.patient_name COLLATE NOCASE = s.patient_name), 0) AS settled
-     FROM (SELECT DISTINCT patient_name AS name FROM sales
-           WHERE patient_name IS NOT NULL AND patient_name != ''
-             AND id IN (SELECT sale_id FROM sale_payments WHERE method = 'Credit')) s2
-     JOIN sales s ON s.patient_name = s2.name COLLATE NOCASE
-     JOIN sale_payments sp ON sp.sale_id = s.id AND sp.method = 'Credit'
-     GROUP BY s2.name
-     ORDER BY name`,
+    `WITH credit_sales AS (
+        SELECT s.patient_name AS name, SUM(sp.amount) AS owed
+        FROM sales s JOIN sale_payments sp ON sp.sale_id = s.id AND sp.method = 'Credit'
+        WHERE s.patient_name IS NOT NULL AND s.patient_name != ''
+        GROUP BY s.patient_name COLLATE NOCASE
+     ),
+     settled AS (
+        SELECT patient_name AS name, SUM(amount) AS settled
+        FROM credit_payments GROUP BY patient_name COLLATE NOCASE
+     ),
+     openings AS (
+        SELECT name, MAX(opening_balance) AS opening
+        FROM patients WHERE opening_balance > 0.005
+        GROUP BY name COLLATE NOCASE
+     ),
+     names AS (
+        SELECT name FROM credit_sales
+        UNION SELECT name FROM settled
+        UNION SELECT name FROM openings
+     )
+     SELECT n.name AS name,
+            COALESCE(cs.owed, 0) + COALESCE(o.opening, 0) AS owed,
+            COALESCE(se.settled, 0) AS settled
+     FROM names n
+     LEFT JOIN credit_sales cs ON cs.name = n.name COLLATE NOCASE
+     LEFT JOIN settled se ON se.name = n.name COLLATE NOCASE
+     LEFT JOIN openings o ON o.name = n.name COLLATE NOCASE
+     WHERE (COALESCE(cs.owed, 0) + COALESCE(o.opening, 0) - COALESCE(se.settled, 0)) > 0.005
+     ORDER BY n.name`,
   );
   return rows
     .map((r) => ({ name: r.name, owed: Number(r.owed), settled: Number(r.settled) }))
