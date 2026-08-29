@@ -165,7 +165,7 @@ export function RestockPage() {
     <div className="flex h-full flex-col overflow-auto bg-surface-container-lowest p-margin-page">
       <div className="mb-4 flex items-end justify-between">
         <div>
-          <h2 className="mb-1 text-headline-lg font-headline-lg text-on-surface">Requisitions</h2>
+          <h2 className="mb-1 text-headline-lg font-headline-lg text-on-surface" data-tour="tour-restock">Requisitions</h2>
           <p className="text-body-sm font-body-sm text-on-surface-variant">
             What we've ordered from suppliers. Save as Received to add goods to
             stock in one transaction — or save an order, print it, and receive

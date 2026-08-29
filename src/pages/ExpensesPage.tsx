@@ -95,7 +95,7 @@ export function ExpensesPage() {
     <div className="flex h-full flex-col overflow-auto bg-surface-container-lowest p-margin-page">
       <div className="mb-4 flex items-end justify-between">
         <div>
-          <h2 className="mb-1 text-headline-lg font-headline-lg text-on-surface">Expenses</h2>
+          <h2 className="mb-1 text-headline-lg font-headline-lg text-on-surface" data-tour="tour-expenses">Expenses</h2>
           <p className="text-body-sm font-body-sm text-on-surface-variant">
             Track petty cash, rent, utilities, and other running costs.
           </p>

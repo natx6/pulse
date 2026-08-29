@@ -29,6 +29,12 @@ const STEPS: Step[] = [
     body: "Every product and its batches live here, with reorder levels and expiry dates. Add new stock from the counter's “+” (Quick add), or import a supplier sheet.",
   },
   {
+    page: "restock",
+    target: "tour-restock",
+    title: "Requisitions",
+    body: "When stock runs low, raise a requisition (purchase order) to a supplier here. Print or share it, then receive the invoice — received goods are added to stock and the cost is tracked for margin.",
+  },
+  {
     page: "customers",
     target: "tour-customers",
     title: "Customers & credit",
@@ -39,6 +45,12 @@ const STEPS: Step[] = [
     target: "tour-export",
     title: "Reports & tax",
     body: "See sales, VAT, discounts and the controlled-drug register. Export everything to CSV for your accountant or the auditor.",
+  },
+  {
+    page: "expenses",
+    target: "tour-expenses",
+    title: "Expenses",
+    body: "Log shop costs — rent, utilities, courier — so Daily Cash-up and your reports balance. Cash expenses count against the till; card or bank ones are tracked but don't affect the float.",
   },
   {
     page: "settings",
