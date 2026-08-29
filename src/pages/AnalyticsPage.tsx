@@ -12,12 +12,9 @@ import {
   saveCashUp as dbSaveCashUp,
   listCashUps,
   loadControlledRegister,
-  loadCustomerCredit,
-  settleCredit,
 } from "../db";
 import type {
   CashUp,
-  CustomerCredit,
   ControlledSummaryRow,
   ControlledTxn,
 } from "../db";
@@ -25,7 +22,6 @@ import { useStore } from "../store/useStore";
 import type { PaymentLine, PaymentMethod } from "../types";
 import { fmtMoney } from "../lib/money";
 import { beep } from "../lib/audio";
-import { round2 } from "../lib/price";
 import { ReceiptModal } from "../components/ReceiptModal";
 import { ReturnModal } from "../components/ReturnModal";
 import { PinPromptModal } from "../components/PinPromptModal";
@@ -371,26 +367,12 @@ export function AnalyticsPage() {
       setCashBusy(false);
     }
   };
-  // ---- Controlled-drug register + customer credit ledger ----
+  // ---- Controlled-drug register ----
   const [controlled, setControlled] = useState<{
     summary: ControlledSummaryRow[];
     txns: ControlledTxn[];
   } | null>(null);
-  const [credit, setCredit] = useState<CustomerCredit[]>([]);
-  const [settling, setSettling] = useState<string | null>(null);
-  const [settleAmt, setSettleAmt] = useState("");
-  const [settleMethod, setSettleMethod] = useState("Cash");
-  const [settleBusy, setSettleBusy] = useState(false);
-  const [settleErr, setSettleErr] = useState("");
-  /** Manager PIN — required for settlements when one is configured. */
-  const [settlePinRequired, setSettlePinRequired] = useState(false);
-  const [settlePin, setSettlePin] = useState("");
 
-  useEffect(() => {
-    void isManagerPinSet().then(setSettlePinRequired).catch(() => setSettlePinRequired(false));
-  }, []);
-
-  const SETTLE_METHODS = ["Cash", "Mobile Money", "Bank Transfer", "Cheque"];
   const kindCls = (k: ControlledTxn["kind"]) =>
     k === "Dispensed"
       ? "bg-error/10 text-error"
@@ -399,35 +381,6 @@ export function AnalyticsPage() {
         : k === "Returned"
           ? "bg-surface-variant text-on-surface-variant"
           : "bg-warn-muted text-warn";
-
-  const doSettle = async (c: CustomerCredit) => {
-    const a = Number(settleAmt);
-    if (!Number.isFinite(a) || a <= 0) {
-      setSettleErr("Enter a positive amount.");
-      beep(false);
-      return;
-    }
-    if (settlePinRequired && settlePin.trim().length < 4) {
-      setSettleErr("Manager PIN required to settle a credit balance.");
-      beep(false);
-      return;
-    }
-    setSettleBusy(true);
-    setSettleErr("");
-    try {
-      await settleCredit(c.name, a, settleMethod, operator || null, settlePin.trim() || null);
-      beep(true);
-      setCredit(await loadCustomerCredit());
-      setSettling(null);
-      setSettleAmt("");
-      setSettlePin("");
-    } catch (e) {
-      setSettleErr(String(e).replace(/^Error: /, ""));
-      beep(false);
-    } finally {
-      setSettleBusy(false);
-    }
-  };
 
   const [reprint, setReprint] = useState<{
     result: { receipt_no: string; sale_id: number; total: number; change: number };
@@ -502,12 +455,6 @@ export function AnalyticsPage() {
     } catch (e) {
       setErr(String(e));
     }
-    // Customer credit loads on its own fast path — it must never be delayed
-    // (or hidden) by the slower report/register queries, so the card below
-    // the KPIs always populates immediately.
-    loadCustomerCredit()
-      .then((cr) => setCredit(cr))
-      .catch((e) => setErr(String(e)));
     supplierBalances()
       .then((sb) => setSuppliers(sb))
       .catch(() => setSuppliers([]));
@@ -647,16 +594,6 @@ export function AnalyticsPage() {
         String(c.dispensed),
         String(c.returned),
         String(c.adjusted),
-      ]),
-    );
-    rows.push([]);
-    rows.push(["Customer Credit (book)", "Owed (GH₵)", "Settled (GH₵)", "Balance (GH₵)"]);
-    credit.forEach((c) =>
-      rows.push([
-        c.name,
-        c.owed.toFixed(2),
-        c.settled.toFixed(2),
-        (c.owed - c.settled).toFixed(2),
       ]),
     );
     try {
@@ -894,99 +831,6 @@ export function AnalyticsPage() {
             </p>
           </div>
         ))}
-      </div>
-
-      <div className="mb-4 overflow-clip rounded border border-warn/60 bg-surface">
-        <h3 className="flex items-center justify-between border-b border-outline-variant bg-warn-subtle px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
-          <span>Customer Credit (book) — what customers owe</span>
-          {credit.length > 0 && (
-            <span className="rounded-full bg-warn-deep px-2 py-0.5 text-[10px] font-bold text-white">
-              {credit.length} customer{credit.length === 1 ? "" : "s"} ·{" "}
-              {fmtMoney(credit.reduce((s, c) => s + c.owed - c.settled, 0))}
-            </span>
-          )}
-        </h3>
-        {credit.length > 0 ? (
-          <div className="divide-y divide-outline-variant/50">
-            {credit.map((c) => (
-              <div key={c.name} className="flex items-center justify-between gap-3 px-3 py-1.5">
-                <div className="min-w-0">
-                  <p className="truncate text-body-sm font-semibold text-on-surface">{c.name}</p>
-                  <p className="font-data-mono text-[11px] text-on-surface-variant">
-                    owes {fmtMoney(c.owed - c.settled)}
-                    {c.settled > 0 ? ` · settled ${fmtMoney(c.settled)}` : ""}
-                  </p>
-                </div>
-                {settling === c.name ? (
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      min={0}
-                      step="any"
-                      value={settleAmt}
-                      onChange={(e) => setSettleAmt(e.target.value)}
-                      placeholder="0.00"
-                      className="h-7 w-20 rounded border border-outline-variant bg-surface-container-lowest px-1 text-right font-data-mono text-data-mono focus:border-primary focus:outline-none"
-                    />
-                    <select
-                      value={settleMethod}
-                      onChange={(e) => setSettleMethod(e.target.value)}
-                      className="h-7 rounded border border-outline-variant bg-surface-container-lowest px-1 text-body-sm focus:border-primary focus:outline-none"
-                    >
-                      {SETTLE_METHODS.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                    {settlePinRequired && (
-                      <input
-                        type="password"
-                        inputMode="numeric"
-                        value={settlePin}
-                        onChange={(e) => setSettlePin(e.target.value.replace(/\D/g, "").slice(0, 8))}
-                        placeholder="PIN"
-                        aria-label="Manager PIN"
-                        title="Manager PIN — settlements are protected"
-                        className="h-7 w-16 rounded border border-outline-variant bg-surface-container-lowest px-1 text-center font-data-mono text-data-mono tracking-[0.2em] focus:border-primary focus:outline-none"
-                      />
-                    )}
-                    <button
-                      onClick={() => void doSettle(c)}
-                      disabled={settleBusy}
-                      className="rounded bg-primary px-2 py-1 text-label-md font-label-md text-on-primary hover:bg-on-primary-fixed-variant disabled:opacity-50"
-                    >
-                      {settleBusy ? "…" : "Record"}
-                    </button>
-                    <button
-                      onClick={() => setSettling(null)}
-                      className="rounded border border-outline px-2 py-1 text-label-md font-label-md text-on-surface hover:bg-surface-variant"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => {
-                      setSettling(c.name);
-                      setSettleAmt(String(round2(c.owed - c.settled)));
-                      setSettleErr("");
-                    }}
-                    className="flex items-center gap-1 rounded border border-primary/40 bg-primary/5 px-2 py-1 text-label-md font-label-md text-primary hover:bg-primary/10"
-                  >
-                    <span className="material-symbols-outlined text-[14px]">payments</span>
-                    Settle
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="px-3 py-2 text-body-sm text-on-surface-variant">
-            No outstanding balances — everyone has settled.
-          </p>
-        )}
-        {settleErr && <p className="px-3 py-2 text-body-sm text-error">{settleErr}</p>}
       </div>
 
       {suppliers.length > 0 && (

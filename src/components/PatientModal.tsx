@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { initDb, updatePatientDiscount, getPatientDiscount } from "../db";
+import {
+  initDb,
+  updatePatientDiscount,
+  getPatientDiscount,
+  loadCustomerCredit,
+  settleCredit,
+  isManagerPinSet,
+} from "../db";
 import { fmtMoney } from "../lib/money";
 import { ReceiptModal } from "./ReceiptModal";
 import { beep } from "../lib/audio";
@@ -35,9 +42,21 @@ export function PatientModal({ name, phone, onClose }: Props) {
     /** Discount snapshot (migration 0024) so reprints explain subtotal > total. */
     discountPct?: number;
     discountAmt?: number;
-    method: string;
-    payments?: PaymentLine[];
-  } | null>(null);
+      method: string;
+      payments?: PaymentLine[];
+    } | null>(null);
+
+  // Outstanding credit balance for THIS patient + the settle flow (moved here
+  // from Reports so customer credit lives only on the Customers tab).
+  const [balance, setBalance] = useState<number | null>(null);
+  const [showSettle, setShowSettle] = useState(false);
+  const [settleAmt, setSettleAmt] = useState("");
+  const [settleMethod, setSettleMethod] = useState("Cash");
+  const [settleBusy, setSettleBusy] = useState(false);
+  const [settleErr, setSettleErr] = useState("");
+  const [settlePinRequired, setSettlePinRequired] = useState(false);
+  const [settlePin, setSettlePin] = useState("");
+  const SETTLE_METHODS = ["Cash", "Mobile Money", "Bank Transfer", "Cheque"];
 
   useEffect(() => {
     void (async () => {
@@ -57,6 +76,10 @@ export function PatientModal({ name, phone, onClose }: Props) {
         setLastVisit(sum?.last ?? null);
         const disc = await getPatientDiscount(name);
         setDiscountInput(disc > 0 ? String(disc) : "");
+        const cr = await loadCustomerCredit();
+        const mine = cr.find((c) => c.name.toLowerCase() === name.toLowerCase());
+        setBalance(mine ? Number(mine.owed) - Number(mine.settled) : 0);
+        setSettlePinRequired(await isManagerPinSet());
       } catch (e) {
         setErr(String(e).replace(/^Error: /, ""));
       }
@@ -141,6 +164,41 @@ export function PatientModal({ name, phone, onClose }: Props) {
     }
   };
 
+  const refreshBalance = async () => {
+    const cr = await loadCustomerCredit();
+    const mine = cr.find((c) => c.name.toLowerCase() === name.toLowerCase());
+    setBalance(mine ? Number(mine.owed) - Number(mine.settled) : 0);
+  };
+
+  const doSettle = async () => {
+    const a = Number(settleAmt);
+    if (!Number.isFinite(a) || a <= 0) {
+      setSettleErr("Enter a positive amount.");
+      beep(false);
+      return;
+    }
+    if (settlePinRequired && settlePin.trim().length < 4) {
+      setSettleErr("Manager PIN required to settle a credit balance.");
+      beep(false);
+      return;
+    }
+    setSettleBusy(true);
+    setSettleErr("");
+    try {
+      await settleCredit(name, a, settleMethod, null, settlePin.trim() || null);
+      beep(true);
+      await refreshBalance();
+      setShowSettle(false);
+      setSettleAmt("");
+      setSettlePin("");
+    } catch (e) {
+      setSettleErr(String(e).replace(/^Error: /, ""));
+      beep(false);
+    } finally {
+      setSettleBusy(false);
+    }
+  };
+
   return (
     <div
       data-modal-open className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
@@ -213,6 +271,103 @@ export function PatientModal({ name, phone, onClose }: Props) {
             </div>
           </div>
         </div>
+
+        {/* Customer credit — what THIS patient owes (lives on the Customers tab) */}
+        {balance !== null &&
+          (balance > 0 ? (
+            <div className="mx-6 mb-3 rounded-lg border border-warn/50 bg-warn/5 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
+                    Outstanding credit
+                  </p>
+                  <p className="font-data-mono text-data-mono text-headline-sm font-bold text-warn">
+                    {fmtMoney(balance)}
+                  </p>
+                </div>
+                {!showSettle && (
+                  <button
+                    onClick={() => {
+                      setShowSettle(true);
+                      setSettleAmt(
+                        String(Math.round((balance + Number.EPSILON) * 100) / 100),
+                      );
+                      setSettleErr("");
+                    }}
+                    className="flex items-center gap-1 rounded bg-primary px-4 py-2 text-label-md font-label-md text-on-primary hover:bg-on-primary-fixed-variant"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">payments</span>
+                    Settle
+                  </button>
+                )}
+              </div>
+              {showSettle && (
+                <div className="mt-3 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={settleAmt}
+                      onChange={(e) => setSettleAmt(e.target.value)}
+                      placeholder="0.00"
+                      className="h-8 w-24 rounded border border-outline-variant bg-surface-container-lowest px-2 text-right font-data-mono text-data-mono focus:border-primary focus:outline-none"
+                    />
+                    <select
+                      value={settleMethod}
+                      onChange={(e) => setSettleMethod(e.target.value)}
+                      className="h-8 rounded border border-outline-variant bg-surface-container-lowest px-2 text-body-sm focus:border-primary focus:outline-none"
+                    >
+                      {SETTLE_METHODS.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                    {settlePinRequired && (
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        value={settlePin}
+                        onChange={(e) =>
+                          setSettlePin(e.target.value.replace(/\D/g, "").slice(0, 8))
+                        }
+                        placeholder="PIN"
+                        aria-label="Manager PIN"
+                        title="Manager PIN — settlements are protected"
+                        className="h-8 w-20 rounded border border-outline-variant bg-surface-container-lowest px-2 text-center font-data-mono text-data-mono tracking-[0.2em] focus:border-primary focus:outline-none"
+                      />
+                    )}
+                  </div>
+                  {settleErr && <p className="text-body-sm text-error">{settleErr}</p>}
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => {
+                        setShowSettle(false);
+                        setSettleAmt("");
+                        setSettleErr("");
+                        setSettlePin("");
+                      }}
+                      className="rounded border border-outline px-3 py-1.5 text-label-md font-label-md text-on-surface hover:bg-surface-variant"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => void doSettle()}
+                      disabled={settleBusy}
+                      className="rounded bg-primary px-3 py-1.5 text-label-md font-label-md text-on-primary hover:bg-on-primary-fixed-variant disabled:opacity-50"
+                    >
+                      {settleBusy ? "…" : "Record"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="mx-6 mb-3 rounded-lg border border-outline-variant/50 bg-surface-container-low p-3 text-center text-body-sm text-on-surface-variant">
+              No outstanding credit balance.
+            </div>
+          ))}
 
         <div className="flex-1 overflow-y-auto p-4">
           {err && <p className="mb-2 text-body-sm text-error">{err}</p>}
