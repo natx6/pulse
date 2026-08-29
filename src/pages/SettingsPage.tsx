@@ -13,6 +13,7 @@ import {
   restoreBackup,
   restoreFromDir,
   restartApp,
+  purgeDemoData,
 } from "../db";
 import type { Operator, BackupInfo } from "../db";
 import { beep } from "../lib/audio";
@@ -62,6 +63,11 @@ export function SettingsPage() {
   const [pinTargetBackup, setPinTargetBackup] = useState<string | null>(null);
   /** Flash-drive restore awaiting its manager-PIN confirmation. */
   const [pinDriveRestore, setPinDriveRestore] = useState<string | null>(null);
+  /** Clear-sample-data two-tap confirm + manager-PIN gate. */
+  const [purgeArm, setPurgeArm] = useState(false);
+  const [purgeBusy, setPurgeBusy] = useState(false);
+  const [purgeMsg, setPurgeMsg] = useState("");
+  const [pinTargetPurge, setPinTargetPurge] = useState(false);
 
   const restoreFromDrive = async () => {
     setRestoreMsg("");
@@ -227,6 +233,43 @@ export function SettingsPage() {
       // Rethrow so PinPromptModal.onSubmit can render the failure — a helper
       // that swallows errors makes the modal report success on a wrong PIN.
       throw e;
+    }
+  };
+
+  /** Two-step confirm for clearing sample data, then a manager-PIN prompt. */
+  const armPurge = async () => {
+    if (!purgeArm) {
+      setPurgeArm(true);
+      window.setTimeout(() => setPurgeArm((a) => (a ? false : a)), 4000);
+      return;
+    }
+    setPurgeArm(false);
+    try {
+      if (await isManagerPinSet()) {
+        setPinTargetPurge(true);
+        return;
+      }
+    } catch {
+      /* fall through — the Rust gate still protects the command */
+    }
+    await runPurge(null);
+  };
+
+  const runPurge = async (pin: string | null) => {
+    setPurgeBusy(true);
+    setPurgeMsg("");
+    try {
+      const r = await purgeDemoData(pin);
+      beep(true);
+      setPurgeMsg(
+        `Cleared ${r.sales} sample sale(s), ${r.purchases} demo purchase(s), ${r.suppliers} supplier, ${r.products} catalog item(s), ${r.patients} sample patient. The database is now clean.`,
+      );
+    } catch (e) {
+      setPurgeMsg(String(e).replace(/^Error: /, ""));
+      beep(false);
+      throw e;
+    } finally {
+      setPurgeBusy(false);
     }
   };
 
@@ -618,6 +661,36 @@ export function SettingsPage() {
               </p>
             )}
           </div>
+          {/* Hand a clean database to a real client: wipe every sample row the
+              seed created (demo sales, the "Demo Wholesale" supplier + its
+              purchase, the sample catalog, the "Ama Mensah" sample patient).
+              Real imports are untouched. Manager-PIN gated. */}
+          <div className="mt-3 rounded border border-error/30 bg-error/5 p-3">
+            <p className="text-body-md font-body-md text-on-surface">Starting fresh?</p>
+            <p className="mt-1 mb-3 text-body-sm font-body-sm text-on-surface-variant">
+              Remove all sample/demo data so the database is clean for a real
+              pharmacy. Your own imported products, customers and suppliers are
+              left exactly as they are. Manager PIN required.
+            </p>
+            <button
+              onClick={() => void armPurge()}
+              disabled={purgeBusy}
+              className={`h-9 rounded px-4 text-label-md font-label-md shadow-sm transition-colors disabled:opacity-50 ${
+                purgeArm
+                  ? "bg-error text-on-error hover:bg-error/90"
+                  : "border border-outline-variant bg-surface text-on-surface hover:bg-surface-variant"
+              }`}
+            >
+              {purgeBusy
+                ? "Clearing…"
+                : purgeArm
+                  ? "Tap again to confirm"
+                  : "Clear sample data"}
+            </button>
+            {purgeMsg && (
+              <p className="mt-2 text-body-sm font-body-sm text-on-surface-variant">{purgeMsg}</p>
+            )}
+          </div>
           {backupErr && (
             <p className="mb-2 text-body-sm font-body-sm text-error">{backupErr}</p>
           )}
@@ -803,6 +876,23 @@ export function SettingsPage() {
             }
           }}
           onClose={() => setPinDriveRestore(null)}
+        />
+      )}
+
+      {pinTargetPurge && (
+        <PinPromptModal
+          title="Clear sample data"
+          detail="This permanently removes all demo/sample rows (sample sales, the demo supplier, the sample catalog, the sample patient). Your real data is untouched. Enter the manager PIN to continue."
+          onSubmit={async (pin) => {
+            try {
+              await runPurge(pin);
+              setPinTargetPurge(false);
+              return null;
+            } catch (e) {
+              return String(e).replace(/^Error: /, "");
+            }
+          }}
+          onClose={() => setPinTargetPurge(false)}
         />
       )}
     </div>

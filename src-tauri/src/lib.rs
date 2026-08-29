@@ -85,6 +85,19 @@ pub struct CustomerImportRow {
     opening_balance: Option<f64>,
 }
 
+/// One row of a suppliers export. `phone`, `location` and `opening_balance`
+/// (what the pharmacy already owes the supplier at switch-on) are optional.
+#[derive(Deserialize)]
+pub struct SupplierImportRow {
+    name: String,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    location: Option<String>,
+    #[serde(default)]
+    opening_balance: Option<f64>,
+}
+
 #[derive(Serialize)]
 pub struct ParsedSheet {
     headers: Vec<String>,
@@ -2543,6 +2556,171 @@ fn commit_customer_import(
     })
 }
 
+/// Commit mapped supplier rows in ONE transaction. Matching rule: by name
+/// (case-insensitive, and `suppliers.name` is UNIQUE). A match refreshes phone /
+/// location / opening balance (take the larger owed); no match creates a new
+/// supplier. `opening_balance` is what the pharmacy already owes the supplier at
+/// switch-on, so it flows straight into the Accounts-Payable report.
+#[tauri::command]
+fn commit_supplier_import(
+    app: AppHandle,
+    records: Vec<SupplierImportRow>,
+) -> Result<ImportSummary, String> {
+    if records.is_empty() {
+        return Err("No rows to import".into());
+    }
+    if records.len() > 5000 {
+        return Err("Too many rows — max 5000 per import".into());
+    }
+    let mut conn = open_db(&app)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let mut created = 0usize;
+    let mut updated = 0usize;
+    let mut skipped = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
+    for (i, r) in records.iter().enumerate() {
+        let row_no = i + 1;
+        let name = r.name.trim().to_string();
+        if name.is_empty() {
+            skipped += 1;
+            if errors.len() < 20 {
+                errors.push(format!("Row {}: missing supplier name", row_no));
+            }
+            continue;
+        }
+        let phone = r.phone.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let location = r.location.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let opening = r.opening_balance.unwrap_or(0.0);
+        let opening = if opening < 0.0 { 0.0 } else { opening };
+
+        let existing: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM suppliers WHERE lower(name) = lower(?1) ORDER BY id LIMIT 1",
+                [&name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        match existing {
+            Some(id) => {
+                tx.execute(
+                    "UPDATE suppliers
+                     SET phone = CASE WHEN (?2 IS NOT NULL AND (phone IS NULL OR phone = '')) THEN ?2 ELSE phone END,
+                         location = CASE WHEN (?3 IS NOT NULL AND (location IS NULL OR location = '')) THEN ?3 ELSE location END,
+                         opening_balance = MAX(COALESCE(opening_balance, 0), ?4)
+                     WHERE id = ?1",
+                    rusqlite::params![id, phone, location, opening],
+                )
+                .map_err(|e| e.to_string())?;
+                updated += 1;
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO suppliers (name, phone, location, opening_balance, created_at)
+                     VALUES (?1, ?2, ?3, ?4, datetime('now', 'localtime'))",
+                    rusqlite::params![name, phone, location, opening],
+                )
+                .map_err(|e| e.to_string())?;
+                created += 1;
+            }
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ImportSummary {
+        created,
+        updated,
+        skipped,
+        errors,
+    })
+}
+
+/// Remove all sample/demo data in one transaction so a database can be handed
+/// to a real client clean. Targets only the clearly-fake rows the seed created:
+///   - sales with a DMO- receipt prefix (and their items + payments)
+///   - the "Demo Wholesale Ltd" supplier, its demo purchase + lines
+///   - products whose barcode is the demo range (6220000000…) or name starts
+///     "Demo —" (the starter/sample catalog — safe to drop; real imports use
+///     different barcodes)
+///   - the "Ama Mensah" / 0241234567 sample patient, only if it has no sales
+/// Everything else (real imported products, customers, suppliers) is untouched.
+/// Manager-PIN gated because it is destructive.
+#[derive(Serialize)]
+pub struct DemoPurgeSummary {
+    sales: usize,
+    purchases: usize,
+    suppliers: usize,
+    products: usize,
+    patients: usize,
+}
+
+#[tauri::command]
+fn purge_demo_data(
+    app: AppHandle,
+    manager_pin: Option<String>,
+) -> Result<DemoPurgeSummary, String> {
+    let mut conn = open_db(&app)?;
+    check_manager_pin(&conn, manager_pin)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "DELETE FROM sale_payments WHERE sale_id IN (SELECT id FROM sales WHERE receipt_no LIKE 'DMO-%')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE receipt_no LIKE 'DMO-%')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    let sales = tx
+        .execute("DELETE FROM sales WHERE receipt_no LIKE 'DMO-%'", [])
+        .map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "DELETE FROM purchase_items WHERE purchase_id IN (SELECT id FROM purchases WHERE id LIKE 'PUR-DEMO-%' OR supplier_name = 'Demo Wholesale Ltd')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    let purchases = tx
+        .execute(
+            "DELETE FROM purchases WHERE id LIKE 'PUR-DEMO-%' OR supplier_name = 'Demo Wholesale Ltd'",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    let suppliers = tx
+        .execute("DELETE FROM suppliers WHERE name = 'Demo Wholesale Ltd'", [])
+        .map_err(|e| e.to_string())?;
+    let products = tx
+        .execute(
+            "DELETE FROM products WHERE barcode LIKE '6220000000%' OR name LIKE 'Demo —%'",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    let patients = tx
+        .execute(
+            "DELETE FROM patients WHERE name = 'Ama Mensah' AND phone = '0241234567'
+             AND NOT EXISTS (SELECT 1 FROM sales WHERE patient_name = 'Ama Mensah')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(DemoPurgeSummary {
+        sales,
+        purchases,
+        suppliers,
+        products,
+        patients,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // ESC/POS thermal receipt printing (network, raw TCP port 9100)
 // ---------------------------------------------------------------------------
@@ -3298,6 +3476,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0027_patient_opening_balance",
         include_str!("../migrations/0027_patient_opening_balance.sql"),
     ),
+    (
+        "0028_supplier_opening_balance",
+        include_str!("../migrations/0028_supplier_opening_balance.sql"),
+    ),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.
@@ -3341,6 +3523,16 @@ fn apply_migrations(conn: &mut rusqlite::Connection) -> Result<(), String> {
     for (i, (name, sql)) in MIGRATIONS.iter().enumerate() {
         let v = (i + 1) as i64;
         if v <= ver {
+            continue;
+        }
+        // Demo/sample data (migrations whose name contains "demo") exists for
+        // development & evaluation only. Never seed it into a production
+        // (release) build, so shipped databases start clean and a client never
+        // inherits fake sales/customers/suppliers. We still record the version
+        // so numbering stays contiguous.
+        if !cfg!(debug_assertions) && name.contains("demo") {
+            conn.pragma_update(None, "user_version", v)
+                .map_err(|e| e.to_string())?;
             continue;
         }
         let tx = conn
@@ -3416,6 +3608,8 @@ pub fn run() {
             parse_stock_file,
             commit_stock_import,
             commit_customer_import,
+            commit_supplier_import,
+            purge_demo_data,
             save_purchase,
             receive_purchase,
             update_purchase,

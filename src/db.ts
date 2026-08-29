@@ -593,6 +593,41 @@ export async function commitCustomerImport(
   return await invoke("commit_customer_import", { records });
 }
 
+/** One mapped row of a suppliers export. */
+export interface SupplierImportRow {
+  name: string;
+  phone?: string | null;
+  location?: string | null;
+  opening_balance?: number | null;
+}
+
+/** Parse a suppliers export — same file reader as stock. */
+export async function parseSupplierFile(path: string): Promise<ParsedSheet> {
+  return await invoke("parse_stock_file", { path });
+}
+
+/** Commit mapped suppliers in one transaction. Name match → update phone /
+ * location / opening balance (take the larger owed); no match → create. */
+export async function commitSupplierImport(
+  records: SupplierImportRow[],
+): Promise<ImportSummary> {
+  return await invoke("commit_supplier_import", { records });
+}
+
+export interface DemoPurgeSummary {
+  sales: number;
+  purchases: number;
+  suppliers: number;
+  products: number;
+  patients: number;
+}
+
+/** Wipe all sample/demo rows (manager-PIN protected) so a database can be
+ * handed to a real client clean. */
+export async function purgeDemoData(managerPin: string | null): Promise<DemoPurgeSummary> {
+  return await invoke("purge_demo_data", { managerPin });
+}
+
 // ---- Requisitions (orders + supplier invoices) ----
 
 export interface Supplier {
@@ -1022,18 +1057,36 @@ export async function supplierBalances(): Promise<SupplierBalance[]> {
   return d.select<SupplierBalance[]>(
     `WITH pay AS (
        SELECT purchase_id, SUM(amount) AS paid FROM purchase_payments GROUP BY purchase_id
+     ),
+     purch AS (
+       SELECT p.supplier_name,
+              COALESCE(SUM(p.total_amount), 0) AS total_purchased,
+              COALESCE(SUM(py.paid), 0) AS total_paid,
+              COUNT(*) AS invoice_count,
+              MIN(p.purchase_date) AS oldest_date
+       FROM purchases p
+       LEFT JOIN pay py ON py.purchase_id = p.id
+       WHERE p.supplier_name IS NOT NULL AND p.supplier_name != '' AND p.cancelled = 0
+       GROUP BY p.supplier_name
+     ),
+     open AS (
+       SELECT name AS supplier_name, MAX(opening_balance) AS opening
+       FROM suppliers WHERE opening_balance > 0.005 GROUP BY name COLLATE NOCASE
+     ),
+     names AS (
+       SELECT supplier_name FROM purch
+       UNION SELECT supplier_name FROM open
      )
-     SELECT
-       p.supplier_name,
-       COALESCE(SUM(p.total_amount), 0) AS total_purchased,
-       COALESCE(SUM(py.paid), 0) AS total_paid,
-       COALESCE(SUM(p.total_amount), 0) - COALESCE(SUM(py.paid), 0) AS balance,
-       COUNT(*) AS invoice_count,
-       MIN(p.purchase_date) AS oldest_date
-     FROM purchases p
-     LEFT JOIN pay py ON py.purchase_id = p.id
-     WHERE p.supplier_name IS NOT NULL AND p.supplier_name != '' AND p.cancelled = 0
-     GROUP BY p.supplier_name
+     SELECT n.supplier_name AS supplier_name,
+            COALESCE(pr.total_purchased, 0) AS total_purchased,
+            COALESCE(pr.total_paid, 0) AS total_paid,
+            COALESCE(pr.total_purchased, 0) - COALESCE(pr.total_paid, 0) + COALESCE(o.opening, 0) AS balance,
+            COALESCE(pr.invoice_count, 0) AS invoice_count,
+            COALESCE(pr.oldest_date, NULL) AS oldest_date
+     FROM names n
+     LEFT JOIN purch pr ON pr.supplier_name = n.supplier_name COLLATE NOCASE
+     LEFT JOIN open o ON o.supplier_name = n.supplier_name COLLATE NOCASE
+     WHERE (COALESCE(pr.total_purchased, 0) - COALESCE(pr.total_paid, 0) + COALESCE(o.opening, 0)) > 0.005
      ORDER BY balance DESC`,
   );
 }

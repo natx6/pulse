@@ -29,6 +29,7 @@ import { round2 } from "../lib/price";
 import { ReceiptModal } from "../components/ReceiptModal";
 import { ReturnModal } from "../components/ReturnModal";
 import { PinPromptModal } from "../components/PinPromptModal";
+import { ImportSuppliersModal } from "../components/ImportSuppliersModal";
 import { supplierBalances, expenseSummary, type SupplierBalance } from "../db";
 
 type Range = "today" | "yesterday" | "week7" | "month30" | "month" | "custom";
@@ -271,6 +272,7 @@ export function AnalyticsPage() {
   const [pinVoidTarget, setPinVoidTarget] = useState<{ id: number; receiptNo: string } | null>(null);
   const [notice, setNotice] = useState("");
   const [suppliers, setSuppliers] = useState<SupplierBalance[]>([]);
+  const [importingSuppliers, setImportingSuppliers] = useState(false);
   const [expenses, setExpenses] = useState<{ total: number; byCategory: { category: string; total: number }[] } | null>(null);
 
   // ---- Daily cash-up ----
@@ -989,9 +991,16 @@ export function AnalyticsPage() {
 
       {suppliers.length > 0 && (
         <div className="mb-4 overflow-clip rounded border border-outline-variant bg-surface">
-          <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
-            Supplier Balances
-          </h3>
+          <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-3 py-2">
+            <h3 className="text-label-md font-label-md font-bold text-on-surface">Supplier Balances</h3>
+            <button
+              onClick={() => setImportingSuppliers(true)}
+              className="flex items-center gap-1 rounded border border-outline-variant bg-surface-container-lowest px-2 py-1 text-label-md font-label-md text-on-surface hover:bg-surface-container-low"
+            >
+              <span className="material-symbols-outlined text-[16px]">upload</span>
+              Import
+            </button>
+          </div>
           <div className="divide-y divide-outline-variant/50">
             {suppliers.map((s) => (
               <div key={s.supplier_name} className="flex items-center justify-between px-3 py-1.5">
@@ -1013,6 +1022,18 @@ export function AnalyticsPage() {
             ))}
           </div>
         </div>
+      )}
+
+      {importingSuppliers && (
+        <ImportSuppliersModal
+          onClose={() => setImportingSuppliers(false)}
+          onDone={() => {
+            setImportingSuppliers(false);
+            void supplierBalances()
+              .then((sb) => setSuppliers(sb))
+              .catch(() => setSuppliers([]));
+          }}
+        />
       )}
 
       <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
