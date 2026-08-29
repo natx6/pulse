@@ -253,6 +253,20 @@ export function TopBar() {
           <>
             <div className="fixed inset-0 z-40" onClick={() => setSearchText("")} />
             <div className="absolute left-0 right-0 top-10 z-50 overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
+              <button
+                onClick={() => {
+                  setSearchText("");
+                  setMatches({ products: [], patients: [] });
+                  setHighlight(-1);
+                  setPage("customers");
+                  setNotifOpen(false);
+                }}
+                className="flex w-full items-center gap-2 border-b border-outline-variant/50 px-3 py-2 text-left text-body-sm text-on-surface hover:bg-surface-container-low"
+              >
+                <span className="material-symbols-outlined text-[18px] text-primary">groups</span>
+                <span className="min-w-0 truncate">Manage customers</span>
+                <span className="ml-auto shrink-0 text-[11px] text-on-surface-variant">Go to Customers</span>
+              </button>
               {matches.products.length > 0 && (
                 <div className="border-b border-outline-variant/50 px-3 py-1 text-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
                   Products

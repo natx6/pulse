@@ -16,6 +16,7 @@ import { InventoryPage } from "./pages/InventoryPage";
 import { RestockPage } from "./pages/RestockPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { HistoryPage } from "./pages/HistoryPage";
+import { CustomersPage } from "./pages/CustomersPage";
 import { SupportPage } from "./pages/SupportPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ExpensesPage } from "./pages/ExpensesPage";
@@ -291,6 +292,7 @@ export default function App() {
           {page === "restock" && <RestockPage />}
           {page === "analytics" && <AnalyticsPage />}
           {page === "history" && <HistoryPage />}
+          {page === "customers" && <CustomersPage />}
           {page === "support" && <SupportPage />}
           {page === "expenses" && <ExpensesPage />}
           {/* Route guard: even if something navigates here programmatically,

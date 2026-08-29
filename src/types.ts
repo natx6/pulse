@@ -54,7 +54,7 @@ export interface PaymentLine {
 
 export type PaymentMethod = "Cash" | "Card" | "MoMo" | "Credit";
 
-export type PageId = "dashboard" | "pos" | "inventory" | "restock" | "analytics" | "support" | "settings" | "expenses" | "history";
+export type PageId = "dashboard" | "pos" | "inventory" | "restock" | "analytics" | "support" | "settings" | "expenses" | "history" | "customers";
 
 /** Staff role. Cashiers run the counter; Settings (and everything behind it)
  * needs Manager mode, unlocked with the manager PIN. */

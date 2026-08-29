@@ -10,6 +10,7 @@ const NAV: { id: PageId; icon: string; label: string }[] = [
   { id: "dashboard", icon: "space_dashboard", label: "Dashboard" },
   { id: "pos", icon: "point_of_sale", label: "POS" },
   { id: "history", icon: "history", label: "History" },
+  { id: "customers", icon: "groups", label: "Customers" },
   { id: "inventory", icon: "inventory_2", label: "Inventory" },
   { id: "restock", icon: "shopping_cart", label: "Requisitions" },
   { id: "analytics", icon: "bar_chart", label: "Reports" },
