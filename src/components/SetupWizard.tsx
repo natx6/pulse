@@ -212,33 +212,39 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
 
           {step === 4 && (
             <div>
-              <p className="mb-3 text-body-sm text-on-surface-variant">
-                Bring over your existing data from the old system — or start empty and add products
-                as you go. Each importer matches columns automatically.
-              </p>
-              <div className="flex flex-col gap-2">
-                <button
-                  onClick={() => setImportKind("stock")}
-                  className="flex items-center gap-2 rounded border border-outline-variant bg-surface-container-low px-3 py-2 text-left text-body-sm text-on-surface hover:bg-surface-container-lowest"
-                >
-                  <span className="material-symbols-outlined text-[18px] text-primary">inventory_2</span>
-                  Import products &amp; stock
-                </button>
-                <button
-                  onClick={() => setImportKind("customers")}
-                  className="flex items-center gap-2 rounded border border-outline-variant bg-surface-container-low px-3 py-2 text-left text-body-sm text-on-surface hover:bg-surface-container-lowest"
-                >
-                  <span className="material-symbols-outlined text-[18px] text-primary">groups</span>
-                  Import customers &amp; opening balances
-                </button>
-                <button
-                  onClick={() => setImportKind("suppliers")}
-                  className="flex items-center gap-2 rounded border border-outline-variant bg-surface-container-low px-3 py-2 text-left text-body-sm text-on-surface hover:bg-surface-container-lowest"
-                >
-                  <span className="material-symbols-outlined text-[18px] text-primary">local_shipping</span>
-                  Import suppliers &amp; what you owe
-                </button>
-              </div>
+               <p className="mb-3 text-body-sm text-on-surface-variant">
+                 Bring over your existing data from the old system — or start empty and add products
+                 as you go. Each importer matches columns automatically.
+               </p>
+               <div className="flex flex-col gap-2">
+                 <button
+                   onClick={() => setImportKind("stock")}
+                   className="flex items-center gap-2 rounded border border-outline-variant bg-surface-container-low px-3 py-2 text-left text-body-sm text-on-surface hover:bg-surface-container-lowest"
+                 >
+                   <span className="material-symbols-outlined text-[18px] text-primary">inventory_2</span>
+                   Import products &amp; stock
+                 </button>
+                 <button
+                   onClick={() => setImportKind("customers")}
+                   className="flex items-center gap-2 rounded border border-outline-variant bg-surface-container-low px-3 py-2 text-left text-body-sm text-on-surface hover:bg-surface-container-lowest"
+                 >
+                   <span className="material-symbols-outlined text-[18px] text-primary">groups</span>
+                   Import customers &amp; opening balances
+                 </button>
+                 <button
+                   onClick={() => setImportKind("suppliers")}
+                   className="flex items-center gap-2 rounded border border-outline-variant bg-surface-container-low px-3 py-2 text-left text-body-sm text-on-surface hover:bg-surface-container-lowest"
+                 >
+                   <span className="material-symbols-outlined text-[18px] text-primary">local_shipping</span>
+                   Import suppliers &amp; what you owe
+                 </button>
+                 <button
+                   onClick={() => setStep(5)}
+                   className="self-start rounded px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:text-primary"
+                 >
+                   Skip for now — start with an empty catalog
+                 </button>
+               </div>
             </div>
           )}
 
