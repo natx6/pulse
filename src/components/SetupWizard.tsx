@@ -63,12 +63,17 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
     }
   };
 
-  const canNext =
-    step === 0 ||
-    step === 1 ||
-    step === 2 ||
-    step === 3 ||
-    step === 4;
+  const canNext = (() => {
+    if (step === 0) return true;
+    if (step === 1) return name.trim().length > 0;
+    if (step === 2) {
+      if (!pin.trim() && !pinConfirm.trim()) return false;
+      return pin.trim().length >= 4 && pin === pinConfirm;
+    }
+    if (step === 3) return host.trim().length > 0;
+    if (step === 4) return true;
+    return false;
+  })();
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-on-background/40 p-4 backdrop-blur-[2px]">
@@ -96,6 +101,12 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                 PIN to protect voids and refunds, and an optional import of your existing products,
                 customers and suppliers. You can change anything later in Settings.
               </p>
+              <button
+                onClick={() => setStep(5)}
+                className="mt-4 rounded px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:text-primary"
+              >
+                Skip for now — start with an empty catalog
+              </button>
             </div>
           )}
 
@@ -139,6 +150,12 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                   className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-sm text-on-surface focus:border-primary focus:outline-none"
                 />
               </label>
+              <button
+                onClick={() => setStep(5)}
+                className="self-start rounded px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:text-primary"
+              >
+                Skip for now
+              </button>
             </div>
           )}
 
@@ -179,6 +196,12 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
               {pin.trim() && pinConfirm.trim() && pin !== pinConfirm && (
                 <p className="mt-2 text-body-sm text-error">PINs don't match.</p>
               )}
+              <button
+                onClick={() => setStep(5)}
+                className="mt-3 rounded px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:text-primary"
+              >
+                Skip for now
+              </button>
             </div>
           )}
 
@@ -207,6 +230,12 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                   />
                 </label>
               </div>
+              <button
+                onClick={() => setStep(5)}
+                className="mt-3 rounded px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:text-primary"
+              >
+                Skip for now
+              </button>
             </div>
           )}
 
