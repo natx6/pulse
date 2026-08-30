@@ -102,7 +102,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                 customers and suppliers. You can change anything later in Settings.
               </p>
               <button
-                onClick={() => setStep(5)}
+                onClick={() => setStep((s) => s + 1)}
                 className="mt-4 rounded px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:text-primary"
               >
                 Skip for now — start with an empty catalog
@@ -151,7 +151,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                 />
               </label>
               <button
-                onClick={() => setStep(5)}
+                onClick={() => setStep((s) => s + 1)}
                 className="self-start rounded px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:text-primary"
               >
                 Skip for now
@@ -197,7 +197,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                 <p className="mt-2 text-body-sm text-error">PINs don't match.</p>
               )}
               <button
-                onClick={() => setStep(5)}
+                onClick={() => setStep((s) => s + 1)}
                 className="mt-3 rounded px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:text-primary"
               >
                 Skip for now
@@ -231,7 +231,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                 </label>
               </div>
               <button
-                onClick={() => setStep(5)}
+                onClick={() => setStep((s) => s + 1)}
                 className="mt-3 rounded px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:text-primary"
               >
                 Skip for now
@@ -268,7 +268,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                    Import suppliers &amp; what you owe
                  </button>
                  <button
-                   onClick={() => setStep(5)}
+                   onClick={() => setStep((s) => s + 1)}
                    className="self-start rounded px-2 py-1 text-label-md font-label-md text-on-surface-variant hover:text-primary"
                  >
                    Skip for now — start with an empty catalog
