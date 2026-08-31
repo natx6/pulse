@@ -543,7 +543,7 @@ export function PurchaseModal({
                 <thead>
                   <tr className="bg-surface-container-low text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">
                     <th className="px-2 py-1.5">Product</th>
-                    <th className="w-24 px-1 py-1.5">Unit</th>
+                    <th className="w-24 px-1 py-1.5">Sell as</th>
                     <th className="w-16 px-1 py-1.5 text-right">Qty</th>
                     <th className="w-20 px-1 py-1.5 text-right">Unit cost</th>
                     <th className="w-14 px-1 py-1.5 text-right">Disc %</th>
