@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
-import { quickAddProduct } from "../db";
+import { quickAddProduct, searchFdaDrugs, type FdaDrug } from "../db";
 import { beep } from "../lib/audio";
 
 /** Quick-add: unknown scanned barcode, or manual cart item (no barcode). */
@@ -14,6 +14,26 @@ export function QuickAddModal() {
   const [price, setPrice] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [fdaResults, setFdaResults] = useState<FdaDrug[]>([]);
+  const [showFda, setShowFda] = useState(false);
+
+  useEffect(() => {
+    const q = name.trim();
+    if (q.length < 2) {
+      setFdaResults([]);
+      setShowFda(false);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      searchFdaDrugs(q, 8)
+        .then((r) => {
+          setFdaResults(r);
+          setShowFda(r.length > 0);
+        })
+        .catch(() => setFdaResults([]));
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [name]);
 
   if (!quickAdd) return null;
 
@@ -93,13 +113,41 @@ export function QuickAddModal() {
             <span className="mb-1 block text-label-md font-label-md text-on-surface">
               Name
             </span>
-            <input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Paracetamol 500mg"
-              className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            />
+            <div className="relative">
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onFocus={() => fdaResults.length > 0 && setShowFda(true)}
+                onBlur={() => window.setTimeout(() => setShowFda(false), 150)}
+                placeholder="e.g. Paracetamol 500mg"
+                className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              {showFda && fdaResults.length > 0 && (
+                <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-56 overflow-auto rounded border border-outline-variant bg-surface shadow-lg">
+                  <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
+                    FDA Ghana — {fdaResults.length} match{fdaResults.length === 1 ? "" : "es"}
+                  </p>
+                  {fdaResults.map((d) => (
+                    <button
+                      key={d.id}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setName(d.product_name);
+                        setShowFda(false);
+                      }}
+                      className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-surface-container-low"
+                    >
+                      <span className="text-body-sm font-semibold text-on-surface">{d.product_name}</span>
+                      <span className="text-[11px] text-on-surface-variant">
+                        {[d.generic_name, d.strength, d.dosage_form].filter(Boolean).join(" · ") || d.product_category || ""}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </label>
           <label className="block">
             <span className="mb-1 block text-label-md font-label-md text-on-surface">

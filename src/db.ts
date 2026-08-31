@@ -651,6 +651,36 @@ export async function hasDemoData(): Promise<boolean> {
   return (rows[0]?.n ?? 0) > 0;
 }
 
+export interface FdaDrug {
+  id: string;
+  product_id: string | null;
+  product_name: string;
+  generic_name: string | null;
+  strength: string | null;
+  active_ingredient: string | null;
+  dosage_form: string | null;
+  product_category: string | null;
+  product_sub_category: string | null;
+  registration_number: string | null;
+  manufacturer: string | null;
+  client_name: string | null;
+  registration_date: string | null;
+  expiry_date: string | null;
+  status: string | null;
+}
+
+export async function searchFdaDrugs(query: string, limit = 20): Promise<FdaDrug[]> {
+  return await invoke("search_fda_drugs", { query, limit });
+}
+
+export async function importFdaCatalog(drugs: FdaDrug[]): Promise<number> {
+  return await invoke("import_fda_catalog", { drugs });
+}
+
+export async function refreshFdaCatalog(): Promise<number> {
+  return await invoke("refresh_fda_catalog");
+}
+
 // ---- Requisitions (orders + supplier invoices) ----
 
 export interface Supplier {

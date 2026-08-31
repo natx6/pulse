@@ -2723,6 +2723,269 @@ fn purge_demo_data(
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// FDA Ghana catalog (autocomplete for drug entry)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FdaDrug {
+    pub id: String,
+    pub product_id: Option<String>,
+    pub product_name: String,
+    pub generic_name: Option<String>,
+    pub strength: Option<String>,
+    pub active_ingredient: Option<String>,
+    pub dosage_form: Option<String>,
+    pub product_category: Option<String>,
+    pub product_sub_category: Option<String>,
+    pub registration_number: Option<String>,
+    pub manufacturer: Option<String>,
+    pub client_name: Option<String>,
+    pub registration_date: Option<String>,
+    pub expiry_date: Option<String>,
+    pub status: Option<String>,
+}
+
+#[tauri::command]
+fn search_fda_drugs(app: AppHandle, query: String, limit: Option<i64>) -> Result<Vec<FdaDrug>, String> {
+    let q = query.trim();
+    if q.len() < 2 {
+        return Ok(vec![]);
+    }
+    let lim = limit.unwrap_or(20).clamp(1, 50) as i64;
+    // Build FTS prefix query: each term gets a trailing *.
+    let fts_q = q
+        .split_whitespace()
+        .map(|t| format!("{}*", t.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let conn = open_db(&app)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, product_id, product_name, generic_name, strength, active_ingredient, dosage_form,
+                    product_category, product_sub_category, registration_number, manufacturer, client_name,
+                    registration_date, expiry_date, status
+             FROM fda_drugs
+             WHERE rowid IN (SELECT rowid FROM fda_drugs_fts WHERE fda_drugs_fts MATCH ? ORDER BY rank)
+             LIMIT ?",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![fts_q, lim], |r| {
+            Ok(FdaDrug {
+                id: r.get(0)?,
+                product_id: r.get(1)?,
+                product_name: r.get(2)?,
+                generic_name: r.get(3)?,
+                strength: r.get(4)?,
+                active_ingredient: r.get(5)?,
+                dosage_form: r.get(6)?,
+                product_category: r.get(7)?,
+                product_sub_category: r.get(8)?,
+                registration_number: r.get(9)?,
+                manufacturer: r.get(10)?,
+                client_name: r.get(11)?,
+                registration_date: r.get(12)?,
+                expiry_date: r.get(13)?,
+                status: r.get(14)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    // Fallback: if FTS finds nothing, try LIKE (handles short/abbreviated terms).
+    if out.is_empty() {
+        let like_q = format!("%{}%", q);
+        let mut stmt2 = conn
+            .prepare(
+                "SELECT id, product_id, product_name, generic_name, strength, active_ingredient, dosage_form,
+                        product_category, product_sub_category, registration_number, manufacturer, client_name,
+                        registration_date, expiry_date, status
+                 FROM fda_drugs WHERE product_name LIKE ? OR generic_name LIKE ? LIMIT ?",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows2 = stmt2
+            .query_map(rusqlite::params![like_q.clone(), like_q, lim], |r| {
+                Ok(FdaDrug {
+                    id: r.get(0)?,
+                    product_id: r.get(1)?,
+                    product_name: r.get(2)?,
+                    generic_name: r.get(3)?,
+                    strength: r.get(4)?,
+                    active_ingredient: r.get(5)?,
+                    dosage_form: r.get(6)?,
+                    product_category: r.get(7)?,
+                    product_sub_category: r.get(8)?,
+                    registration_number: r.get(9)?,
+                    manufacturer: r.get(10)?,
+                    client_name: r.get(11)?,
+                    registration_date: r.get(12)?,
+                    expiry_date: r.get(13)?,
+                    status: r.get(14)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows2 {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+fn import_fda_catalog(app: AppHandle, drugs: Vec<FdaDrug>) -> Result<usize, String> {
+    if drugs.is_empty() {
+        return Ok(0);
+    }
+    let mut conn = open_db(&app)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM fda_drugs", []).map_err(|e| e.to_string())?;
+    // FTS triggers keep fts in sync; no need to touch fts table directly.
+    let mut count = 0usize;
+    for d in drugs {
+        tx.execute(
+            "INSERT OR REPLACE INTO fda_drugs
+             (id, product_id, product_name, generic_name, strength, active_ingredient, dosage_form,
+              product_category, product_sub_category, registration_number, manufacturer, client_name,
+              registration_date, expiry_date, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            rusqlite::params![
+                d.id,
+                d.product_id,
+                d.product_name,
+                d.generic_name,
+                d.strength,
+                d.active_ingredient,
+                d.dosage_form,
+                d.product_category,
+                d.product_sub_category,
+                d.registration_number,
+                d.manufacturer,
+                d.client_name,
+                d.registration_date,
+                d.expiry_date,
+                d.status
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+#[tauri::command]
+async fn refresh_fda_catalog(app: AppHandle) -> Result<usize, String> {
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    struct ApiRow {
+        product_uuid: Option<String>,
+        product_id: Option<String>,
+        product_name: Option<String>,
+        generic_name: Option<String>,
+        strength: Option<String>,
+        active_ingredient: Option<String>,
+        dosage_form_indication: Option<String>,
+        product_category: Option<String>,
+        product_sub_category: Option<String>,
+        registration_number: Option<String>,
+        manufacturer: Option<String>,
+        client_name: Option<String>,
+        registration_date: Option<String>,
+        expiry_date: Option<String>,
+        status: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct ApiResp {
+        data: Vec<ApiRow>,
+        #[serde(rename = "recordsFiltered")]
+        records_filtered: Option<u64>,
+        #[serde(rename = "recordsTotal")]
+        records_total: Option<u64>,
+    }
+    // Accept the expired cert on verifypermit.fdaghana.gov.gh.
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut all: Vec<FdaDrug> = Vec::new();
+    let mut start: u64 = 0;
+    let page_size: u64 = 200;
+    let mut draw: u64 = 1;
+    let mut total: Option<u64> = None;
+    loop {
+        let url = format!(
+            "https://verifypermit.fdaghana.gov.gh/publicsearch?draw={draw}&columns%5B0%5D%5Bdata%5D=DT_RowIndex&columns%5B1%5D%5Bdata%5D=client_name&columns%5B2%5D%5Bdata%5D=product_name&columns%5B3%5D%5Bdata%5D=product_category&columns%5B4%5D%5Bdata%5D=expiry_date&columns%5B5%5D%5Bdata%5D=status&columns%5B6%5D%5Bdata%5D=action&order%5B0%5D%5Bcolumn%5D=1&order%5B0%5D%5Bdir%5D=desc&start={start}&length={page_size}&search%5Bvalue%5D=&search%5Bregex%5D=false"
+        );
+        let resp: ApiResp = client
+            .get(&url)
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+        if total.is_none() {
+            total = resp.records_total;
+        }
+        let rows = resp.data;
+        if rows.is_empty() {
+            break;
+        }
+        for r in &rows {
+            let cat = r.product_category.as_deref().unwrap_or("").to_uppercase();
+            if cat != "DRUG" && cat != "DRUGS" {
+                continue;
+            }
+            let name = r.product_name.clone().unwrap_or_default().trim().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            all.push(FdaDrug {
+                id: r.product_uuid.clone().or_else(|| r.product_id.clone()).unwrap_or_else(|| name.clone()),
+                product_id: r.product_id.clone(),
+                product_name: name,
+                generic_name: r.generic_name.clone(),
+                strength: r.strength.clone(),
+                active_ingredient: r.active_ingredient.clone(),
+                dosage_form: r.dosage_form_indication.clone(),
+                product_category: r.product_category.clone(),
+                product_sub_category: r.product_sub_category.clone(),
+                registration_number: r.registration_number.clone(),
+                manufacturer: r.manufacturer.clone(),
+                client_name: r.client_name.clone(),
+                registration_date: r.registration_date.clone(),
+                expiry_date: r.expiry_date.clone(),
+                status: r.status.clone(),
+            });
+        }
+        if (rows.len() as u64) < page_size {
+            break;
+        }
+        if let Some(t) = total {
+            if start + (rows.len() as u64) >= t {
+                break;
+            }
+        }
+        start += rows.len() as u64;
+        draw += 1;
+        // Be nice to the FDA server.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    if all.is_empty() {
+        return Err("No DRUG rows returned from FDA register".into());
+    }
+    // Reuse the import logic (single transaction).
+    import_fda_catalog(app, all)
+}
+
+// ---------------------------------------------------------------------------
 // ESC/POS thermal receipt printing (network, raw TCP port 9100)
 // ---------------------------------------------------------------------------
 
@@ -3485,6 +3748,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0029_seed_products",
         include_str!("../migrations/0029_seed_products.sql"),
     ),
+    (
+        "0030_fda_drugs",
+        include_str!("../migrations/0030_fda_drugs.sql"),
+    ),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.
@@ -3628,7 +3895,10 @@ pub fn run() {
             commit_stock_take,
             backup_to_dir,
             intake_stock,
-            quick_add_product
+            quick_add_product,
+            search_fda_drugs,
+            import_fda_catalog,
+            refresh_fda_catalog
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

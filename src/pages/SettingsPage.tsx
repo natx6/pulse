@@ -15,6 +15,7 @@ import {
   restartApp,
   purgeDemoData,
   hasDemoData,
+  refreshFdaCatalog,
 } from "../db";
 import type { Operator, BackupInfo } from "../db";
 import { beep } from "../lib/audio";
@@ -74,6 +75,22 @@ export function SettingsPage() {
   const [hasDemo, setHasDemo] = useState(false);
   useEffect(() => {
     hasDemoData().then(setHasDemo).catch(() => setHasDemo(false));
+  }, []);
+  const [fdaCount, setFdaCount] = useState<number | null>(null);
+  const [fdaBusy, setFdaBusy] = useState(false);
+  const [fdaMsg, setFdaMsg] = useState("");
+  const loadFdaCount = async () => {
+    try {
+      const { initDb } = await import("../db");
+      const d = await initDb();
+      const rows = await d.select<{ n: number }[]>("SELECT COUNT(*) as n FROM fda_drugs", []);
+      setFdaCount(rows[0]?.n ?? 0);
+    } catch {
+      setFdaCount(0);
+    }
+  };
+  useEffect(() => {
+    void loadFdaCount();
   }, []);
 
   const restoreFromDrive = async () => {
@@ -670,6 +687,36 @@ export function SettingsPage() {
               </p>
             )}
           </div>
+          <div className="mt-3 rounded border border-outline-variant bg-surface-container-low p-3">
+            <p className="text-body-md font-body-md text-on-surface">FDA Ghana catalog</p>
+            <p className="mt-1 mb-3 text-body-sm font-body-sm text-on-surface-variant">
+              {fdaCount === null ? "Loading…" : `${fdaCount.toLocaleString()} DRUG/DRUGS from FDA Ghana for autocomplete.`}{" "}
+              Updates once a year when FDA registers new drugs. Works fully offline after the first pull.
+            </p>
+            <button
+              onClick={async () => {
+                setFdaBusy(true);
+                setFdaMsg("");
+                try {
+                  const n = await refreshFdaCatalog();
+                  beep(true);
+                  setFdaMsg(`Updated — ${n.toLocaleString()} drugs. You can now type 2 letters in “Add Manual Item” to see matches.`);
+                  await loadFdaCount();
+                } catch (e) {
+                  setFdaMsg(String(e).replace(/^Error: /, ""));
+                  beep(false);
+                } finally {
+                  setFdaBusy(false);
+                }
+              }}
+              disabled={fdaBusy}
+              className="h-9 rounded border border-primary/40 bg-primary/5 px-4 text-label-md font-label-md text-primary hover:bg-primary/10 disabled:opacity-50"
+            >
+              {fdaBusy ? "Updating… (30-60s, needs internet)" : "Update FDA catalog"}
+            </button>
+            {fdaMsg && <p className="mt-2 text-body-sm font-body-sm text-on-surface-variant">{fdaMsg}</p>}
+          </div>
+
           {/* Hand a clean database to a real client: wipe every sample row the
               seed created (demo sales, the "Demo Wholesale" supplier + its
               purchase, the sample catalog, the "Ama Mensah" sample patient).
