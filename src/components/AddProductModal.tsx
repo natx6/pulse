@@ -3,6 +3,7 @@ import { createProduct, loadSuppliers, searchFdaDrugs, type FdaDrug } from "../d
 import { useStore } from "../store/useStore";
 import { beep } from "../lib/audio";
 import type { Supplier } from "../db";
+import { DateField } from "./DateField";
 
 interface Props {
   onClose(): void;
@@ -331,7 +332,7 @@ export function AddProductModal({ onClose }: Props) {
 
             <label className="block">
               <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Expiry date</span>
-              <input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+              <DateField value={expiryDate} onChange={setExpiryDate} className="h-9 w-full" />
             </label>
           </div>
           {error && <p className="mt-3 text-body-sm font-body-sm text-error">{error}</p>}
