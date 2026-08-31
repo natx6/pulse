@@ -178,13 +178,6 @@ export default function App() {
         e.preventDefault();
         document.getElementById("global-search")?.focus();
       }
-      // Ctrl+Shift+D: reset setup_complete so the wizard reappears (testing).
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "d") {
-        e.preventDefault();
-        import("./db").then((m) =>
-          m.resetSetup().then(() => window.location.reload()),
-        );
-      }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);

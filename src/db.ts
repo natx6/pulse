@@ -632,10 +632,7 @@ export async function purgeDemoData(managerPin: string | null): Promise<DemoPurg
   return await invoke("purge_demo_data", { managerPin });
 }
 
-/** Clear setup_complete so the first-run wizard reappears on next launch. */
-export async function resetSetup(): Promise<void> {
-  return await invoke("reset_setup");
-}
+
 
 /** True when any demo/sample row is present. Used to hide the "Clear sample
  * data" control in release builds, where the demo/seed migrations are skipped

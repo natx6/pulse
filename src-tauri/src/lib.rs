@@ -2722,18 +2722,6 @@ fn purge_demo_data(
 }
 
 // ---------------------------------------------------------------------------
-// Debug-only helpers
-// ---------------------------------------------------------------------------
-
-/// Clear setup_complete so the first-run wizard reappears on next launch.
-#[tauri::command]
-fn reset_setup(app: AppHandle) -> Result<(), String> {
-    let conn = open_db(&app)?;
-    conn.execute("DELETE FROM settings WHERE key = 'setup_complete'", [])
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // ESC/POS thermal receipt printing (network, raw TCP port 9100)
 // ---------------------------------------------------------------------------
@@ -3640,8 +3628,7 @@ pub fn run() {
             commit_stock_take,
             backup_to_dir,
             intake_stock,
-            quick_add_product,
-            reset_setup
+            quick_add_product
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
