@@ -21,22 +21,5 @@ CREATE TABLE IF NOT EXISTS fda_drugs (
 
 CREATE VIRTUAL TABLE IF NOT EXISTS fda_drugs_fts USING fts5(
   product_name, generic_name, strength, active_ingredient,
-  content='fda_drugs', content_rowid='rowid',
-  tokenize='porter unicode61'
+  tokenize='unicode61'
 );
-
--- Keep FTS in sync.
-CREATE TRIGGER IF NOT EXISTS fda_drugs_ai AFTER INSERT ON fda_drugs BEGIN
-  INSERT INTO fda_drugs_fts(rowid, product_name, generic_name, strength, active_ingredient)
-  VALUES (new.rowid, new.product_name, new.generic_name, new.strength, new.active_ingredient);
-END;
-CREATE TRIGGER IF NOT EXISTS fda_drugs_ad AFTER DELETE ON fda_drugs BEGIN
-  INSERT INTO fda_drugs_fts(fda_drugs_fts, rowid, product_name, generic_name, strength, active_ingredient)
-  VALUES ('delete', old.rowid, old.product_name, old.generic_name, old.strength, old.active_ingredient);
-END;
-CREATE TRIGGER IF NOT EXISTS fda_drugs_au AFTER UPDATE ON fda_drugs BEGIN
-  INSERT INTO fda_drugs_fts(fda_drugs_fts, rowid, product_name, generic_name, strength, active_ingredient)
-  VALUES ('delete', old.rowid, old.product_name, old.generic_name, old.strength, old.active_ingredient);
-  INSERT INTO fda_drugs_fts(rowid, product_name, generic_name, strength, active_ingredient)
-  VALUES (new.rowid, new.product_name, new.generic_name, new.strength, new.active_ingredient);
-END;

@@ -2843,7 +2843,7 @@ fn import_fda_catalog(app: AppHandle, drugs: Vec<FdaDrug>) -> Result<usize, Stri
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM fda_drugs", []).map_err(|e| e.to_string())?;
-    // FTS triggers keep fts in sync; no need to touch fts table directly.
+    tx.execute("DELETE FROM fda_drugs_fts", []).map_err(|e| e.to_string())?;
     let mut count = 0usize;
     for d in drugs {
         tx.execute(
@@ -2869,6 +2869,19 @@ fn import_fda_catalog(app: AppHandle, drugs: Vec<FdaDrug>) -> Result<usize, Stri
                 d.expiry_date,
                 d.status
             ],
+        )
+        .map_err(|e| e.to_string())?;
+        // Keep FTS in sync manually (no triggers).
+        let rowid: i64 = tx
+            .query_row(
+                "SELECT rowid FROM fda_drugs WHERE id = ?1",
+                rusqlite::params![d.id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO fda_drugs_fts(rowid, product_name, generic_name, strength, active_ingredient) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![rowid, d.product_name, d.generic_name, d.strength, d.active_ingredient],
         )
         .map_err(|e| e.to_string())?;
         count += 1;
