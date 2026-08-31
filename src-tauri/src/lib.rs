@@ -1,7 +1,7 @@
 use rusqlite::{OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 #[derive(Deserialize)]
 pub struct SaleLine {
     product_id: i64,
