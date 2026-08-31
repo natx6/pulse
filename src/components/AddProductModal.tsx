@@ -28,9 +28,29 @@ export function AddProductModal({ onClose }: Props) {
   const [showFda, setShowFda] = useState(false);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [supplierMode, setSupplierMode] = useState<"select" | "new">("select");
+  const [categories, setCategories] = useState<string[]>([]);
+  const [categoryMode, setCategoryMode] = useState<"select" | "new">("select");
 
   useEffect(() => {
     loadSuppliers().then(setSuppliers).catch(() => setSuppliers([]));
+  }, []);
+  useEffect(() => {
+    import("../db").then(async (m) => {
+      try {
+        const d = await m.initDb();
+        const rows = await d.select<{ category: string }[]>(
+          "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category",
+          [],
+        );
+        const existing = rows.map((r) => r.category).filter(Boolean);
+        // Seed with common pharmacy classes if DB is still empty.
+        const defaults = ["Analgesic", "Antibiotic", "Antimalarial", "Vitamins", "Supplements", "Cough & Cold", "Dermatology", "OTC", "Prescription"];
+        const merged = Array.from(new Set([...existing, ...defaults])).sort();
+        setCategories(merged);
+      } catch {
+        setCategories(["Analgesic", "Antibiotic", "Antimalarial", "Vitamins", "Supplements", "OTC"]);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -142,7 +162,14 @@ export function AddProductModal({ onClose }: Props) {
                         e.preventDefault();
                         setName(d.product_name);
                         if (d.strength) setStrength(d.strength);
-                        if (d.product_category) setCategory(d.product_category);
+                        // Auto-fill Category from FDA sub-category/classification where it looks like
+                        // a shelf class (Antibiotic etc.), otherwise leave the dropdown for the user.
+                        const fdaCat = (d.product_sub_category || d.product_category || "").trim();
+                        if (fdaCat && fdaCat.toLowerCase() !== "drug" && fdaCat.toLowerCase() !== "drugs") {
+                          setCategory(fdaCat);
+                          setCategoryMode("select");
+                          setCategories((prev) => (prev.includes(fdaCat) ? prev : [...prev, fdaCat].sort()));
+                        }
                         // Do not auto-fill supplier from FDA — supplier is the local wholesaler
                         // you requisition from (Kinapharma etc.), not the FDA applicant/manufacturer.
                         setShowFda(false);
@@ -172,12 +199,47 @@ export function AddProductModal({ onClose }: Props) {
               </label>
               <label className="block">
                 <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Category</span>
-                <input
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  placeholder="e.g. Analgesic"
-                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
-                />
+                {categoryMode === "select" ? (
+                  <select
+                    value={category}
+                    onChange={(e) => {
+                      if (e.target.value === "__new__") {
+                        setCategoryMode("new");
+                        setCategory("");
+                      } else {
+                        setCategory(e.target.value);
+                      }
+                    }}
+                    className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                  >
+                    <option value="">— Select category —</option>
+                    {categories.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                    <option value="__new__">+ New category…</option>
+                  </select>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      value={category}
+                      onChange={(e) => setCategory(e.target.value)}
+                      placeholder="e.g. Analgesic"
+                      className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCategoryMode("select");
+                        setCategory("");
+                      }}
+                      className="shrink-0 rounded border border-outline-variant px-2 text-label-md text-on-surface hover:bg-surface-variant"
+                    >
+                      Select
+                    </button>
+                  </div>
+                )}
               </label>
             </div>
 
