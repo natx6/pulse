@@ -2951,6 +2951,16 @@ async fn refresh_fda_catalog(app: AppHandle) -> Result<usize, String> {
         if rows.is_empty() {
             break;
         }
+        // Progress: payload is { current, total, page, totalPages }.
+        let _ = app.emit(
+            "fda-progress",
+            serde_json::json!({
+                "current": all.len(),
+                "total": total.unwrap_or(0),
+                "page": draw,
+                "totalPages": total.map(|t| (t + page_size - 1) / page_size).unwrap_or(0)
+            }),
+        );
         for r in &rows {
             let cat = r.product_category.as_deref().unwrap_or("").to_uppercase();
             if cat != "DRUG" && cat != "DRUGS" {

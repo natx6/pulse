@@ -79,6 +79,7 @@ export function SettingsPage() {
   const [fdaCount, setFdaCount] = useState<number | null>(null);
   const [fdaBusy, setFdaBusy] = useState(false);
   const [fdaMsg, setFdaMsg] = useState("");
+  const [fdaProgress, setFdaProgress] = useState<{ current: number; total: number; page: number; totalPages: number } | null>(null);
   const loadFdaCount = async () => {
     try {
       const { initDb } = await import("../db");
@@ -92,6 +93,19 @@ export function SettingsPage() {
   useEffect(() => {
     void loadFdaCount();
   }, []);
+  useEffect(() => {
+    if (!fdaBusy) return;
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event").then(({ listen }) =>
+      listen<{ current: number; total: number; page: number; totalPages: number }>("fda-progress", (e) =>
+        setFdaProgress(e.payload),
+      ).then((fn) => (unlisten = fn)),
+    );
+    return () => {
+      unlisten?.();
+      setFdaProgress(null);
+    };
+  }, [fdaBusy]);
 
   const restoreFromDrive = async () => {
     setRestoreMsg("");
@@ -714,6 +728,21 @@ export function SettingsPage() {
             >
               {fdaBusy ? "Updating… (30-60s, needs internet)" : "Update FDA catalog"}
             </button>
+            {fdaBusy && fdaProgress && (
+              <div className="mt-2">
+                <div className="h-2 overflow-hidden rounded-full bg-surface-variant">
+                  <div
+                    className="h-full bg-primary transition-all"
+                    style={{
+                      width: `${fdaProgress.total ? Math.round((fdaProgress.current / Math.max(1, fdaProgress.total)) * 100) : 0}%`,
+                    }}
+                  />
+                </div>
+                <p className="mt-1 font-data-mono text-[11px] text-on-surface-variant">
+                  {fdaProgress.current.toLocaleString()} / {fdaProgress.total.toLocaleString()} · page {fdaProgress.page} / {fdaProgress.totalPages || "…"}
+                </p>
+              </div>
+            )}
             {fdaMsg && <p className="mt-2 text-body-sm font-body-sm text-on-surface-variant">{fdaMsg}</p>}
           </div>
 
