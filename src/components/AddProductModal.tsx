@@ -26,6 +26,7 @@ export function AddProductModal({ onClose }: Props) {
   const [expiryDate, setExpiryDate] = useState("");
   const [genericName, setGenericName] = useState("");
   const [activeIngredient, setActiveIngredient] = useState("");
+  const [showMore, setShowMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [fdaResults, setFdaResults] = useState<FdaDrug[]>([]);
@@ -198,150 +199,165 @@ export function AddProductModal({ onClose }: Props) {
 
             <div className="grid grid-cols-2 gap-3">
               <label className="block">
-                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Barcode</span>
-                <input
-                  value={barcode}
-                  onChange={(e) => setBarcode(e.target.value)}
-                  placeholder="Optional"
-                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Category</span>
-                {categoryMode === "select" ? (
-                  <select
-                    value={category}
-                    onChange={(e) => {
-                      if (e.target.value === "__new__") {
-                        setCategoryMode("new");
-                        setCategory("");
-                      } else {
-                        setCategory(e.target.value);
-                      }
-                    }}
-                    className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
-                  >
-                    <option value="">— Select category —</option>
-                    {categories.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                    <option value="__new__">+ New category…</option>
-                  </select>
-                ) : (
-                  <div className="flex gap-2">
-                    <input
-                      value={category}
-                      onChange={(e) => setCategory(e.target.value)}
-                      placeholder="e.g. Analgesic"
-                      className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCategoryMode("select");
-                        setCategory("");
-                      }}
-                      className="shrink-0 rounded border border-outline-variant px-2 text-label-md text-on-surface hover:bg-surface-variant"
-                    >
-                      Select
-                    </button>
-                  </div>
-                )}
-              </label>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block">
-                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Strength</span>
-                <input
-                  value={strength}
-                  onChange={(e) => setStrength(e.target.value)}
-                  placeholder="e.g. 500mg"
-                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Supplier — you requisition from</span>
-                {supplierMode === "select" ? (
-                  <select
-                    value={supplier}
-                    onChange={(e) => {
-                      if (e.target.value === "__new__") {
-                        setSupplierMode("new");
-                        setSupplier("");
-                      } else {
-                        setSupplier(e.target.value);
-                      }
-                    }}
-                    className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
-                  >
-                    <option value="">— Select supplier —</option>
-                    {suppliers.map((s) => (
-                      <option key={s.id} value={s.name}>
-                        {s.name}
-                      </option>
-                    ))}
-                    <option value="__new__">+ New supplier…</option>
-                  </select>
-                ) : (
-                  <div className="flex gap-2">
-                    <input
-                      value={supplier}
-                      onChange={(e) => setSupplier(e.target.value)}
-                      placeholder="e.g. Kinapharma"
-                      className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSupplierMode("select");
-                        setSupplier("");
-                      }}
-                      className="shrink-0 rounded border border-outline-variant px-2 text-label-md text-on-surface hover:bg-surface-variant"
-                    >
-                      Select
-                    </button>
-                  </div>
-                )}
-              </label>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3">
-              <label className="block">
-                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Cost (GH₵)</span>
-                <input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} placeholder="0.00" inputMode="decimal" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
-              </label>
-              <label className="block">
                 <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Selling (GH₵) *</span>
                 <input value={sellingPrice} onChange={(e) => setSellingPrice(e.target.value)} placeholder="0.00" inputMode="decimal" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
               </label>
               <label className="block">
-                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Stock qty</span>
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Stock qty *</span>
                 <input value={stockQty} onChange={(e) => setStockQty(e.target.value)} placeholder="0" inputMode="numeric" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
               </label>
             </div>
 
-            <div className="grid grid-cols-3 gap-3">
-              <label className="block">
-                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Reorder lvl</span>
-                <input value={reorderLevel} onChange={(e) => setReorderLevel(e.target.value)} placeholder="10" inputMode="numeric" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
-              </label>
-              <label className="block">
-                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Pack size</span>
-                <input value={packSize} onChange={(e) => setPackSize(e.target.value)} placeholder="1" inputMode="numeric" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
-              </label>
-              <label className="block">
-                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Batch no</span>
-                <input value={batchNo} onChange={(e) => setBatchNo(e.target.value)} placeholder="Optional" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
-              </label>
-            </div>
+            <button
+              type="button"
+              onClick={() => setShowMore((v) => !v)}
+              className="flex items-center gap-1 text-label-md font-label-md text-primary hover:underline"
+            >
+              <span className="material-symbols-outlined text-[16px]">{showMore ? "expand_less" : "expand_more"}</span>
+              {showMore ? "Less" : "More — barcode, category, supplier, cost, batch…"}
+            </button>
 
-            <label className="block">
-              <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Expiry date</span>
-              <DateField value={expiryDate} onChange={setExpiryDate} className="h-9 w-full" />
-            </label>
+            {showMore && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Barcode</span>
+                    <input
+                      value={barcode}
+                      onChange={(e) => setBarcode(e.target.value)}
+                      placeholder="Optional"
+                      className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Category</span>
+                    {categoryMode === "select" ? (
+                      <select
+                        value={category}
+                        onChange={(e) => {
+                          if (e.target.value === "__new__") {
+                            setCategoryMode("new");
+                            setCategory("");
+                          } else {
+                            setCategory(e.target.value);
+                          }
+                        }}
+                        className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                      >
+                        <option value="">— Select category —</option>
+                        {categories.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                        <option value="__new__">+ New category…</option>
+                      </select>
+                    ) : (
+                      <div className="flex gap-2">
+                        <input
+                          value={category}
+                          onChange={(e) => setCategory(e.target.value)}
+                          placeholder="e.g. Analgesic"
+                          className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCategoryMode("select");
+                            setCategory("");
+                          }}
+                          className="shrink-0 rounded border border-outline-variant px-2 text-label-md text-on-surface hover:bg-surface-variant"
+                        >
+                          Select
+                        </button>
+                      </div>
+                    )}
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Strength</span>
+                    <input
+                      value={strength}
+                      onChange={(e) => setStrength(e.target.value)}
+                      placeholder="e.g. 500mg"
+                      className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Supplier — you requisition from</span>
+                    {supplierMode === "select" ? (
+                      <select
+                        value={supplier}
+                        onChange={(e) => {
+                          if (e.target.value === "__new__") {
+                            setSupplierMode("new");
+                            setSupplier("");
+                          } else {
+                            setSupplier(e.target.value);
+                          }
+                        }}
+                        className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                      >
+                        <option value="">— Select supplier —</option>
+                        {suppliers.map((s) => (
+                          <option key={s.id} value={s.name}>
+                            {s.name}
+                          </option>
+                        ))}
+                        <option value="__new__">+ New supplier…</option>
+                      </select>
+                    ) : (
+                      <div className="flex gap-2">
+                        <input
+                          value={supplier}
+                          onChange={(e) => setSupplier(e.target.value)}
+                          placeholder="e.g. Kinapharma"
+                          className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSupplierMode("select");
+                            setSupplier("");
+                          }}
+                          className="shrink-0 rounded border border-outline-variant px-2 text-label-md text-on-surface hover:bg-surface-variant"
+                        >
+                          Select
+                        </button>
+                      </div>
+                    )}
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <label className="block">
+                    <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Cost (GH₵)</span>
+                    <input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} placeholder="0.00" inputMode="decimal" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+                  </label>
+                  <label className="block">
+                    <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Reorder lvl</span>
+                    <input value={reorderLevel} onChange={(e) => setReorderLevel(e.target.value)} placeholder="10" inputMode="numeric" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+                  </label>
+                  <label className="block">
+                    <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Pack size</span>
+                    <input value={packSize} onChange={(e) => setPackSize(e.target.value)} placeholder="1" inputMode="numeric" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Batch no</span>
+                    <input value={batchNo} onChange={(e) => setBatchNo(e.target.value)} placeholder="Optional" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+                  </label>
+                  <label className="block">
+                    <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Expiry date</span>
+                    <DateField value={expiryDate} onChange={setExpiryDate} className="h-9 w-full" />
+                  </label>
+                </div>
+              </>
+            )}
           </div>
           {error && <p className="mt-3 text-body-sm font-body-sm text-error">{error}</p>}
         </div>
