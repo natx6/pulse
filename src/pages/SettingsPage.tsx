@@ -402,6 +402,19 @@ export function SettingsPage() {
     }
   };
 
+  const fdaAutocomplete = useStore((s) => s.fdaAutocomplete);
+  const toggleFdaAutocomplete = async (v: boolean) => {
+    setSettingsErr("");
+    try {
+      await saveSetting("fda_autocomplete", v ? "1" : "0");
+      applySettings({ fdaAutocomplete: v });
+      beep(true);
+    } catch (e) {
+      setSettingsErr(String(e).replace(/^Error: /, ""));
+      beep(false);
+    }
+  };
+
   const field =
     "h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary";
 
@@ -703,10 +716,19 @@ export function SettingsPage() {
           </div>
           <div className="mt-3 rounded border border-outline-variant bg-surface-container-low p-3">
             <p className="text-body-md font-body-md text-on-surface">FDA Ghana catalog</p>
-            <p className="mt-1 mb-3 text-body-sm font-body-sm text-on-surface-variant">
+            <p className="mt-1 mb-2 text-body-sm font-body-sm text-on-surface-variant">
               {fdaCount === null ? "Loading…" : `${fdaCount.toLocaleString()} DRUG/DRUGS from FDA Ghana for autocomplete.`}{" "}
               Updates once a year when FDA registers new drugs. Works fully offline after the first pull.
             </p>
+            <label className="mb-3 flex items-center justify-between">
+              <span className="text-body-sm font-body-sm text-on-surface">Enable FDA autocomplete in add forms</span>
+              <input
+                type="checkbox"
+                checked={fdaAutocomplete}
+                onChange={(e) => void toggleFdaAutocomplete(e.target.checked)}
+                className="h-4 w-8 accent-primary"
+              />
+            </label>
             <button
               onClick={async () => {
                 setFdaBusy(true);

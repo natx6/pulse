@@ -25,6 +25,7 @@ interface AppState {
   tourSeen: boolean;
   /** Forces the tour open (e.g. from Support) even after tourSeen is true. */
   tourOpen: boolean;
+  fdaAutocomplete: boolean;
   heldCart: CartLine[] | null;
   searchQuery: string;
   quickAdd: { barcode: string | null } | null;
@@ -69,6 +70,7 @@ interface AppState {
     isDark: boolean;
     setupComplete: boolean;
     tourSeen: boolean;
+    fdaAutocomplete: boolean;
   }>): void;
   setTourOpen(v: boolean): void;
 }
@@ -90,6 +92,7 @@ export const useStore = create<AppState>((set, get) => ({
   isDark: false,
   setupComplete: false,
   tourSeen: false,
+  fdaAutocomplete: true,
   tourOpen: false,
   heldCart: null,
   searchQuery: "",

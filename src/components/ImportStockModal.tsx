@@ -16,6 +16,7 @@ export function ImportStockModal({
   onDone: () => void;
 }) {
   const products = useStore((s) => s.products);
+  const fdaAutocomplete = useStore((s) => s.fdaAutocomplete);
   const [phase, setPhase] = useState<"pick" | "map" | "done">("pick");
   const [fileName, setFileName] = useState("");
   const [sheet, setSheet] = useState<ParsedSheet | null>(null);
@@ -83,7 +84,7 @@ export function ImportStockModal({
   useEffect(() => {
     setFdaOverrides({});
     setFdaSuggestions({});
-    if (!sheet || phase !== "map") return;
+    if (!fdaAutocomplete || !sheet || phase !== "map") return;
     const idxs = sheet.rows.slice(0, 5).map((_, i) => i);
     idxs.forEach(async (i) => {
       const r = rowToRecord(sheet.rows[i], mapping);
@@ -99,7 +100,7 @@ export function ImportStockModal({
         setFdaSuggestions((m) => ({ ...m, [i]: null }));
       }
     });
-  }, [sheet, mapping, phase]);
+  }, [sheet, mapping, phase, fdaAutocomplete]);
 
   const doImport = async () => {
     if (!stats || stats.recs.length === 0) return;
@@ -255,7 +256,7 @@ export function ImportStockModal({
                               <span className="text-[11px] text-on-surface-variant">FDA: {sug.product_name}</span>
                               <span className="text-[11px] text-on-surface-variant">· {([sug.generic_name, sug.strength].filter(Boolean).join(" · "))}</span>
                               <button
-                                onClick={() => setFdaOverrides((m) => ({ ...m, [i]: sug.product_name }))}
+                                onClick={() => setFdaOverrides((m) => ({ ...m, [i]: sug.product_name.replace(/\s*\(.*\)\s*$/, "").trim() || sug.product_name }))}
                                 className="ml-auto shrink-0 rounded bg-primary px-2 py-0.5 text-[11px] font-bold text-on-primary hover:bg-on-primary-fixed-variant"
                               >
                                 Use FDA
@@ -294,7 +295,8 @@ export function ImportStockModal({
                             const res = await searchFdaDrugs(q, 1);
                             const top = res[0];
                             if (top && top.product_name.toLowerCase() !== q.toLowerCase()) {
-                              setFdaOverrides((m) => ({ ...m, [i]: top.product_name }));
+                              const clean = top.product_name.replace(/\s*\(.*\)\s*$/, "").trim() || top.product_name;
+                              setFdaOverrides((m) => ({ ...m, [i]: clean }));
                               applied++;
                               // Small pause to keep UI responsive for large files.
                               if (applied % 20 === 0) await new Promise((res) => setTimeout(res, 0));

@@ -11,6 +11,7 @@ interface Props {
 
 export function AddProductModal({ onClose }: Props) {
   const refreshProducts = useStore((s) => s.refreshProducts);
+  const fdaAutocomplete = useStore((s) => s.fdaAutocomplete);
   const [name, setName] = useState("");
   const [barcode, setBarcode] = useState("");
   const [category, setCategory] = useState("");
@@ -58,7 +59,7 @@ export function AddProductModal({ onClose }: Props) {
 
   useEffect(() => {
     const q = name.trim();
-    if (q.length < 2) {
+    if (!fdaAutocomplete || q.length < 2) {
       setFdaResults([]);
       setShowFda(false);
       return;
@@ -72,7 +73,7 @@ export function AddProductModal({ onClose }: Props) {
         .catch(() => setFdaResults([]));
     }, 250);
     return () => window.clearTimeout(t);
-  }, [name]);
+  }, [name, fdaAutocomplete]);
 
   const submit = async () => {
     const nm = name.trim();
@@ -165,7 +166,8 @@ export function AddProductModal({ onClose }: Props) {
                       type="button"
                       onMouseDown={(e) => {
                         e.preventDefault();
-                        setName(d.product_name);
+                        const clean = d.product_name.replace(/\s*\(.*\)\s*$/, "").trim() || d.product_name;
+                        setName(clean);
                         if (d.strength) setStrength(d.strength);
                         if (d.generic_name) setGenericName(d.generic_name);
                         if (d.active_ingredient) setActiveIngredient(d.active_ingredient);

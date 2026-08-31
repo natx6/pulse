@@ -14,12 +14,13 @@ export function QuickAddModal() {
   const [price, setPrice] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const fdaAutocomplete = useStore((s) => s.fdaAutocomplete);
   const [fdaResults, setFdaResults] = useState<FdaDrug[]>([]);
   const [showFda, setShowFda] = useState(false);
 
   useEffect(() => {
     const q = name.trim();
-    if (q.length < 2) {
+    if (!fdaAutocomplete || q.length < 2) {
       setFdaResults([]);
       setShowFda(false);
       return;
@@ -33,7 +34,7 @@ export function QuickAddModal() {
         .catch(() => setFdaResults([]));
     }, 250);
     return () => window.clearTimeout(t);
-  }, [name]);
+  }, [name, fdaAutocomplete]);
 
   if (!quickAdd) return null;
 
@@ -134,7 +135,8 @@ export function QuickAddModal() {
                       type="button"
                       onMouseDown={(e) => {
                         e.preventDefault();
-                        setName(d.product_name);
+                        const clean = d.product_name.replace(/\s*\(.*\)\s*$/, "").trim() || d.product_name;
+                        setName(clean);
                         setShowFda(false);
                       }}
                       className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-surface-container-low"
