@@ -3720,6 +3720,8 @@ pub struct NewProduct {
     category: Option<String>,
     supplier: Option<String>,
     strength: Option<String>,
+    generic_name: Option<String>,
+    active_ingredient: Option<String>,
     cost_price: f64,
     selling_price: f64,
     stock_qty: i64,
@@ -3747,14 +3749,16 @@ fn create_product(app: AppHandle, product: NewProduct) -> Result<i64, String> {
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     tx.execute(
-        "INSERT INTO products (name, barcode, category, supplier, strength, cost_price, selling_price, stock_qty, reorder_level, pack_size, batch_no, expiry_date)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO products (name, barcode, category, supplier, strength, generic_name, active_ingredient, cost_price, selling_price, stock_qty, reorder_level, pack_size, batch_no, expiry_date)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         rusqlite::params![
             name,
             barcode,
             product.category.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()),
             product.supplier.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()),
             product.strength.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()),
+            product.generic_name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()),
+            product.active_ingredient.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()),
             product.cost_price,
             product.selling_price,
             product.stock_qty,
@@ -3863,6 +3867,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0030_fda_drugs",
         include_str!("../migrations/0030_fda_drugs.sql"),
+    ),
+    (
+        "0031_product_generic",
+        include_str!("../migrations/0031_product_generic.sql"),
     ),
 ];
 

@@ -293,6 +293,8 @@ export interface NewProduct {
   category?: string | null;
   supplier?: string | null;
   strength?: string | null;
+  generic_name?: string | null;
+  active_ingredient?: string | null;
   cost_price: number;
   selling_price: number;
   stock_qty: number;

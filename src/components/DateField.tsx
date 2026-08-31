@@ -34,9 +34,6 @@ export function DateField({
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
-  // Flip the popup to right-aligned when there isn't room to open it to the
-  // right (e.g. an end-of-range date near the screen edge).
-  const [alignRight, setAlignRight] = useState(false);
   // Month shown in the popup; defaults to the value's month (or today's).
   const [view, setView] = useState(() => {
     const base = value && /^\d{4}-\d{2}/.test(value) ? new Date(value + "T00:00:00") : new Date();
@@ -91,15 +88,33 @@ export function DateField({
     : "";
   const selected = value || "";
 
+  // Popup position in viewport when open (fixed, so not clipped by modals).
+  const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({});
+  useEffect(() => {
+    if (!open || !rootRef.current) return;
+    const r = rootRef.current.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Prefer below the field; flip above if not enough room.
+    const below = r.bottom + 8;
+    const above = r.top - 8;
+    const popupH = 280; // approx calendar height
+    const top = below + popupH <= vh ? below : above - popupH > 0 ? above - popupH : Math.max(8, vh - popupH - 8);
+    const left = r.left;
+    const rightAligned = vw - r.left < 280;
+    setPopupStyle(
+      rightAligned
+        ? { top, right: vw - r.right, position: "fixed" as const }
+        : { top, left, position: "fixed" as const },
+    );
+  }, [open, view]);
+
   return (
     <div ref={rootRef} className={`relative ${className}`}>
       <button
         type="button"
         title={title}
         onClick={() => {
-          // Decide alignment at open time from the viewport.
-          const r = rootRef.current?.getBoundingClientRect();
-          setAlignRight(!!r && window.innerWidth - r.left < 280);
           if (!open && selected && /^\d{4}-\d{2}/.test(selected)) {
             const d = new Date(selected + "T00:00:00");
             setView({ y: d.getFullYear(), m: d.getMonth() });
@@ -111,7 +126,7 @@ export function DateField({
         {display || <span className="text-on-surface-variant">dd/mm/yyyy</span>}
       </button>
       {open && (
-        <div className={`absolute top-full z-50 mt-1 w-64 rounded-lg border border-outline-variant bg-surface p-2 shadow-lg ${alignRight ? "right-0" : "left-0"}`}>
+        <div style={popupStyle} className="z-[60] w-64 rounded-lg border border-outline-variant bg-surface p-2 shadow-lg">
           <div className="mb-1 flex items-center justify-between px-1">
             <button type="button" onClick={() => shift(-1)} className="rounded px-1 text-on-surface hover:bg-surface-variant" aria-label="Previous month">‹</button>
             <span className="text-label-md font-label-md text-on-surface">

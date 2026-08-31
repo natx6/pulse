@@ -23,6 +23,8 @@ export function AddProductModal({ onClose }: Props) {
   const [packSize, setPackSize] = useState("1");
   const [batchNo, setBatchNo] = useState("");
   const [expiryDate, setExpiryDate] = useState("");
+  const [genericName, setGenericName] = useState("");
+  const [activeIngredient, setActiveIngredient] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [fdaResults, setFdaResults] = useState<FdaDrug[]>([]);
@@ -98,6 +100,8 @@ export function AddProductModal({ onClose }: Props) {
         category: category.trim() || null,
         supplier: supplier.trim() || null,
         strength: strength.trim() || null,
+        generic_name: genericName.trim() || null,
+        active_ingredient: activeIngredient.trim() || null,
         cost_price: cost,
         selling_price: sell,
         stock_qty: qty,
@@ -136,7 +140,7 @@ export function AddProductModal({ onClose }: Props) {
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-6 pb-20">
           <div className="grid grid-cols-1 gap-3">
             <label className="block">
               <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Name *</span>
@@ -163,6 +167,8 @@ export function AddProductModal({ onClose }: Props) {
                         e.preventDefault();
                         setName(d.product_name);
                         if (d.strength) setStrength(d.strength);
+                        if (d.generic_name) setGenericName(d.generic_name);
+                        if (d.active_ingredient) setActiveIngredient(d.active_ingredient);
                         // Auto-fill Category from FDA sub-category/classification where it looks like
                         // a shelf class (Antibiotic etc.), otherwise leave the dropdown for the user.
                         const fdaCat = (d.product_sub_category || d.product_category || "").trim();

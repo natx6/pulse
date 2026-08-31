@@ -18,6 +18,8 @@ export interface Product {
   fda_reg_no: string | null;
   is_controlled: number;
   active: number;
+  generic_name?: string | null;
+  active_ingredient?: string | null;
   /** Sell units per purchase pack (carton of 10 strips = 10). 1 = none. */
   pack_size?: number;
 }

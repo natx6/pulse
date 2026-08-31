@@ -116,7 +116,9 @@ export function PosPage() {
       return (
         p.name.toLowerCase().includes(q) ||
         (p.barcode ?? "").includes(q) ||
-        (p.manufacturer ?? "").toLowerCase().includes(q)
+        (p.manufacturer ?? "").toLowerCase().includes(q) ||
+        (p.generic_name ?? "").toLowerCase().includes(q) ||
+        (p.active_ingredient ?? "").toLowerCase().includes(q)
       );
     });
   }, [products, searchQuery, category]);
