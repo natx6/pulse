@@ -1,0 +1,242 @@
+import { useEffect, useState } from "react";
+import { createProduct, searchFdaDrugs, type FdaDrug } from "../db";
+import { useStore } from "../store/useStore";
+import { beep } from "../lib/audio";
+
+interface Props {
+  onClose(): void;
+}
+
+export function AddProductModal({ onClose }: Props) {
+  const refreshProducts = useStore((s) => s.refreshProducts);
+  const [name, setName] = useState("");
+  const [barcode, setBarcode] = useState("");
+  const [category, setCategory] = useState("");
+  const [supplier, setSupplier] = useState("");
+  const [strength, setStrength] = useState("");
+  const [costPrice, setCostPrice] = useState("");
+  const [sellingPrice, setSellingPrice] = useState("");
+  const [stockQty, setStockQty] = useState("");
+  const [reorderLevel, setReorderLevel] = useState("10");
+  const [packSize, setPackSize] = useState("1");
+  const [batchNo, setBatchNo] = useState("");
+  const [expiryDate, setExpiryDate] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [fdaResults, setFdaResults] = useState<FdaDrug[]>([]);
+  const [showFda, setShowFda] = useState(false);
+
+  useEffect(() => {
+    const q = name.trim();
+    if (q.length < 2) {
+      setFdaResults([]);
+      setShowFda(false);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      searchFdaDrugs(q, 8)
+        .then((r) => {
+          setFdaResults(r);
+          setShowFda(r.length > 0);
+        })
+        .catch(() => setFdaResults([]));
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [name]);
+
+  const submit = async () => {
+    const nm = name.trim();
+    if (!nm) {
+      setError("Product name is required.");
+      beep(false);
+      return;
+    }
+    const cost = Number(costPrice) || 0;
+    const sell = Number(sellingPrice) || 0;
+    if (sell <= 0) {
+      setError("Selling price must be above 0.");
+      beep(false);
+      return;
+    }
+    const qty = Math.max(0, Math.floor(Number(stockQty) || 0));
+    const reorder = Math.max(0, Math.floor(Number(reorderLevel) || 10));
+    const pack = Math.max(1, Math.floor(Number(packSize) || 1));
+    setBusy(true);
+    setError("");
+    try {
+      await createProduct({
+        name: nm,
+        barcode: barcode.trim() || null,
+        category: category.trim() || null,
+        supplier: supplier.trim() || null,
+        strength: strength.trim() || null,
+        cost_price: cost,
+        selling_price: sell,
+        stock_qty: qty,
+        reorder_level: reorder,
+        pack_size: pack,
+        batch_no: batchNo.trim() || null,
+        expiry_date: expiryDate.trim() || null,
+      });
+      await refreshProducts();
+      beep(true);
+      onClose();
+    } catch (e) {
+      setError(String(e).replace(/^Error: /, ""));
+      beep(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      data-modal-open
+      className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      <div className="flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
+        <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-6 py-4">
+          <div>
+            <h3 className="text-headline-md font-headline-md text-on-surface">Add Product</h3>
+            <p className="text-body-sm font-body-sm text-on-surface-variant">Hand-enter stock — type 2 letters for FDA suggestions.</p>
+          </div>
+          <button onClick={onClose} className="rounded-full p-1 text-on-surface-variant hover:bg-surface-variant">
+            <span className="material-symbols-outlined">close</span>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="grid grid-cols-1 gap-3">
+            <label className="block">
+              <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Name *</span>
+              <div className="relative">
+                <input
+                  autoFocus
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onFocus={() => fdaResults.length > 0 && setShowFda(true)}
+                  onBlur={() => window.setTimeout(() => setShowFda(false), 150)}
+                  placeholder="e.g. Paracetamol 500mg"
+                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                {showFda && fdaResults.length > 0 && (
+                  <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-56 overflow-auto rounded border border-outline-variant bg-surface shadow-lg">
+                    <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
+                      FDA Ghana — {fdaResults.length} match{fdaResults.length === 1 ? "" : "es"}
+                    </p>
+                    {fdaResults.map((d) => (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          setName(d.product_name);
+                          if (d.strength) setStrength(d.strength);
+                          if (d.product_category) setCategory(d.product_category);
+                          if (d.client_name) setSupplier(d.client_name);
+                          setShowFda(false);
+                        }}
+                        className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-surface-container-low"
+                      >
+                        <span className="text-body-sm font-semibold text-on-surface">{d.product_name}</span>
+                        <span className="text-[11px] text-on-surface-variant">
+                          {[d.generic_name, d.strength, d.dosage_form].filter(Boolean).join(" · ") || d.product_category || ""}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </label>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Barcode</span>
+                <input
+                  value={barcode}
+                  onChange={(e) => setBarcode(e.target.value)}
+                  placeholder="Optional"
+                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Category</span>
+                <input
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  placeholder="e.g. Analgesic"
+                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Strength</span>
+                <input
+                  value={strength}
+                  onChange={(e) => setStrength(e.target.value)}
+                  placeholder="e.g. 500mg"
+                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Supplier</span>
+                <input
+                  value={supplier}
+                  onChange={(e) => setSupplier(e.target.value)}
+                  placeholder="e.g. Kinapharma"
+                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <label className="block">
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Cost (GH₵)</span>
+                <input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} placeholder="0.00" inputMode="decimal" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Selling (GH₵) *</span>
+                <input value={sellingPrice} onChange={(e) => setSellingPrice(e.target.value)} placeholder="0.00" inputMode="decimal" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Stock qty</span>
+                <input value={stockQty} onChange={(e) => setStockQty(e.target.value)} placeholder="0" inputMode="numeric" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <label className="block">
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Reorder lvl</span>
+                <input value={reorderLevel} onChange={(e) => setReorderLevel(e.target.value)} placeholder="10" inputMode="numeric" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Pack size</span>
+                <input value={packSize} onChange={(e) => setPackSize(e.target.value)} placeholder="1" inputMode="numeric" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Batch no</span>
+                <input value={batchNo} onChange={(e) => setBatchNo(e.target.value)} placeholder="Optional" className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+              </label>
+            </div>
+
+            <label className="block">
+              <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Expiry date</span>
+              <input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none" />
+            </label>
+          </div>
+          {error && <p className="mt-3 text-body-sm font-body-sm text-error">{error}</p>}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-outline-variant bg-surface-container px-6 py-4">
+          <button onClick={onClose} className="rounded border border-outline px-4 py-2 text-label-md font-label-md text-on-surface hover:bg-surface-variant">Cancel</button>
+          <button onClick={() => void submit()} disabled={busy} className="rounded bg-primary px-6 py-2 text-label-md font-label-md text-on-primary shadow-sm hover:bg-on-primary-fixed-variant disabled:opacity-50">{busy ? "Saving…" : "Add Product"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}

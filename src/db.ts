@@ -287,6 +287,25 @@ export async function quickAddProduct(
   return await invoke("quick_add_product", { name, sellingPrice });
 }
 
+export interface NewProduct {
+  name: string;
+  barcode?: string | null;
+  category?: string | null;
+  supplier?: string | null;
+  strength?: string | null;
+  cost_price: number;
+  selling_price: number;
+  stock_qty: number;
+  reorder_level: number;
+  pack_size: number;
+  batch_no?: string | null;
+  expiry_date?: string | null;
+}
+
+export async function createProduct(p: NewProduct): Promise<number> {
+  return await invoke("create_product", { product: p });
+}
+
 /** Per-batch breakdown of a product's stock (FEFO ledger), nearest expiry first. */
 export async function loadBatches(productId: number): Promise<BatchRow[]> {
   const d = await initDb();

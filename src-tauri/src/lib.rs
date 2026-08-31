@@ -3690,6 +3690,72 @@ fn quick_add_product(app: AppHandle, name: String, selling_price: f64) -> Result
     Ok(id)
 }
 
+#[derive(Deserialize)]
+pub struct NewProduct {
+    name: String,
+    barcode: Option<String>,
+    category: Option<String>,
+    supplier: Option<String>,
+    strength: Option<String>,
+    cost_price: f64,
+    selling_price: f64,
+    stock_qty: i64,
+    reorder_level: i64,
+    pack_size: i64,
+    batch_no: Option<String>,
+    expiry_date: Option<String>,
+}
+
+#[tauri::command]
+fn create_product(app: AppHandle, product: NewProduct) -> Result<i64, String> {
+    let name = product.name.trim().to_string();
+    if name.is_empty() {
+        return Err("Product name is required".into());
+    }
+    if product.selling_price < 0.0 || product.cost_price < 0.0 {
+        return Err("Prices must be 0 or more".into());
+    }
+    if product.stock_qty < 0 {
+        return Err("Stock quantity cannot be negative".into());
+    }
+    let barcode = product.barcode.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+    let mut conn = open_db(&app)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO products (name, barcode, category, supplier, strength, cost_price, selling_price, stock_qty, reorder_level, pack_size, batch_no, expiry_date)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        rusqlite::params![
+            name,
+            barcode,
+            product.category.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()),
+            product.supplier.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()),
+            product.strength.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()),
+            product.cost_price,
+            product.selling_price,
+            product.stock_qty,
+            product.reorder_level,
+            product.pack_size.max(1),
+            product.batch_no.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()),
+            product.expiry_date.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty())
+        ],
+    )
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE constraint failed") {
+            "A product with that barcode already exists".to_string()
+        } else {
+            e.to_string()
+        }
+    })?;
+    let id = tx.last_insert_rowid();
+    if product.stock_qty > 0 {
+        add_to_batch(&tx, id, product.batch_no.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()), product.expiry_date.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()), product.stock_qty)?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
 const MIGRATIONS: &[(&str, &str)] = &[
     ("0001_init", include_str!("../migrations/0001_init.sql")),
     (
@@ -3919,6 +3985,7 @@ pub fn run() {
             backup_to_dir,
             intake_stock,
             quick_add_product,
+            create_product,
             search_fda_drugs,
             import_fda_catalog,
             refresh_fda_catalog

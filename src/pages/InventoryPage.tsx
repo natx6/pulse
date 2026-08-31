@@ -9,6 +9,7 @@ import { useFocusTrap } from "../lib/focusTrap";
 import { LabelModal } from "../components/LabelModal";
 import { ImportStockModal } from "../components/ImportStockModal";
 import { StockTakeModal } from "../components/StockTakeModal";
+import { AddProductModal } from "../components/AddProductModal";
 import type { BatchRow, Product } from "../types";
 
 function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reorder_level"> }) {
@@ -49,6 +50,7 @@ export function InventoryPage() {
   const [labelOpen, setLabelOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [stockTakeOpen, setStockTakeOpen] = useState(false);
+  const [addProductOpen, setAddProductOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [archived, setArchived] = useState<Product[]>([]);
   const [archiveArmed, setArchiveArmed] = useState<number | null>(null);
@@ -297,6 +299,13 @@ export function InventoryPage() {
           >
             <span className="material-symbols-outlined text-[16px]">print</span>
             <span className="text-label-md font-label-md">Print Label</span>
+          </button>
+          <button
+            onClick={() => setAddProductOpen(true)}
+            className="flex items-center gap-2 rounded border border-primary/40 bg-primary/5 px-3 py-1.5 text-primary hover:bg-primary/10"
+          >
+            <span className="material-symbols-outlined text-[16px]">add</span>
+            <span className="text-label-md font-label-md">Add Product</span>
           </button>
           <button
             onClick={() => setIntakeOpen(true)}
@@ -638,6 +647,7 @@ export function InventoryPage() {
         />
       )}
       {stockTakeOpen && <StockTakeModal onClose={() => setStockTakeOpen(false)} />}
+      {addProductOpen && <AddProductModal onClose={() => setAddProductOpen(false)} />}
     </div>
   );
 }
