@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { createProduct, searchFdaDrugs, type FdaDrug } from "../db";
+import { createProduct, loadSuppliers, searchFdaDrugs, type FdaDrug } from "../db";
 import { useStore } from "../store/useStore";
 import { beep } from "../lib/audio";
+import type { Supplier } from "../db";
 
 interface Props {
   onClose(): void;
@@ -25,6 +26,12 @@ export function AddProductModal({ onClose }: Props) {
   const [error, setError] = useState("");
   const [fdaResults, setFdaResults] = useState<FdaDrug[]>([]);
   const [showFda, setShowFda] = useState(false);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [supplierMode, setSupplierMode] = useState<"select" | "new">("select");
+
+  useEffect(() => {
+    loadSuppliers().then(setSuppliers).catch(() => setSuppliers([]));
+  }, []);
 
   useEffect(() => {
     const q = name.trim();
@@ -128,24 +135,25 @@ export function AddProductModal({ onClose }: Props) {
                       FDA Ghana — {fdaResults.length} match{fdaResults.length === 1 ? "" : "es"}
                     </p>
                     {fdaResults.map((d) => (
-                      <button
-                        key={d.id}
-                        type="button"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          setName(d.product_name);
-                          if (d.strength) setStrength(d.strength);
-                          if (d.product_category) setCategory(d.product_category);
-                          if (d.client_name) setSupplier(d.client_name);
-                          setShowFda(false);
-                        }}
-                        className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-surface-container-low"
-                      >
-                        <span className="text-body-sm font-semibold text-on-surface">{d.product_name}</span>
-                        <span className="text-[11px] text-on-surface-variant">
-                          {[d.generic_name, d.strength, d.dosage_form].filter(Boolean).join(" · ") || d.product_category || ""}
-                        </span>
-                      </button>
+                    <button
+                      key={d.id}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setName(d.product_name);
+                        if (d.strength) setStrength(d.strength);
+                        if (d.product_category) setCategory(d.product_category);
+                        // Do not auto-fill supplier from FDA — supplier is the local wholesaler
+                        // you requisition from (Kinapharma etc.), not the FDA applicant/manufacturer.
+                        setShowFda(false);
+                      }}
+                      className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-surface-container-low"
+                    >
+                      <span className="text-body-sm font-semibold text-on-surface">{d.product_name}</span>
+                      <span className="text-[11px] text-on-surface-variant">
+                        {[d.generic_name, d.strength, d.dosage_form].filter(Boolean).join(" · ") || d.product_category || ""}
+                      </span>
+                    </button>
                     ))}
                   </div>
                 )}
@@ -184,13 +192,48 @@ export function AddProductModal({ onClose }: Props) {
                 />
               </label>
               <label className="block">
-                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Supplier</span>
-                <input
-                  value={supplier}
-                  onChange={(e) => setSupplier(e.target.value)}
-                  placeholder="e.g. Kinapharma"
-                  className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
-                />
+                <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Supplier — you requisition from</span>
+                {supplierMode === "select" ? (
+                  <select
+                    value={supplier}
+                    onChange={(e) => {
+                      if (e.target.value === "__new__") {
+                        setSupplierMode("new");
+                        setSupplier("");
+                      } else {
+                        setSupplier(e.target.value);
+                      }
+                    }}
+                    className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                  >
+                    <option value="">— Select supplier —</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.name}>
+                        {s.name}
+                      </option>
+                    ))}
+                    <option value="__new__">+ New supplier…</option>
+                  </select>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      value={supplier}
+                      onChange={(e) => setSupplier(e.target.value)}
+                      placeholder="e.g. Kinapharma"
+                      className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSupplierMode("select");
+                        setSupplier("");
+                      }}
+                      className="shrink-0 rounded border border-outline-variant px-2 text-label-md text-on-surface hover:bg-surface-variant"
+                    >
+                      Select
+                    </button>
+                  </div>
+                )}
               </label>
             </div>
 

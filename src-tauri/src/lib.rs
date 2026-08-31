@@ -2794,6 +2794,29 @@ fn search_fda_drugs(app: AppHandle, query: String, limit: Option<i64>) -> Result
     for r in rows {
         out.push(r.map_err(|e| e.to_string())?);
     }
+    // Boost product_name matches and de-prioritize veterinary (VETO) for human pharmacy use.
+    {
+        let ql = q.to_lowercase();
+        out.sort_by(|a, b| {
+            let score = |d: &FdaDrug| {
+                let mut s = 0;
+                if d.product_name.to_lowercase().contains(&ql) {
+                    s += 10;
+                }
+                if d.generic_name.as_deref().unwrap_or("").to_lowercase().contains(&ql) {
+                    s += 5;
+                }
+                if d.active_ingredient.as_deref().unwrap_or("").to_lowercase().contains(&ql) {
+                    s += 2;
+                }
+                if d.product_name.to_uppercase().contains("VETO") {
+                    s -= 5;
+                }
+                s
+            };
+            score(b).cmp(&score(a))
+        });
+    }
     // Fallback: if FTS finds nothing, try LIKE (handles short/abbreviated terms).
     if out.is_empty() {
         let like_q = format!("%{}%", q);

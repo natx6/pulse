@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../store/useStore";
-import { backupDb, commitStockImport, parseStockFile } from "../db";
-import type { ImportSummary, ParsedSheet, StockImportRow } from "../db";
+import { backupDb, commitStockImport, parseStockFile, searchFdaDrugs } from "../db";
+import type { FdaDrug, ImportSummary, ParsedSheet, StockImportRow } from "../db";
 import { beep } from "../lib/audio";
 
 /** Bulk-load stock from an Excel/CSV export of the old system:
@@ -25,6 +25,9 @@ export function ImportStockModal({
   const [err, setErr] = useState("");
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [backupPath, setBackupPath] = useState("");
+  const [fdaOverrides, setFdaOverrides] = useState<Record<number, string>>({});
+  const [fdaSuggestions, setFdaSuggestions] = useState<Record<number, FdaDrug | null>>({});
+  const [bulkFdaBusy, setBulkFdaBusy] = useState(false);
 
   const pickFile = async () => {
     setErr("");
@@ -52,12 +55,15 @@ export function ImportStockModal({
     if (!sheet) return null;
     const recs: StockImportRow[] = [];
     let skip = 0;
-    for (const row of sheet.rows) {
+    for (let i = 0; i < sheet.rows.length; i++) {
+      const row = sheet.rows[i];
       const r = rowToRecord(row, mapping);
       if (!r) {
         skip++;
         continue;
       }
+      // Apply FDA override if the user accepted it for this row.
+      if (fdaOverrides[i] !== undefined) r.name = fdaOverrides[i]!;
       recs.push(r);
     }
     let created = 0;
@@ -71,7 +77,29 @@ export function ImportStockModal({
       else created++;
     }
     return { total: sheet.rows.length, usable: recs.length, created, updated, skip, recs };
-  }, [sheet, mapping, products]);
+  }, [sheet, mapping, products, fdaOverrides]);
+
+  // Fetch FDA suggestions for the preview rows (first 5) when the sheet/mapping changes.
+  useEffect(() => {
+    setFdaOverrides({});
+    setFdaSuggestions({});
+    if (!sheet || phase !== "map") return;
+    const idxs = sheet.rows.slice(0, 5).map((_, i) => i);
+    idxs.forEach(async (i) => {
+      const r = rowToRecord(sheet.rows[i], mapping);
+      const q = r?.name?.trim();
+      if (!q || q.length < 2) {
+        setFdaSuggestions((m) => ({ ...m, [i]: null }));
+        return;
+      }
+      try {
+        const res = await searchFdaDrugs(q, 1);
+        setFdaSuggestions((m) => ({ ...m, [i]: res[0] ?? null }));
+      } catch {
+        setFdaSuggestions((m) => ({ ...m, [i]: null }));
+      }
+    });
+  }, [sheet, mapping, phase]);
 
   const doImport = async () => {
     if (!stats || stats.recs.length === 0) return;
@@ -208,16 +236,91 @@ export function ImportStockModal({
                     First rows as they'll be read
                   </p>
                   <div className="divide-y divide-outline-variant/50">
-                    {preview.map((r, i) => (
-                      <div key={i} className="flex items-center justify-between gap-3 px-3 py-1 text-body-sm text-on-surface">
-                        <span className="truncate">{r?.name ?? "— no name —"}</span>
-                        <span className="shrink-0 font-data-mono text-data-mono text-on-surface-variant">
-                          {r?.barcode ?? "no barcode"} · {r?.stock_qty ?? 0} units ·{" "}
-                          {r?.selling_price != null ? `GH₵ ${r.selling_price}` : "no price"}
-                        </span>
-                      </div>
-                    ))}
+                    {preview.map((r, i) => {
+                      const ov = fdaOverrides[i];
+                      const sug = fdaSuggestions[i];
+                      const displayName = ov ?? r?.name ?? "— no name —";
+                      const showSug = sug && sug.product_name.toLowerCase() !== (r?.name ?? "").toLowerCase() && !ov;
+                      return (
+                        <div key={i} className="flex flex-col gap-1 px-3 py-1.5">
+                          <div className="flex items-center justify-between gap-3 text-body-sm text-on-surface">
+                            <span className="truncate">{displayName}</span>
+                            <span className="shrink-0 font-data-mono text-data-mono text-on-surface-variant">
+                              {r?.barcode ?? "no barcode"} · {r?.stock_qty ?? 0} units ·{" "}
+                              {r?.selling_price != null ? `GH₵ ${r.selling_price}` : "no price"}
+                            </span>
+                          </div>
+                          {showSug && (
+                            <div className="flex items-center gap-2 rounded bg-primary/5 px-2 py-1">
+                              <span className="text-[11px] text-on-surface-variant">FDA: {sug.product_name}</span>
+                              <span className="text-[11px] text-on-surface-variant">· {([sug.generic_name, sug.strength].filter(Boolean).join(" · "))}</span>
+                              <button
+                                onClick={() => setFdaOverrides((m) => ({ ...m, [i]: sug.product_name }))}
+                                className="ml-auto shrink-0 rounded bg-primary px-2 py-0.5 text-[11px] font-bold text-on-primary hover:bg-on-primary-fixed-variant"
+                              >
+                                Use FDA
+                              </button>
+                            </div>
+                          )}
+                          {ov && <p className="text-[11px] text-primary">Will import as FDA name</p>}
+                        </div>
+                      );
+                    })}
                   </div>
+                </div>
+              )}
+
+              {sheet && stats && stats.recs.length > 0 && (
+                <div className="mb-3 flex items-center gap-2">
+                  <button
+                    onClick={async () => {
+                      if (!sheet) return;
+                      setBulkFdaBusy(true);
+                      try {
+                        // Check the FDA catalog is populated.
+                        const { initDb } = await import("../db");
+                        const d = await initDb();
+                        const cnt = await d.select<{ n: number }[]>("SELECT COUNT(*) as n FROM fda_drugs", []);
+                        if ((cnt[0]?.n ?? 0) === 0) {
+                          setErr("FDA catalog is empty — update it first in Settings → FDA Ghana catalog.");
+                          return;
+                        }
+                        let applied = 0;
+                        for (let i = 0; i < sheet.rows.length; i++) {
+                          const r = rowToRecord(sheet.rows[i], mapping);
+                          const q = r?.name?.trim();
+                          if (!q || q.length < 2 || fdaOverrides[i] !== undefined) continue;
+                          try {
+                            const res = await searchFdaDrugs(q, 1);
+                            const top = res[0];
+                            if (top && top.product_name.toLowerCase() !== q.toLowerCase()) {
+                              setFdaOverrides((m) => ({ ...m, [i]: top.product_name }));
+                              applied++;
+                              // Small pause to keep UI responsive for large files.
+                              if (applied % 20 === 0) await new Promise((res) => setTimeout(res, 0));
+                            }
+                          } catch {
+                            /* ignore per-row failures */
+                          }
+                        }
+                        if (applied === 0) setErr("No FDA matches found for these names — they'll import as-is.");
+                      } finally {
+                        setBulkFdaBusy(false);
+                      }
+                    }}
+                    disabled={bulkFdaBusy}
+                    className="rounded border border-primary/40 bg-primary/5 px-3 py-1 text-label-md font-label-md text-primary hover:bg-primary/10 disabled:opacity-50"
+                  >
+                    {bulkFdaBusy ? "Checking FDA…" : "Apply FDA names where found (all rows)"}
+                  </button>
+                  {Object.keys(fdaOverrides).length > 0 && (
+                    <button
+                      onClick={() => setFdaOverrides({})}
+                      className="rounded border border-outline-variant px-3 py-1 text-label-md font-label-md text-on-surface hover:bg-surface-variant"
+                    >
+                      Undo FDA names
+                    </button>
+                  )}
                 </div>
               )}
 
