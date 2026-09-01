@@ -443,19 +443,19 @@ export function ImportStockModal({
 }
 
 const FIELDS: { key: keyof StockImportRow; label: string; aliases: string[] }[] = [
-  { key: "name", label: "Product name", aliases: ["name", "product", "item", "description", "drug", "medicine", "drug name", "generic name", "product name", "item name"] },
+  { key: "name", label: "Product name", aliases: ["name", "product", "item", "description", "drug", "medicine", "drug name", "generic name", "product name", "item name", "name of medication", "medication", "particulars", "item description", "product description"] },
   { key: "barcode", label: "Barcode", aliases: ["barcode", "bar code", "code", "ean", "upc", "sku", "product code", "barcode id"] },
-  { key: "selling_price", label: "Selling price", aliases: ["selling price", "price", "unit price", "retail price", "sale price", "selling"] },
+  { key: "selling_price", label: "Selling price", aliases: ["selling price", "price", "unit price", "retail price", "sale price", "selling", "base price", "sale price (base price)"] },
   { key: "cost_price", label: "Cost price", aliases: ["cost", "cost price", "buying price", "unit cost", "purchase price", "cogs"] },
   { key: "stock_qty", label: "Stock quantity", aliases: ["qty", "quantity", "stock", "stock qty", "balance", "on hand", "available", "current stock", "stock balance"] },
   { key: "reorder_level", label: "Reorder level", aliases: ["reorder", "reorder level", "min stock", "minimum", "reorder point", "min qty"] },
   { key: "pack_size", label: "Units per pack", aliases: ["pack size", "units per pack", "pack qty", "units in pack", "per pack", "pieces per pack"] },
-  { key: "category", label: "Category", aliases: ["category", "class", "group", "therapeutic class"] },
-  { key: "manufacturer", label: "Manufacturer", aliases: ["manufacturer", "maker", "brand", "company"] },
-  { key: "supplier", label: "Supplier", aliases: ["supplier", "vendor", "distributor"] },
-  { key: "strength", label: "Strength / dosage", aliases: ["strength", "dosage", "dose", "formulation"] },
-  { key: "unit", label: "Unit / pack", aliases: ["unit", "uom", "pack", "package"] },
-  { key: "batch_no", label: "Batch no.", aliases: ["batch", "batch no", "batch number", "lot", "lot no"] },
+  { key: "category", label: "Category", aliases: ["category", "class", "group", "therapeutic class", "medication type", "medication", "drug category"] },
+  { key: "manufacturer", label: "Manufacturer", aliases: ["manufacturer", "maker", "brand", "company", "brand name"] },
+  { key: "supplier", label: "Supplier", aliases: ["supplier", "vendor", "distributor", "supplier name", "vendor name"] },
+  { key: "strength", label: "Strength / dosage", aliases: ["strength", "dosage", "dose", "formulation", "form", "dosage form"] },
+  { key: "unit", label: "Unit / pack", aliases: ["unit", "uom", "pack", "package", "selling unit", "route", "form"] },
+  { key: "batch_no", label: "Batch no.", aliases: ["batch", "batch no", "batch number", "lot", "lot no", "batch number"] },
   { key: "expiry_date", label: "Expiry date", aliases: ["expiry", "expiry date", "exp", "expiration", "exp date"] },
   { key: "fda_reg_no", label: "FDA reg. no.", aliases: ["fda", "fda reg", "reg no", "registration", "fda no", "fda registration"] },
   { key: "rx_flag", label: "Prescription (RX)", aliases: ["rx", "prescription", "rx flag"] },
@@ -465,7 +465,8 @@ const FIELDS: { key: keyof StockImportRow; label: string; aliases: string[] }[] 
 /** Two passes: exact header match first, then "contains" — a used column is
  * never claimed twice, so "Cost Price" won't also feed selling price. */
 function autoMap(headers: string[]): Record<string, number> {
-  const lower = headers.map((h) => h.toLowerCase().trim());
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const lower = headers.map((h) => norm(h));
   const used = new Set<number>();
   const mapping: Record<string, number> = {};
   for (const pass of [0, 1]) {
@@ -473,9 +474,10 @@ function autoMap(headers: string[]): Record<string, number> {
       if (mapping[f.key] !== undefined) continue;
       const idx = lower.findIndex((h, i) => {
         if (used.has(i)) return false;
-        return pass === 0
-          ? f.aliases.some((a) => h === a)
-          : f.aliases.some((a) => h.startsWith(`${a} `) || h.includes(a));
+        return f.aliases.some((a) => {
+          const na = norm(a);
+          return pass === 0 ? h === na : h === na || h.startsWith(`${na} `) || h.includes(na);
+        });
       });
       if (idx >= 0) {
         mapping[f.key] = idx;
