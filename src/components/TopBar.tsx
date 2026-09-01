@@ -21,6 +21,8 @@ export function TopBar() {
   const setSearch = useStore((s) => s.setSearch);
   const pharmacyName = useStore((s) => s.pharmacyName);
   const products = useStore((s) => s.products);
+  const currentUser = useStore((s) => s.currentUser);
+  const isWorker = currentUser?.role === "worker";
 
   const [notifOpen, setNotifOpen] = useState(false);
   const [purchases, setPurchases] = useState<Purchase[]>([]);
@@ -168,11 +170,11 @@ export function TopBar() {
     rawLow.forEach((p) => (next[lowKey(p.id)] = true));
     rawExpiring.forEach((p) => (next[expKey(p.id, p.expiry_date)] = true));
     rawExpired.forEach((p) => (next[expKey(p.id, p.expiry_date)] = true));
-    rawOpenPurchases.forEach((p) => (next[poKey(p.id)] = true));
+    if (!isWorker) rawOpenPurchases.forEach((p) => (next[poKey(p.id)] = true));
     persistDismissed(next);
   };
 
-  const alertCount = low.length + expiring.length + expired.length + openPurchases.length;
+  const alertCount = low.length + expiring.length + expired.length + (isWorker ? 0 : openPurchases.length);
   const tipLabel = alertCount > 0 ? `${alertCount} alert${alertCount === 1 ? "" : "s"} — tap to view` : "No alerts — all good";
 
   const Section = ({
@@ -394,16 +396,18 @@ export function TopBar() {
                     items={expired.map((p) => ({ name: p.name, hint: p.expiry_date ?? "", id: p.id, kind: "product" as const }))}
                     to="inventory"
                   />
-                  <Section
-                    title="Open purchases"
-                    items={openPurchases.map((p) => ({
-                      name: p.reference_no ?? p.id,
-                      hint: p.supplier_name ?? "no supplier",
-                      id: p.id,
-                      kind: "purchase" as const,
-                    }))}
-                    to="restock"
-                  />
+                  {!isWorker && (
+                    <Section
+                      title="Open purchases"
+                      items={openPurchases.map((p) => ({
+                        name: p.reference_no ?? p.id,
+                        hint: p.supplier_name ?? "no supplier",
+                        id: p.id,
+                        kind: "purchase" as const,
+                      }))}
+                      to="restock"
+                    />
+                  )}
                   {alertCount === 0 && (
                     <p className="px-3 py-6 text-center text-body-sm text-on-surface-variant">
                       Nothing needs attention.
