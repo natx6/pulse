@@ -1,8 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useStore } from "../store/useStore";
-import { activeOperatorAt } from "../lib/shift";
 import { changeOwnPassword, verifyManagerPin } from "../db";
-import { Tip } from "./Tip";
 import { PinPromptModal } from "./PinPromptModal";
 import type { PageId } from "../types";
 
@@ -21,11 +19,6 @@ const NAV: { id: PageId; icon: string; label: string }[] = [
 export function Sidebar() {
   const page = useStore((s) => s.page);
   const setPage = useStore((s) => s.setPage);
-  const operator = useStore((s) => s.operator);
-  const operators = useStore((s) => s.operators);
-  const autoOperator = useStore((s) => s.autoOperator);
-  const loadOperators = useStore((s) => s.loadOperators);
-  const setOperator = useStore((s) => s.setOperator);
   const role = useStore((s) => s.role);
   const setRole = useStore((s) => s.setRole);
   const [pwOpen, setPwOpen] = useState(false);
@@ -39,23 +32,10 @@ export function Sidebar() {
   /** Manager-PIN prompt for unlocking Manager mode. */
   const [unlockOpen, setUnlockOpen] = useState(false);
 
-  useEffect(() => {
-    void loadOperators();
-  }, [loadOperators]);
-
   const isWorker = currentUser?.role === "worker";
   const visibleNav = isWorker
     ? NAV.filter((n) => ["dashboard", "pos", "history", "customers", "inventory", "support"].includes(n.id))
     : NAV;
-
-  const activeShift = autoOperator ? activeOperatorAt(operators) : null;
-  const sub = activeShift
-    ? `Auto · ${activeShift.name} until ${activeShift.shift_end}`
-    : autoOperator
-      ? "Auto on — no shift covers now"
-      : operator
-        ? "On duty — tap to switch"
-        : "Tap to set operator";
 
   return (
     <nav className="fixed left-0 top-0 z-30 flex h-screen w-64 flex-col bg-[#191c20] px-gutter py-density-medium text-primary-fixed">

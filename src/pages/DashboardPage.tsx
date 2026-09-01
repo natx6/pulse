@@ -28,7 +28,6 @@ const TODAY = "date(s.timestamp) = date('now', 'localtime')";
  * what should be in the till, and everything shouting for attention (stock,
  * expiry, open orders). One tap drops into POS; nothing here blocks selling. */
 export function DashboardPage() {
-  const pharmacyName = useStore((s) => s.pharmacyName);
   const operator = useStore((s) => s.operator);
   const setPage = useStore((s) => s.setPage);
   const [snap, setSnap] = useState<Snapshot | null>(null);

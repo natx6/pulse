@@ -3,10 +3,8 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../store/useStore";
 import {
   backupDbToDir,
-  deleteOperator,
   getSettings,
   isManagerPinSet,
-  saveOperator,
   saveSetting,
   setManagerPin,
   listBackups,
@@ -21,23 +19,17 @@ import {
   updateUser,
   resetUserPassword,
 } from "../db";
-import type { AppUser } from "../db";
-import type { Operator, BackupInfo } from "../db";
+import type { AppUser, BackupInfo } from "../db";
 import { beep } from "../lib/audio";
 import { PinPromptModal } from "../components/PinPromptModal";
 
 export function SettingsPage() {
   const pharmacyName = useStore((s) => s.pharmacyName);
   const taxRate = useStore((s) => s.taxRate);
-  const operator = useStore((s) => s.operator);
-  const operators = useStore((s) => s.operators);
   const receiptFooter = useStore((s) => s.receiptFooter);
-  const autoOperator = useStore((s) => s.autoOperator);
   const supportEmail = useStore((s) => s.supportEmail);
   const momoNumber = useStore((s) => s.momoNumber);
   const applySettings = useStore((s) => s.applySettings);
-  const setOperator = useStore((s) => s.setOperator);
-  const loadOperators = useStore((s) => s.loadOperators);
 
   const [name, setName] = useState(pharmacyName);
   const [tax, setTax] = useState(String(taxRate));
@@ -225,21 +217,10 @@ export function SettingsPage() {
     }
   };
 
-  const [rows, setRows] = useState<Operator[]>([]);
-  const [newName, setNewName] = useState("");
-  const [newStart, setNewStart] = useState("");
-  const [newEnd, setNewEnd] = useState("");
-  const [addErr, setAddErr] = useState("");
-  const [confirmDel, setConfirmDel] = useState<number | null>(null);
-
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [backupErr, setBackupErr] = useState("");
   const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(false);
-
-  useEffect(() => {
-    setRows(operators);
-  }, [operators]);
 
   const loadBackups = async () => {
     try {
@@ -361,53 +342,7 @@ export function SettingsPage() {
     }
   };
 
-  const addOperator = async () => {
-    if (!newName.trim()) return;
-    setAddErr("");
-    try {
-      await saveOperator({
-        name: newName,
-        shift_start: newStart || null,
-        shift_end: newEnd || null,
-      });
-      setNewName("");
-      setNewStart("");
-      setNewEnd("");
-      await loadOperators();
-      beep(true);
-    } catch (e) {
-      // UNIQUE constraint on operators.name is the common case — give it a
-      // plain-language message; anything else, show what actually happened.
-      const msg = String(e).replace(/^Error: /, "");
-      setAddErr(msg.includes("UNIQUE constraint") ? "That name already exists." : msg);
-      beep(false);
-    }
-  };
 
-  const removeOperator = async (row: Operator) => {
-    setSettingsErr("");
-    try {
-      await deleteOperator(row.id);
-      if (operator === row.name) setOperator("");
-      await loadOperators();
-      beep(true);
-    } catch (e) {
-      setSettingsErr(String(e).replace(/^Error: /, ""));
-      beep(false);
-    }
-  };
-
-  const toggleAuto = async (v: boolean) => {
-    setSettingsErr("");
-    try {
-      await saveSetting("auto_operator", v ? "1" : "0");
-      applySettings({ autoOperator: v });
-      beep(true);
-    } catch (e) {
-      setSettingsErr(String(e).replace(/^Error: /, ""));
-      beep(false);
-    }
-  };
 
   const toggleDark = async () => {
     setSettingsErr("");
