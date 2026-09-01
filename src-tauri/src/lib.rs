@@ -3472,12 +3472,12 @@ fn user_from_row(row: &rusqlite::Row) -> rusqlite::Result<UserRow> {
 fn create_user(
     app: AppHandle,
     username: String,
-    display_name: String,
+    displayName: String,
     password: String,
     role: String,
 ) -> Result<UserRow, String> {
     let username = username.trim().to_lowercase();
-    let display_name = display_name.trim().to_string();
+    let display_name = displayName.trim().to_string();
     let role = role.trim().to_lowercase();
     if username.is_empty() || username.len() < 3 {
         return Err("Username must be at least 3 characters".into());
@@ -3573,12 +3573,12 @@ fn list_users(app: AppHandle) -> Result<Vec<UserRow>, String> {
 fn update_user(
     app: AppHandle,
     id: i64,
-    display_name: Option<String>,
+    displayName: Option<String>,
     role: Option<String>,
-    is_active: Option<bool>,
+    isActive: Option<bool>,
 ) -> Result<UserRow, String> {
     let conn = open_db(&app)?;
-    if let Some(dn) = display_name {
+    if let Some(dn) = displayName {
         let dn = dn.trim().to_string();
         if dn.is_empty() {
             return Err("Display name cannot be empty".into());
@@ -3606,7 +3606,7 @@ fn update_user(
         conn.execute("UPDATE users SET role = ?1 WHERE id = ?2", rusqlite::params![r, id])
             .map_err(|e| e.to_string())?;
     }
-    if let Some(active) = is_active {
+    if let Some(active) = isActive {
         // Prevent deactivating the last manager.
         if !active {
             let mgr_count: i64 = conn
@@ -3633,11 +3633,11 @@ fn update_user(
 }
 
 #[tauri::command]
-fn reset_user_password(app: AppHandle, id: i64, new_password: String) -> Result<(), String> {
-    if new_password.len() < 4 {
+fn reset_user_password(app: AppHandle, id: i64, newPassword: String) -> Result<(), String> {
+    if newPassword.len() < 4 {
         return Err("Password must be at least 4 characters".into());
     }
-    let hash = hash_pin(&new_password);
+    let hash = hash_pin(&newPassword);
     let conn = open_db(&app)?;
     let n = conn
         .execute(
@@ -3655,10 +3655,10 @@ fn reset_user_password(app: AppHandle, id: i64, new_password: String) -> Result<
 fn change_own_password(
     app: AppHandle,
     username: String,
-    old_password: String,
-    new_password: String,
+    oldPassword: String,
+    newPassword: String,
 ) -> Result<(), String> {
-    if new_password.len() < 4 {
+    if newPassword.len() < 4 {
         return Err("New password must be at least 4 characters".into());
     }
     let username = username.trim().to_lowercase();
@@ -3670,10 +3670,10 @@ fn change_own_password(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(|_| "Account not found".to_string())?;
-    if !pin_matches(&stored, &old_password) {
+    if !pin_matches(&stored, &oldPassword) {
         return Err("Current password is incorrect".into());
     }
-    let hash = hash_pin(&new_password);
+    let hash = hash_pin(&newPassword);
     conn.execute(
         "UPDATE users SET password_hash = ?1, must_change_password = 0 WHERE id = ?2",
         rusqlite::params![hash, id],

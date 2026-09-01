@@ -720,7 +720,7 @@ export async function createUser(
   password: string,
   role: "manager" | "worker",
 ): Promise<AppUser> {
-  return await invoke("create_user", { username, display_name: displayName, password, role });
+  return await invoke("create_user", { username, displayName, password, role });
 }
 
 export async function loginUser(username: string, password: string): Promise<AppUser> {
@@ -737,14 +737,14 @@ export async function updateUser(
 ): Promise<AppUser> {
   return await invoke("update_user", {
     id,
-    display_name: opts.display_name ?? null,
+    displayName: opts.display_name ?? null,
     role: opts.role ?? null,
-    is_active: opts.is_active ?? null,
+    isActive: opts.is_active ?? null,
   });
 }
 
 export async function resetUserPassword(id: number, newPassword: string): Promise<void> {
-  return await invoke("reset_user_password", { id, new_password: newPassword });
+  return await invoke("reset_user_password", { id, newPassword });
 }
 
 export async function changeOwnPassword(
@@ -752,7 +752,7 @@ export async function changeOwnPassword(
   oldPassword: string,
   newPassword: string,
 ): Promise<void> {
-  return await invoke("change_own_password", { username, old_password: oldPassword, new_password: newPassword });
+  return await invoke("change_own_password", { username, oldPassword, newPassword });
 }
 
 // ---- Requisitions (orders + supplier invoices) ----
