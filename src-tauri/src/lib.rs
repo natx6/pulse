@@ -3472,6 +3472,7 @@ fn user_from_row(row: &rusqlite::Row) -> rusqlite::Result<UserRow> {
 fn create_user(
     app: AppHandle,
     username: String,
+    #[serde(alias = "displayName")]
     display_name: String,
     password: String,
     role: String,
@@ -3573,8 +3574,10 @@ fn list_users(app: AppHandle) -> Result<Vec<UserRow>, String> {
 fn update_user(
     app: AppHandle,
     id: i64,
+    #[serde(alias = "displayName")]
     display_name: Option<String>,
     role: Option<String>,
+    #[serde(alias = "isActive")]
     is_active: Option<bool>,
 ) -> Result<UserRow, String> {
     let conn = open_db(&app)?;
@@ -3633,7 +3636,12 @@ fn update_user(
 }
 
 #[tauri::command]
-fn reset_user_password(app: AppHandle, id: i64, new_password: String) -> Result<(), String> {
+fn reset_user_password(
+    app: AppHandle,
+    id: i64,
+    #[serde(alias = "newPassword")]
+    new_password: String,
+) -> Result<(), String> {
     if new_password.len() < 4 {
         return Err("Password must be at least 4 characters".into());
     }
@@ -3655,7 +3663,9 @@ fn reset_user_password(app: AppHandle, id: i64, new_password: String) -> Result<
 fn change_own_password(
     app: AppHandle,
     username: String,
+    #[serde(alias = "oldPassword")]
     old_password: String,
+    #[serde(alias = "newPassword")]
     new_password: String,
 ) -> Result<(), String> {
     if new_password.len() < 4 {
