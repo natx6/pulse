@@ -76,6 +76,11 @@ export function ProductTour() {
   const setPage = useStore((s) => s.setPage);
   const setTourOpen = useStore((s) => s.setTourOpen);
   const applySettings = useStore((s) => s.applySettings);
+  const currentUser = useStore((s) => s.currentUser);
+  const isWorker = currentUser?.role === "worker";
+  const steps = isWorker
+    ? STEPS.filter((s) => !["restock", "analytics", "expenses", "settings"].includes(s.page ?? ""))
+    : STEPS;
   const [step, setStep] = useState(0);
   const [rect, setRect] = useState<Box | null>(null);
   const [cardPos, setCardPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
@@ -93,7 +98,7 @@ export function ProductTour() {
 
   // Navigate to the step's page, scroll the anchor into view, then measure it.
   useLayoutEffect(() => {
-    const s = STEPS[step];
+    const s = steps[step];
     if (s.page) setPage(s.page);
     const measure = () => {
       const el = s.target ? document.querySelector<HTMLElement>(`[data-tour="${s.target}"]`) : null;
@@ -142,7 +147,7 @@ export function ProductTour() {
       if (e.key === "Escape") void finish();
     };
     const onResize = () => {
-      const s = STEPS[step];
+      const s = steps[step];
       const el = s.target ? document.querySelector<HTMLElement>(`[data-tour="${s.target}"]`) : null;
       if (el) {
         const r = el.getBoundingClientRect();
@@ -157,7 +162,7 @@ export function ProductTour() {
     };
   }, [step, finish]);
 
-  const last = step === STEPS.length - 1;
+  const last = step === steps.length - 1;
   const next = () => (last ? void finish() : setStep((i) => i + 1));
   const back = () => setStep((i) => Math.max(0, i - 1));
 
@@ -185,11 +190,11 @@ export function ProductTour() {
         className="absolute z-[192] w-80 rounded-xl border border-outline-variant bg-surface p-4 shadow-2xl"
         style={{ top: cardPos.top, left: cardPos.left }}
       >
-        <h3 className="text-title-md font-title-md font-medium text-on-surface">{STEPS[step].title}</h3>
-        <p className="mt-1 text-body-sm font-body-sm text-on-surface-variant">{STEPS[step].body}</p>
+        <h3 className="text-title-md font-title-md font-medium text-on-surface">{steps[step].title}</h3>
+        <p className="mt-1 text-body-sm font-body-sm text-on-surface-variant">{steps[step].body}</p>
 
         <div className="mt-3 flex items-center gap-1.5">
-          {STEPS.map((_, i) => (
+          {steps.map((_, i) => (
             <span
               key={i}
               className={`h-1.5 rounded-full transition-all ${

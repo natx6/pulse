@@ -141,7 +141,7 @@ export function DashboardPage() {
         <div>
           <h2 className="text-headline-lg font-headline-lg text-on-surface">
             {greeting}
-            {operator ? `, ${operator}` : ""} — {pharmacyName}
+            {operator ? `, ${operator}` : ""}
           </h2>
           <p className="text-body-md font-body-md text-on-surface-variant">
             {new Date().toLocaleDateString(undefined, {
