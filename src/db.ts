@@ -704,6 +704,57 @@ export async function refreshFdaCatalog(): Promise<number> {
   return await invoke("refresh_fda_catalog");
 }
 
+export interface AppUser {
+  id: number;
+  username: string;
+  display_name: string;
+  role: "manager" | "worker";
+  is_active: number;
+  must_change_password: number;
+  created_at: string;
+}
+
+export async function createUser(
+  username: string,
+  displayName: string,
+  password: string,
+  role: "manager" | "worker",
+): Promise<AppUser> {
+  return await invoke("create_user", { username, display_name: displayName, password, role });
+}
+
+export async function loginUser(username: string, password: string): Promise<AppUser> {
+  return await invoke("login_user", { username, password });
+}
+
+export async function listUsers(): Promise<AppUser[]> {
+  return await invoke("list_users");
+}
+
+export async function updateUser(
+  id: number,
+  opts: { display_name?: string; role?: "manager" | "worker"; is_active?: boolean },
+): Promise<AppUser> {
+  return await invoke("update_user", {
+    id,
+    display_name: opts.display_name ?? null,
+    role: opts.role ?? null,
+    is_active: opts.is_active ?? null,
+  });
+}
+
+export async function resetUserPassword(id: number, newPassword: string): Promise<void> {
+  return await invoke("reset_user_password", { id, new_password: newPassword });
+}
+
+export async function changeOwnPassword(
+  username: string,
+  oldPassword: string,
+  newPassword: string,
+): Promise<void> {
+  return await invoke("change_own_password", { username, old_password: oldPassword, new_password: newPassword });
+}
+
 // ---- Requisitions (orders + supplier invoices) ----
 
 export interface Supplier {

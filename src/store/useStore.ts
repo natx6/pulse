@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { CartLine, PageId, Patient, Product, Role } from "../types";
 import { loadOperators as dbLoadOperators, loadProducts, saveSetting } from "../db";
-import type { Operator } from "../db";
+import type { AppUser, Operator } from "../db";
 
 interface AppState {
   page: PageId;
@@ -30,8 +30,9 @@ interface AppState {
   searchQuery: string;
   quickAdd: { barcode: string | null } | null;
   intakeOpen: boolean;
-  /** Manager vs cashier mode. Never persisted — a fresh launch starts as
-   * cashier whenever a manager PIN is configured (App decides at boot). */
+  currentUser: AppUser | null;
+  /** Manager vs cashier (worker) mode — derived from currentUser.role. Kept for
+   * backwards compat; new code should read currentUser. */
   role: Role;
 
   /** Deep-link target set when following a notification: the destination page
@@ -59,6 +60,8 @@ interface AppState {
   newSale(): void;
   loadOperators(): Promise<void>;
   setOperator(name: string): void;
+  setCurrentUser(u: AppUser | null): void;
+  logout(): void;
   applySettings(s: Partial<{
     taxRate: number;
     pharmacyName: string;
@@ -98,6 +101,7 @@ export const useStore = create<AppState>((set, get) => ({
   searchQuery: "",
   quickAdd: null,
   intakeOpen: false,
+  currentUser: null,
   role: "cashier",
   highlight: null,
 
@@ -182,6 +186,13 @@ export const useStore = create<AppState>((set, get) => ({
 
   setQuickAdd: (c) => set({ quickAdd: c }),
   setIntakeOpen: (v) => set({ intakeOpen: v }),
+  setCurrentUser: (u) =>
+    set({
+      currentUser: u,
+      role: u ? (u.role === "manager" ? "manager" : "cashier") : "cashier",
+      operator: u ? u.display_name : get().operator,
+    }),
+  logout: () => set({ currentUser: null, role: "cashier" }),
 
   applySettings: (s) => set({ ...s }),
   setTourOpen: (v) => set({ tourOpen: v }),

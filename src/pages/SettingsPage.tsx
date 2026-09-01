@@ -16,7 +16,12 @@ import {
   purgeDemoData,
   hasDemoData,
   refreshFdaCatalog,
+  listUsers,
+  createUser,
+  updateUser,
+  resetUserPassword,
 } from "../db";
+import type { AppUser } from "../db";
 import type { Operator, BackupInfo } from "../db";
 import { beep } from "../lib/audio";
 import { PinPromptModal } from "../components/PinPromptModal";
@@ -63,6 +68,16 @@ export function SettingsPage() {
   const [restoreMsg, setRestoreMsg] = useState("");
   /** Backup-list restore awaiting its manager-PIN confirmation. */
   const [pinTargetBackup, setPinTargetBackup] = useState<string | null>(null);
+  /** Users — manager adds logins, workers hidden. */
+  const currentUser = useStore((s) => s.currentUser);
+  const isManager = currentUser?.role === "manager";
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [newUsername, setNewUsername] = useState("");
+  const [newDisplayName, setNewDisplayName] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState<"manager" | "worker">("worker");
+  const [usersErr, setUsersErr] = useState("");
+
   /** Flash-drive restore awaiting its manager-PIN confirmation. */
   const [pinDriveRestore, setPinDriveRestore] = useState<string | null>(null);
   /** Clear-sample-data two-tap confirm + manager-PIN gate. */
@@ -106,6 +121,11 @@ export function SettingsPage() {
       setFdaProgress(null);
     };
   }, [fdaBusy]);
+
+  useEffect(() => {
+    if (!isManager) return;
+    listUsers().then(setUsers).catch(() => setUsers([]));
+  }, [isManager]);
 
   const restoreFromDrive = async () => {
     setRestoreMsg("");
@@ -643,6 +663,105 @@ export function SettingsPage() {
             shift covers the current time (overnight shifts work).
           </p>
         </div>
+
+        {isManager && (
+          <div className="mb-6 rounded-xl border border-outline-variant bg-surface p-4">
+            <h3 className="mb-3 text-headline-md font-headline-md text-on-surface">Logins — manager adds workers</h3>
+            <p className="mb-3 text-body-sm text-on-surface-variant">
+              Manager sees everything; workers see only <span className="font-medium">POS, Inventory (browse), Customers (browse), Support</span>. Hidden, not greyed out.
+            </p>
+            <div className="mb-3 divide-y divide-outline-variant/50 rounded border border-outline-variant">
+              {users.length === 0 && <p className="p-3 text-body-sm text-on-surface-variant">No logins yet — the default is manager / manager.</p>}
+              {users.map((u) => (
+                <div key={u.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-body-sm font-semibold text-on-surface">
+                      {u.display_name} <span className="font-data-mono text-[11px] text-on-surface-variant">@{u.username}</span>
+                      <span className={`ml-2 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${u.role === "manager" ? "bg-primary/10 text-primary" : "bg-surface-variant text-on-surface-variant"}`}>{u.role}</span>
+                      {u.is_active ? null : <span className="ml-1 rounded bg-error/10 px-1 py-0.5 text-[10px] text-error">deactivated</span>}
+                      {u.must_change_password ? <span className="ml-1 text-[10px] text-warn">must change</span> : null}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      onClick={async () => {
+                        const pw = window.prompt(`New password for @${u.username} (min 4):`);
+                        if (!pw || pw.length < 4) return;
+                        try {
+                          await resetUserPassword(u.id, pw);
+                          beep(true);
+                          setUsers(await listUsers());
+                        } catch (e) {
+                          setUsersErr(String(e).replace(/^Error: /, ""));
+                          beep(false);
+                        }
+                      }}
+                      className="rounded border border-outline-variant px-2 py-1 text-[11px] text-on-surface hover:bg-surface-variant"
+                    >
+                      Reset PW
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await updateUser(u.id, { is_active: !u.is_active });
+                          setUsers(await listUsers());
+                          beep(true);
+                        } catch (e) {
+                          setUsersErr(String(e).replace(/^Error: /, ""));
+                          beep(false);
+                        }
+                      }}
+                      className={`rounded px-2 py-1 text-[11px] ${u.is_active ? "border border-error/30 text-error hover:bg-error/10" : "border border-primary/30 text-primary hover:bg-primary/10"}`}
+                    >
+                      {u.is_active ? "Deactivate" : "Activate"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {usersErr && <p className="mb-2 text-body-sm text-error">{usersErr}</p>}
+            <div className="flex flex-wrap items-end gap-2 rounded bg-surface-container-low p-3">
+              <label className="block">
+                <span className="mb-0.5 block text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Username</span>
+                <input value={newUsername} onChange={(e) => setNewUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))} placeholder="e.g. ama" className="h-8 w-28 rounded border border-outline-variant bg-surface-container-lowest px-2 text-body-sm focus:border-primary focus:outline-none" />
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Display name</span>
+                <input value={newDisplayName} onChange={(e) => setNewDisplayName(e.target.value)} placeholder="Ama" className="h-8 w-32 rounded border border-outline-variant bg-surface-container-lowest px-2 text-body-sm focus:border-primary focus:outline-none" />
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Temp password</span>
+                <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="••••" className="h-8 w-24 rounded border border-outline-variant bg-surface-container-lowest px-2 text-body-sm tracking-[0.2em] focus:border-primary focus:outline-none" />
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Role</span>
+                <select value={newRole} onChange={(e) => setNewRole(e.target.value as any)} className="h-8 rounded border border-outline-variant bg-surface-container-lowest px-2 text-body-sm focus:border-primary focus:outline-none">
+                  <option value="worker">worker</option>
+                  <option value="manager">manager</option>
+                </select>
+              </label>
+              <button
+                onClick={async () => {
+                  setUsersErr("");
+                  try {
+                    await createUser(newUsername.trim(), newDisplayName.trim(), newPassword, newRole);
+                    setNewUsername("");
+                    setNewDisplayName("");
+                    setNewPassword("");
+                    setUsers(await listUsers());
+                    beep(true);
+                  } catch (e) {
+                    setUsersErr(String(e).replace(/^Error: /, ""));
+                    beep(false);
+                  }
+                }}
+                className="h-8 rounded bg-primary px-4 text-label-md font-label-md text-on-primary hover:bg-on-primary-fixed-variant"
+              >
+                Add login
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="mb-6 rounded-xl border border-outline-variant bg-surface p-4">
           <div className="mb-3 flex items-center justify-between">

@@ -8,6 +8,7 @@ import {
   isManagerPinSet,
 } from "../db";
 import { fmtMoney } from "../lib/money";
+import { useStore } from "../store/useStore";
 import { ReceiptModal } from "./ReceiptModal";
 import { beep } from "../lib/audio";
 import type { CartLine, PaymentLine, PaymentMethod, SaleResult } from "../types";
@@ -28,6 +29,8 @@ interface Visit {
 
 /** A patient's purchase history: last 10 sales with reprint, plus a visits summary. */
 export function PatientModal({ name, phone, onClose }: Props) {
+  const currentUser = useStore((s) => s.currentUser);
+  const isWorker = currentUser?.role === "worker";
   const [visits, setVisits] = useState<Visit[]>([]);
   const [totalVisits, setTotalVisits] = useState<number | null>(null);
   const [lastVisit, setLastVisit] = useState<string | null>(null);
@@ -285,7 +288,7 @@ export function PatientModal({ name, phone, onClose }: Props) {
                     {fmtMoney(balance)}
                   </p>
                 </div>
-                {!showSettle && (
+                {!isWorker && !showSettle && (
                   <button
                     onClick={() => {
                       setShowSettle(true);
@@ -301,7 +304,7 @@ export function PatientModal({ name, phone, onClose }: Props) {
                   </button>
                 )}
               </div>
-              {showSettle && (
+              {!isWorker && showSettle && (
                 <div className="mt-3 space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <input

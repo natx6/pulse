@@ -28,6 +28,8 @@ export function Sidebar() {
   const setOperator = useStore((s) => s.setOperator);
   const role = useStore((s) => s.role);
   const setRole = useStore((s) => s.setRole);
+  const currentUser = useStore((s) => s.currentUser);
+  const logout = useStore((s) => s.logout);
   const [pickerOpen, setPickerOpen] = useState(false);
   /** Manager-PIN prompt for unlocking Manager mode. */
   const [unlockOpen, setUnlockOpen] = useState(false);
@@ -35,6 +37,11 @@ export function Sidebar() {
   useEffect(() => {
     void loadOperators();
   }, [loadOperators]);
+
+  const isWorker = currentUser?.role === "worker";
+  const visibleNav = isWorker
+    ? NAV.filter((n) => ["dashboard", "pos", "history", "customers", "inventory", "support"].includes(n.id))
+    : NAV;
 
   const activeShift = autoOperator ? activeOperatorAt(operators) : null;
   const sub = activeShift
@@ -62,7 +69,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex flex-1 flex-col gap-1">
-        {NAV.map((n) => {
+        {visibleNav.map((n) => {
           const active = page === n.id;
           return (
             <button
@@ -88,7 +95,7 @@ export function Sidebar() {
       </nav>
 
       <div className="mt-auto flex flex-col gap-1 border-t border-outline/30 pt-4">
-        {role === "manager" && (
+        {!isWorker && (
           <button
             onClick={() => setPage("settings")}
             className="group flex items-center gap-3 rounded-xl px-3 py-2 text-left text-white/60 transition-colors duration-150 hover:bg-white/10 hover:text-white"
@@ -210,10 +217,22 @@ export function Sidebar() {
             </>
           )}
 
-          {/* Role switch — the loss-prevention gate itself. Unlocking asks
-              for the manager PIN (wrong PIN keeps the prompt open); locking
-              drops back to cashier and leaves any manager-only page. */}
-          {pickerOpen && (
+          {currentUser && (
+            <button
+              onClick={() => {
+                logout();
+                setPage("dashboard");
+                setPickerOpen(false);
+              }}
+              className="relative z-50 mt-2 flex w-full items-center gap-2 rounded-xl bg-white/5 px-3 py-2 text-left text-label-md font-label-md text-white/70 hover:bg-white/10 hover:text-white"
+            >
+              <span className="material-symbols-outlined text-[18px]">logout</span>
+              Sign out — {currentUser.display_name}
+            </button>
+          )}
+          {/* Legacy PIN gate kept for upgrades from pre-users builds where no
+              login exists yet — hidden once a user is logged in. */}
+          {!currentUser && pickerOpen && (
             <button
               onClick={() => {
                 if (role === "manager") {

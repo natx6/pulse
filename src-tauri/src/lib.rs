@@ -3445,6 +3445,243 @@ fn verify_manager_pin(app: AppHandle, pin: Option<String>) -> Result<bool, Strin
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserRow {
+    pub id: i64,
+    pub username: String,
+    pub display_name: String,
+    pub role: String,
+    pub is_active: i64,
+    pub must_change_password: i64,
+    pub created_at: String,
+}
+
+fn user_from_row(row: &rusqlite::Row) -> rusqlite::Result<UserRow> {
+    Ok(UserRow {
+        id: row.get(0)?,
+        username: row.get(1)?,
+        display_name: row.get(2)?,
+        role: row.get(3)?,
+        is_active: row.get(4)?,
+        must_change_password: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+#[tauri::command]
+fn create_user(
+    app: AppHandle,
+    username: String,
+    display_name: String,
+    password: String,
+    role: String,
+) -> Result<UserRow, String> {
+    let username = username.trim().to_lowercase();
+    let display_name = display_name.trim().to_string();
+    let role = role.trim().to_lowercase();
+    if username.is_empty() || username.len() < 3 {
+        return Err("Username must be at least 3 characters".into());
+    }
+    if !username.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err("Username may only contain letters, numbers, _ or -".into());
+    }
+    if display_name.is_empty() {
+        return Err("Display name is required".into());
+    }
+    if password.len() < 4 {
+        return Err("Password must be at least 4 characters".into());
+    }
+    if role != "manager" && role != "worker" {
+        return Err("Role must be manager or worker".into());
+    }
+    let conn = open_db(&app)?;
+    // Username unique (NOCASE)
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM users WHERE username = ?1 COLLATE NOCASE",
+            [&username],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists > 0 {
+        return Err("That username is already taken".into());
+    }
+    let hash = hash_pin(&password);
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role, is_active, must_change_password) VALUES (?1, ?2, ?3, ?4, 1, 1)",
+        rusqlite::params![username, display_name, hash, role],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    let row = conn
+        .query_row(
+            "SELECT id, username, display_name, role, is_active, must_change_password, created_at FROM users WHERE id = ?1",
+            [id],
+            user_from_row,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
+#[tauri::command]
+fn login_user(app: AppHandle, username: String, password: String) -> Result<UserRow, String> {
+    let username = username.trim().to_lowercase();
+    if username.is_empty() || password.is_empty() {
+        return Err("Username and password are required".into());
+    }
+    let conn = open_db(&app)?;
+    let (id, stored_hash, is_active): (i64, String, i64) = conn
+        .query_row(
+            "SELECT id, password_hash, is_active FROM users WHERE username = ?1 COLLATE NOCASE",
+            [&username],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|_| "Invalid username or password".to_string())?;
+    if is_active == 0 {
+        return Err("That account is deactivated".into());
+    }
+    if !pin_matches(&stored_hash, &password) {
+        return Err("Invalid username or password".into());
+    }
+    let row = conn
+        .query_row(
+            "SELECT id, username, display_name, role, is_active, must_change_password, created_at FROM users WHERE id = ?1",
+            [id],
+            user_from_row,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
+#[tauri::command]
+fn list_users(app: AppHandle) -> Result<Vec<UserRow>, String> {
+    let conn = open_db(&app)?;
+    let mut stmt = conn
+        .prepare("SELECT id, username, display_name, role, is_active, must_change_password, created_at FROM users ORDER BY role DESC, username")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], user_from_row)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+fn update_user(
+    app: AppHandle,
+    id: i64,
+    display_name: Option<String>,
+    role: Option<String>,
+    is_active: Option<bool>,
+) -> Result<UserRow, String> {
+    let conn = open_db(&app)?;
+    if let Some(dn) = display_name {
+        let dn = dn.trim().to_string();
+        if dn.is_empty() {
+            return Err("Display name cannot be empty".into());
+        }
+        conn.execute("UPDATE users SET display_name = ?1 WHERE id = ?2", rusqlite::params![dn, id])
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(r) = role {
+        let r = r.trim().to_lowercase();
+        if r != "manager" && r != "worker" {
+            return Err("Role must be manager or worker".into());
+        }
+        // Prevent demoting the last manager.
+        if r == "worker" {
+            let mgr_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM users WHERE role = 'manager' AND is_active = 1 AND id != ?1", [id], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            let this_role: String = conn
+                .query_row("SELECT role FROM users WHERE id = ?1", [id], |row| row.get(0))
+                .map_err(|_| "User not found".to_string())?;
+            if this_role == "manager" && mgr_count == 0 {
+                return Err("Cannot demote the last active manager".into());
+            }
+        }
+        conn.execute("UPDATE users SET role = ?1 WHERE id = ?2", rusqlite::params![r, id])
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(active) = is_active {
+        // Prevent deactivating the last manager.
+        if !active {
+            let mgr_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM users WHERE role = 'manager' AND is_active = 1 AND id != ?1", [id], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            let this_role: String = conn
+                .query_row("SELECT role FROM users WHERE id = ?1", [id], |row| row.get(0))
+                .map_err(|_| "User not found".to_string())?;
+            if this_role == "manager" && mgr_count == 0 {
+                return Err("Cannot deactivate the last active manager".into());
+            }
+        }
+        conn.execute("UPDATE users SET is_active = ?1 WHERE id = ?2", rusqlite::params![if active { 1 } else { 0 }, id])
+            .map_err(|e| e.to_string())?;
+    }
+    let row = conn
+        .query_row(
+            "SELECT id, username, display_name, role, is_active, must_change_password, created_at FROM users WHERE id = ?1",
+            [id],
+            user_from_row,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
+#[tauri::command]
+fn reset_user_password(app: AppHandle, id: i64, new_password: String) -> Result<(), String> {
+    if new_password.len() < 4 {
+        return Err("Password must be at least 4 characters".into());
+    }
+    let hash = hash_pin(&new_password);
+    let conn = open_db(&app)?;
+    let n = conn
+        .execute(
+            "UPDATE users SET password_hash = ?1, must_change_password = 1 WHERE id = ?2",
+            rusqlite::params![hash, id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("User not found".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn change_own_password(
+    app: AppHandle,
+    username: String,
+    old_password: String,
+    new_password: String,
+) -> Result<(), String> {
+    if new_password.len() < 4 {
+        return Err("New password must be at least 4 characters".into());
+    }
+    let username = username.trim().to_lowercase();
+    let conn = open_db(&app)?;
+    let (id, stored): (i64, String) = conn
+        .query_row(
+            "SELECT id, password_hash FROM users WHERE username = ?1 COLLATE NOCASE",
+            [&username],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| "Account not found".to_string())?;
+    if !pin_matches(&stored, &old_password) {
+        return Err("Current password is incorrect".into());
+    }
+    let hash = hash_pin(&new_password);
+    conn.execute(
+        "UPDATE users SET password_hash = ?1, must_change_password = 0 WHERE id = ?2",
+        rusqlite::params![hash, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// One line of a stock-take sheet: what the shelf actually counted.
 #[derive(Deserialize)]
 pub struct StockTakeLine {
@@ -3872,6 +4109,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0031_product_generic",
         include_str!("../migrations/0031_product_generic.sql"),
     ),
+    (
+        "0032_users",
+        include_str!("../migrations/0032_users.sql"),
+    ),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.
@@ -3893,6 +4134,34 @@ fn run_migrations(app: &tauri::App) -> Result<(), String> {
     // Settings table exists by now — upgrade a legacy plaintext PIN to its
     // stored hash form.
     migrate_plaintext_pin(&conn)?;
+    // Seed a default manager if this is a fresh install or an upgrade from
+    // pre-users builds (no users yet). Reuse the existing manager_pin hash
+    // as the password so the upgrade is seamless; otherwise create a temporary
+    // manager/manager that must be changed on first login.
+    {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+            .unwrap_or(0);
+        if count == 0 {
+            let pin_hash: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key = 'manager_pin'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()
+                .unwrap_or(None);
+            let hash = match pin_hash.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(h) => h.to_string(),
+                None => hash_pin("manager"),
+            };
+            let must_change = if pin_hash.is_some() { 0 } else { 1 };
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO users (username, display_name, password_hash, role, is_active, must_change_password) VALUES (?1, ?2, ?3, 'manager', 1, ?4)",
+                rusqlite::params!["manager", "Manager", hash, must_change],
+            );
+        }
+    }
     Ok(())
 }
 
@@ -4019,7 +4288,13 @@ pub fn run() {
             create_product,
             search_fda_drugs,
             import_fda_catalog,
-            refresh_fda_catalog
+            refresh_fda_catalog,
+            create_user,
+            login_user,
+            list_users,
+            update_user,
+            reset_user_password,
+            change_own_password
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

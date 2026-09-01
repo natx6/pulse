@@ -34,6 +34,8 @@ function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reo
 }
 
 export function InventoryPage() {
+  const currentUser = useStore((s) => s.currentUser);
+  const isWorker = currentUser?.role === "worker";
   const products = useStore((s) => s.products);
   const highlight = useStore((s) => s.highlight);
   const setHighlight = useStore((s) => s.setHighlight);
@@ -276,22 +278,26 @@ export function InventoryPage() {
               {showArchived ? "Archived on" : "Show archived"}
             </span>
           </button>
-          <button
-            onClick={() => setStockTakeOpen(true)}
-            className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
-            title="Count the whole shelf, commit the differences in one go"
-          >
-            <span className="material-symbols-outlined text-[16px]">checklist</span>
-            <span className="text-label-md font-label-md">Stock take</span>
-          </button>
-          <button
-            onClick={() => setImportOpen(true)}
-            className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
-            title="Bulk-load stock from an Excel or CSV export of your old system"
-          >
-            <span className="material-symbols-outlined text-[16px]">upload_file</span>
-            <span className="text-label-md font-label-md">Import Stock</span>
-          </button>
+          {!isWorker && (
+            <button
+              onClick={() => setStockTakeOpen(true)}
+              className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
+              title="Count the whole shelf, commit the differences in one go"
+            >
+              <span className="material-symbols-outlined text-[16px]">checklist</span>
+              <span className="text-label-md font-label-md">Stock take</span>
+            </button>
+          )}
+          {!isWorker && (
+            <button
+              onClick={() => setImportOpen(true)}
+              className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
+              title="Bulk-load stock from an Excel or CSV export of your old system"
+            >
+              <span className="material-symbols-outlined text-[16px]">upload_file</span>
+              <span className="text-label-md font-label-md">Import Stock</span>
+            </button>
+          )}
           <button
             onClick={() => setLabelOpen(true)}
             className="flex items-center gap-2 rounded border border-outline-variant px-3 py-1.5 text-on-surface transition-colors hover:bg-surface-container-low"
@@ -300,23 +306,27 @@ export function InventoryPage() {
             <span className="material-symbols-outlined text-[16px]">print</span>
             <span className="text-label-md font-label-md">Print Label</span>
           </button>
-          <button
-            onClick={() => setAddProductOpen(true)}
-            className="flex items-center gap-2 rounded border border-primary/40 bg-primary/5 px-3 py-1.5 text-primary hover:bg-primary/10"
-          >
-            <span className="material-symbols-outlined text-[16px]">add</span>
-            <span className="text-label-md font-label-md">Add Product</span>
-          </button>
-          <button
-            onClick={() => setIntakeOpen(true)}
-            className="flex items-center gap-2 rounded bg-primary px-4 py-1.5 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant"
-          >
-            <span className="material-symbols-outlined text-[16px]">add_box</span>
-            <span className="text-label-md font-label-md">Receive Stock</span>
-            <span className="rounded-[2px] border border-on-primary/30 px-1 text-shortcut-hint font-shortcut-hint opacity-80">
-              [F2]
-            </span>
-          </button>
+          {!isWorker && (
+            <button
+              onClick={() => setAddProductOpen(true)}
+              className="flex items-center gap-2 rounded border border-primary/40 bg-primary/5 px-3 py-1.5 text-primary hover:bg-primary/10"
+            >
+              <span className="material-symbols-outlined text-[16px]">add</span>
+              <span className="text-label-md font-label-md">Add Product</span>
+            </button>
+          )}
+          {!isWorker && (
+            <button
+              onClick={() => setIntakeOpen(true)}
+              className="flex items-center gap-2 rounded bg-primary px-4 py-1.5 text-on-primary shadow-sm transition-colors hover:bg-on-primary-fixed-variant"
+            >
+              <span className="material-symbols-outlined text-[16px]">add_box</span>
+              <span className="text-label-md font-label-md">Receive Stock</span>
+              <span className="rounded-[2px] border border-on-primary/30 px-1 text-shortcut-hint font-shortcut-hint opacity-80">
+                [F2]
+              </span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -444,7 +454,7 @@ export function InventoryPage() {
                   <StatusPill p={p} />
                 </div>
                 <div className="w-20 pr-1 text-right">
-                  {p.active ? (
+                  {!isWorker && p.active ? (
                     <span className="inline-flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                       <button
                         onClick={() => openAdjust(p)}
@@ -468,7 +478,7 @@ export function InventoryPage() {
                         )}
                       </button>
                     </span>
-                  ) : (
+                  ) : !isWorker && !p.active ? (
                     <button
                       onClick={() => void doRestore(p)}
                       title="Restore — bring it back to the POS and Inventory"
@@ -477,7 +487,7 @@ export function InventoryPage() {
                       <span className="material-symbols-outlined text-[15px]">unarchive</span>
                       <span className="text-[10px] font-bold">Restore</span>
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
               {expanded === p.id && (

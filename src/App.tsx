@@ -12,6 +12,7 @@ import { QuickAddModal } from "./components/QuickAddModal";
 import { IntakeModal } from "./components/IntakeModal";
 import { SetupWizard } from "./components/SetupWizard";
 import { ProductTour } from "./components/ProductTour";
+import { LoginPage } from "./components/LoginPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { PosPage } from "./pages/PosPage";
 import { InventoryPage } from "./pages/InventoryPage";
@@ -27,7 +28,6 @@ import { useToast } from "./store/toast";
 
 export default function App() {
   const page = useStore((s) => s.page);
-  const role = useStore((s) => s.role);
   const [updating, setUpdating] = useState<{
     version: string;
     pct: number | null;
@@ -212,6 +212,8 @@ export default function App() {
   const setupComplete = useStore((s) => s.setupComplete);
   const tourSeen = useStore((s) => s.tourSeen);
   const tourOpen = useStore((s) => s.tourOpen);
+  const currentUser = useStore((s) => s.currentUser);
+  const isWorker = currentUser?.role === "worker";
   useEffect(() => {
     const tick = () => {
       const st = useStore.getState();
@@ -225,6 +227,34 @@ export default function App() {
     const t = window.setInterval(tick, 30_000);
     return () => window.clearInterval(t);
   }, [autoOperator, operators]);
+
+  // Workers are hidden from manager-only pages — bounce them to dashboard.
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== "worker") return;
+    if (["restock", "analytics", "expenses", "settings"].includes(page)) {
+      useStore.getState().setPage("dashboard");
+    }
+  }, [page, currentUser]);
+
+  // Auth gate: setup wizard first, then login.
+  if (!currentUser) {
+    if (!setupComplete && ready) {
+      return (
+        <div className="flex h-screen overflow-hidden bg-background text-on-background font-body-md antialiased">
+          <SetupWizard onDone={() => {}} />
+          <ToastContainer />
+        </div>
+      );
+    }
+    if (ready && setupComplete) {
+      return (
+        <div className="flex h-screen overflow-hidden bg-background text-on-background font-body-md antialiased">
+          <LoginPage />
+          <ToastContainer />
+        </div>
+      );
+    }
+  }
 
   // Splash: covers the shell until init completes. Branded, quiet, no
   // spinner theatre — just the mark and the pharmacy's name.
@@ -294,22 +324,18 @@ export default function App() {
           {page === "dashboard" && <DashboardPage />}
           {page === "pos" && <PosPage />}
           {page === "inventory" && <InventoryPage />}
-          {page === "restock" && <RestockPage />}
-          {page === "analytics" && <AnalyticsPage />}
           {page === "history" && <HistoryPage />}
           {page === "customers" && <CustomersPage />}
           {page === "support" && <SupportPage />}
-          {page === "expenses" && <ExpensesPage />}
-          {/* Route guard: even if something navigates here programmatically,
-              Settings only renders for Manager mode. */}
-          {page === "settings" && role === "manager" && <SettingsPage />}
-          {page === "settings" && role !== "manager" && (
+          {!isWorker && page === "restock" && <RestockPage />}
+          {!isWorker && page === "analytics" && <AnalyticsPage />}
+          {!isWorker && page === "expenses" && <ExpensesPage />}
+          {!isWorker && page === "settings" && <SettingsPage />}
+          {isWorker && ["restock", "analytics", "expenses", "settings"].includes(page) && (
             <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
               <span className="material-symbols-outlined text-[40px] text-on-surface-variant">lock</span>
-              <p className="text-headline-md font-headline-md text-on-surface">Manager mode required</p>
-              <p className="max-w-sm text-body-sm font-body-sm text-on-surface-variant">
-                Ask a manager to unlock via the operator chip in the sidebar.
-              </p>
+              <p className="text-headline-md font-headline-md text-on-surface">Manager required</p>
+              <p className="max-w-sm text-body-sm font-body-sm text-on-surface-variant">That area is hidden for your role.</p>
             </div>
           )}
         </main>
