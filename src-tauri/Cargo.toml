@@ -1,6 +1,6 @@
 [package]
 name = "pulse"
-version = "0.4.11"
+version = "0.4.12"
 description = "Pulse Pharmacy Management System"
 edition = "2021"
 
