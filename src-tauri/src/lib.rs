@@ -166,7 +166,7 @@ fn ensure_db_key(app: &AppHandle) -> Result<String, String> {
     #[cfg(unix)]
     {
         use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -3468,6 +3468,7 @@ fn user_from_row(row: &rusqlite::Row) -> rusqlite::Result<UserRow> {
     })
 }
 
+#[allow(non_snake_case)]
 #[tauri::command]
 fn create_user(
     app: AppHandle,
@@ -3569,6 +3570,7 @@ fn list_users(app: AppHandle) -> Result<Vec<UserRow>, String> {
     Ok(out)
 }
 
+#[allow(non_snake_case)]
 #[tauri::command]
 fn update_user(
     app: AppHandle,
@@ -3632,6 +3634,7 @@ fn update_user(
     Ok(row)
 }
 
+#[allow(non_snake_case)]
 #[tauri::command]
 fn reset_user_password(app: AppHandle, id: i64, newPassword: String) -> Result<(), String> {
     if newPassword.len() < 4 {
@@ -3651,6 +3654,7 @@ fn reset_user_password(app: AppHandle, id: i64, newPassword: String) -> Result<(
     Ok(())
 }
 
+#[allow(non_snake_case)]
 #[tauri::command]
 fn change_own_password(
     app: AppHandle,
