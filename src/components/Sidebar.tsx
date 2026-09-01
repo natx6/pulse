@@ -107,115 +107,28 @@ export function Sidebar() {
           </button>
         )}
         <div className="relative mt-4 px-3">
-          <Tip label="Tap to switch who is on duty" dir="top">
-            <button
-              onClick={() => setPickerOpen((o) => !o)}
-              className="flex w-full items-center gap-3 rounded p-0 text-left transition-colors hover:bg-white/5"
-            >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-white/20 bg-white/10 text-xs font-bold text-white">
-                {operator ? operator.charAt(0).toUpperCase() : "?"}
-              </div>
-              <div className="min-w-0">
-                <span className="flex items-center gap-1">
-                  <span className="block truncate text-[12px] font-semibold text-white">
-                    {operator || "No operator set"}
-                  </span>
-                  <span
-                    className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase tracking-wider ${
-                      role === "manager" ? "bg-primary/25 text-primary-fixed" : "bg-white/10 text-white/60"
-                    }`}
-                  >
-                    {role}
-                  </span>
+          <div className="flex w-full items-center gap-3 rounded p-0 text-left">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-white/20 bg-white/10 text-xs font-bold text-white">
+              {currentUser ? currentUser.display_name.charAt(0).toUpperCase() : "?"}
+            </div>
+            <div className="min-w-0">
+              <span className="flex items-center gap-1">
+                <span className="block truncate text-[12px] font-semibold text-white">
+                  {currentUser ? currentUser.display_name : "No user"}
                 </span>
-                <span className="block text-[10px] text-white/50">{sub}</span>
-              </div>
-              <span className="material-symbols-outlined ml-auto text-[14px] text-white/50">
-                expand_more
+                <span
+                  className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase tracking-wider ${
+                    role === "manager" ? "bg-primary/25 text-primary-fixed" : "bg-white/10 text-white/60"
+                  }`}
+                >
+                  {role}
+                </span>
               </span>
-            </button>
-          </Tip>
-
-          {pickerOpen && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
-              <div className="absolute bottom-full left-0 z-50 mb-2 w-56 overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
-                <div className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
-                  Who is on duty?
-                </div>
-                <div className="max-h-56 overflow-y-auto py-1">
-                  <button
-                    onClick={() => {
-                      // Switching who is on duty ends the manager session —
-                      // the next person starts locked as cashier.
-                      if (role === "manager") {
-                        setRole("cashier");
-                        if (page === "settings") setPage("dashboard");
-                      }
-                      setOperator("");
-                      setPickerOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-body-sm hover:bg-surface-container-low ${
-                      operator === "" ? "bg-primary/10 font-semibold text-primary" : "text-on-surface"
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[16px]">person_off</span>
-                    No operator
-                  </button>
-                  {operators.map((op) => (
-                    <button
-                      key={op.id}
-                      onClick={() => {
-                        // Switching who is on duty ends the manager session —
-                        // the next person starts locked as cashier.
-                        if (role === "manager") {
-                          setRole("cashier");
-                          if (page === "settings") setPage("dashboard");
-                        }
-                        setOperator(op.name);
-                        setPickerOpen(false);
-                      }}
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-body-sm hover:bg-surface-container-low ${
-                        operator === op.name
-                          ? "bg-primary/10 font-semibold text-primary"
-                          : "text-on-surface"
-                      }`}
-                    >
-                      <span className="material-symbols-outlined text-[16px]">badge</span>
-                      <span className="min-w-0 flex-1 truncate">{op.name}</span>
-                      {op.shift_start && op.shift_end && (
-                        <span className="shrink-0 text-[10px] text-on-surface-variant">
-                          {op.shift_start}–{op.shift_end}
-                        </span>
-                      )}
-                      {autoOperator && activeShift?.id === op.id && (
-                        <span className="shrink-0 rounded bg-primary/10 px-1 text-[10px] font-bold text-primary">
-                          auto now
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                  {operators.length === 0 && (
-                    <p className="px-3 py-3 text-center text-body-sm text-on-surface-variant">
-                      No operators yet.
-                    </p>
-                  )}
-                </div>
-                {role === "manager" && (
-                  <button
-                    onClick={() => {
-                      setPickerOpen(false);
-                      setPage("settings");
-                    }}
-                    className="flex w-full items-center gap-2 border-t border-outline-variant bg-surface-container-low px-3 py-2 text-left text-label-md font-label-md text-primary hover:bg-surface-container-lowest"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">settings</span>
-                    Manage operators in Settings
-                  </button>
-                )}
-              </div>
-            </>
-          )}
+              <span className="block truncate text-[10px] text-white/50">
+                @{currentUser?.username ?? "—"}
+              </span>
+            </div>
+          </div>
 
           {currentUser && (
             <button
