@@ -2670,6 +2670,13 @@ fn purge_demo_data(
         .map_err(|e| e.to_string())?;
 
     tx.execute(
+        "DELETE FROM sale_return_items WHERE return_id IN (SELECT id FROM sale_returns WHERE sale_id IN (SELECT id FROM sales WHERE receipt_no LIKE 'DMO-%'))",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM sale_returns WHERE sale_id IN (SELECT id FROM sales WHERE receipt_no LIKE 'DMO-%')", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute(
         "DELETE FROM sale_payments WHERE sale_id IN (SELECT id FROM sales WHERE receipt_no LIKE 'DMO-%')",
         [],
     )
@@ -2697,6 +2704,11 @@ fn purge_demo_data(
     let suppliers = tx
         .execute("DELETE FROM suppliers WHERE name = 'Demo Wholesale Ltd'", [])
         .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM product_batches WHERE product_id IN (SELECT id FROM products WHERE barcode LIKE '6220000000%' OR name LIKE 'Demo —%')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
     let products = tx
         .execute(
             "DELETE FROM products WHERE barcode LIKE '6220000000%' OR name LIKE 'Demo —%'",
