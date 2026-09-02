@@ -191,7 +191,7 @@ export function TopBar() {
         <p className="mb-1 text-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
           {title} ({items.length})
         </p>
-        {items.slice(0, 20).map((it) => (
+        {items.slice(0, 10).map((it) => (
           <button
             key={it.id}
             onClick={() => {
@@ -205,7 +205,7 @@ export function TopBar() {
             <span className="shrink-0 text-on-surface-variant">{it.hint}</span>
           </button>
         ))}
-        {items.length > 20 && (
+        {items.length > 10 && (
           <button
             onClick={() => {
               setPage(to);
