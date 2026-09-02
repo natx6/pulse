@@ -191,7 +191,7 @@ export function TopBar() {
         <p className="mb-1 text-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
           {title} ({items.length})
         </p>
-        {items.map((it) => (
+        {items.slice(0, 20).map((it) => (
           <button
             key={it.id}
             onClick={() => {
@@ -205,6 +205,17 @@ export function TopBar() {
             <span className="shrink-0 text-on-surface-variant">{it.hint}</span>
           </button>
         ))}
+        {items.length > 20 && (
+          <button
+            onClick={() => {
+              setPage(to);
+              setNotifOpen(false);
+            }}
+            className="mt-1 w-full rounded bg-surface-container-low px-2 py-1 text-center text-[11px] font-bold text-primary hover:bg-surface-variant"
+          >
+            View all {items.length} in {to === "inventory" ? "Inventory" : "Requisitions"} →
+          </button>
+        )}
       </div>
     );
 

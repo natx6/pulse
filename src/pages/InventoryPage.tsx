@@ -131,6 +131,21 @@ export function InventoryPage() {
     });
   }, [list, q, sortKey, sortAsc]);
 
+  const PAGE_SIZE = 100;
+  const [pageIdx, setPageIdx] = useState(0);
+  useEffect(() => {
+    setPageIdx(0);
+  }, [q, sortKey, sortAsc, showArchived, list.length]);
+  const paged = useMemo(() => filtered.slice(pageIdx * PAGE_SIZE, (pageIdx + 1) * PAGE_SIZE), [filtered, pageIdx]);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+
+  // If a notification spotlights a product on another page, jump to it.
+  useEffect(() => {
+    if (highlight?.kind !== "product") return;
+    const idx = filtered.findIndex((p) => p.id === highlight.id);
+    if (idx >= 0) setPageIdx(Math.floor(idx / PAGE_SIZE));
+  }, [highlight, filtered]);
+
   const toggleSort = (key: typeof sortKey) => {
     if (sortKey === key) setSortAsc(!sortAsc);
     else { setSortKey(key); setSortAsc(true); }
@@ -359,7 +374,7 @@ export function InventoryPage() {
               No items found.
             </p>
           )}
-          {filtered.map((p) => {
+          {paged.map((p) => {
             const st = stockStatus(p);
             return (
               <Fragment key={p.id}>
@@ -519,9 +534,32 @@ export function InventoryPage() {
         </div>
 
         <div className="flex h-10 shrink-0 items-center justify-between border-t border-outline-variant bg-surface-container-low px-4">
-          <div className="text-body-sm font-body-sm text-on-surface-variant">
-            {filtered.length} of {list.length} items
-            {showArchived ? " (archived)" : ""}
+          <div className="flex items-center gap-3 text-body-sm font-body-sm text-on-surface-variant">
+            <span>
+              {filtered.length} of {list.length} items
+              {showArchived ? " (archived)" : ""}
+            </span>
+            {pageCount > 1 && (
+              <span className="flex items-center gap-1">
+                <button
+                  disabled={pageIdx === 0}
+                  onClick={() => setPageIdx((p) => Math.max(0, p - 1))}
+                  className="rounded border border-outline-variant px-2 py-0.5 text-[11px] hover:bg-surface-variant disabled:opacity-40"
+                >
+                  Prev
+                </button>
+                <span className="font-data-mono text-[11px]">
+                  {pageIdx + 1} / {pageCount}
+                </span>
+                <button
+                  disabled={pageIdx + 1 >= pageCount}
+                  onClick={() => setPageIdx((p) => Math.min(pageCount - 1, p + 1))}
+                  className="rounded border border-outline-variant px-2 py-0.5 text-[11px] hover:bg-surface-variant disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <span className="px-2 text-body-sm font-body-sm text-on-surface">Cost of stock:</span>
