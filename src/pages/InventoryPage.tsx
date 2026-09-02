@@ -12,6 +12,20 @@ import { StockTakeModal } from "../components/StockTakeModal";
 import { AddProductModal } from "../components/AddProductModal";
 import type { BatchRow, Product } from "../types";
 
+function fmtExpiry(v: string | null): string {
+  if (!v) return "—";
+  const t = v.trim();
+  if (/^\d{4,6}(\.0+)?$/.test(t)) {
+    const n = parseFloat(t);
+    if (Number.isFinite(n) && n > 30000 && n < 60000) {
+      const ms = Math.round((n - 25569) * 86400 * 1000);
+      const d = new Date(ms);
+      if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    }
+  }
+  return t;
+}
+
 function StatusPill({ p }: { p: Pick<Product, "stock_qty" | "expiry_date" | "reorder_level"> }) {
   const st = stockStatus(p as Product);
   if (st === "critical")
@@ -421,7 +435,7 @@ export function InventoryPage() {
                     st === "critical" ? "font-medium text-error" : "text-on-surface-variant"
                   }`}
                 >
-                  {p.expiry_date ?? "—"}
+                  {fmtExpiry(p.expiry_date)}
                 </div>
                 <div className="pr-4 text-right font-data-mono text-data-mono text-on-surface">
                   {p.stock_qty}
@@ -515,8 +529,8 @@ export function InventoryPage() {
                     .map((b) => (
                       <div key={b.id} className="flex items-center gap-4 py-0.5 font-data-mono text-data-mono text-body-sm">
                         <span className="w-32 truncate text-on-surface">{b.batch_no ?? "(no batch)"}</span>
-                        <span className={`w-28 ${b.expiry_date && new Date(b.expiry_date + "T00:00:00") <= new Date() ? "font-bold text-error" : "text-on-surface-variant"}`}>
-                          exp {b.expiry_date ?? "—"}
+                        <span className={`w-28 ${b.expiry_date && new Date((fmtExpiry(b.expiry_date) || b.expiry_date) + "T00:00:00") <= new Date() ? "font-bold text-error" : "text-on-surface-variant"}`}>
+                          exp {fmtExpiry(b.expiry_date)}
                         </span>
                         <span className="ml-auto text-right text-on-surface">
                           {b.quantity}

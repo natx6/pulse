@@ -523,6 +523,27 @@ function rowToRecord(row: string[], mapping: Record<string, number>): StockImpor
     if (!v) return null;
     return /^(1|yes|true|y|rx|controlled)$/i.test(v) ? 1 : 0;
   };
+  const parseExpiry = (v: string): string | null => {
+    if (!v) return null;
+    const t = v.trim();
+    // Excel serial: 5-6 digit integer (e.g. 46665 = 2027-10-09). 25569 = 1970-01-01.
+    if (/^\d{4,6}(\.0+)?$/.test(t)) {
+      const n = parseFloat(t);
+      if (Number.isFinite(n) && n > 30000 && n < 60000) {
+        const ms = Math.round((n - 25569) * 86400 * 1000);
+        const d = new Date(ms);
+        if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+      }
+    }
+    // Already ISO or D/M/Y — normalize to YYYY-MM-DD.
+    // Try YYYY-MM-DD or YYYY/MM/DD
+    let m = t.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+    if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+    // D/M/Y or D-M-Y
+    m = t.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+    return t || null;
+  };
   return {
     name,
     barcode: get("barcode") || null,
@@ -533,7 +554,7 @@ function rowToRecord(row: string[], mapping: Record<string, number>): StockImpor
     unit: get("unit") || null,
     rx_flag: bool(get("rx_flag")),
     batch_no: get("batch_no") || null,
-    expiry_date: get("expiry_date") || null,
+    expiry_date: parseExpiry(get("expiry_date")),
     cost_price: num(get("cost_price")),
     selling_price: num(get("selling_price")),
     stock_qty: int(get("stock_qty")),
