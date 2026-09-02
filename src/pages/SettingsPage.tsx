@@ -18,10 +18,50 @@ import {
   createUser,
   updateUser,
   resetUserPassword,
+  wipeAllStock,
 } from "../db";
 import type { AppUser, BackupInfo } from "../db";
 import { beep } from "../lib/audio";
 import { PinPromptModal } from "../components/PinPromptModal";
+
+function WipeAllStockButton() {
+  const [arm, setArm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const doWipe = async () => {
+    if (!arm) {
+      setArm(true);
+      window.setTimeout(() => setArm(false), 4000);
+      return;
+    }
+    setArm(false);
+    setBusy(true);
+    setMsg("");
+    try {
+      await wipeAllStock();
+      beep(true);
+      setMsg("Wiped — stock is now empty. Import your .xlsx now (the app will reload).");
+      window.setTimeout(() => window.location.reload(), 800);
+    } catch (e) {
+      setMsg(String(e).replace(/^Error: /, ""));
+      beep(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div>
+      <button
+        onClick={() => void doWipe()}
+        disabled={busy}
+        className={`h-9 rounded px-4 text-label-md font-label-md shadow-sm transition-colors disabled:opacity-50 ${arm ? "bg-error text-on-error hover:bg-error/90" : "border border-warn/40 bg-warn/10 text-warn hover:bg-warn/20"}`}
+      >
+        {busy ? "Wiping…" : arm ? "Tap again to wipe everything" : "Wipe all stock"}
+      </button>
+      {msg && <p className="mt-2 text-body-sm font-body-sm text-on-surface-variant">{msg}</p>}
+    </div>
+  );
+}
 
 export function SettingsPage() {
   const pharmacyName = useStore((s) => s.pharmacyName);
@@ -732,6 +772,15 @@ export function SettingsPage() {
               <p className="mt-2 text-body-sm font-body-sm text-on-surface-variant">{purgeMsg}</p>
             )}
           </div>
+          )}
+          {import.meta.env.DEV && (
+            <div className="mt-3 rounded border border-warn/30 bg-warn/5 p-3">
+              <p className="text-body-md font-body-md text-on-surface">Wipe all stock (dev only)</p>
+              <p className="mt-1 mb-3 text-body-sm font-body-sm text-on-surface-variant">
+                Deletes <span className="font-medium">all</span> products, batches, sales, purchases, suppliers and patients — leaves users, settings and the FDA catalog. For testing imports as if for a new client.
+              </p>
+              <WipeAllStockButton />
+            </div>
           )}
           {backupErr && (
             <p className="mb-2 text-body-sm font-body-sm text-error">{backupErr}</p>

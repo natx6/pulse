@@ -674,6 +674,10 @@ export async function hasDemoData(): Promise<boolean> {
   return (rows[0]?.n ?? 0) > 0;
 }
 
+export async function wipeAllStock(): Promise<number> {
+  return await invoke("wipe_all_stock");
+}
+
 export interface FdaDrug {
   id: string;
   product_id: string | null;

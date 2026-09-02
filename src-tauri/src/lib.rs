@@ -2742,6 +2742,43 @@ fn purge_demo_data(
     })
 }
 
+#[tauri::command]
+fn wipe_all_stock(app: AppHandle) -> Result<usize, String> {
+    let mut conn = open_db(&app)?;
+    conn.execute("PRAGMA foreign_keys = OFF", [])
+        .map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    // Order doesn't matter with FKs OFF, but keep it logical: children first.
+    for tbl in [
+        "sale_return_items",
+        "sale_returns",
+        "sale_payments",
+        "sale_items",
+        "sales",
+        "purchase_items",
+        "purchases",
+        "product_batches",
+        "products",
+        "patients",
+        "suppliers",
+    ] {
+        let sql = format!("DELETE FROM {}", tbl);
+        tx.execute(&sql, []).map_err(|e| e.to_string())?;
+    }
+    // Keep users, settings, fda_drugs, expenses, etc. — only business data wiped.
+    // Reset sqlite_sequence so ids start clean for a fresh-client demo.
+    let _ = tx.execute("DELETE FROM sqlite_sequence WHERE name IN ('products','sales','purchases','product_batches')", []);
+    tx.commit().map_err(|e| e.to_string())?;
+    let _ = conn.execute("PRAGMA foreign_keys = ON", []);
+    // Count wiped products for the toast.
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM products", [], |r| r.get(0))
+        .unwrap_or(0);
+    Ok(n as usize)
+}
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // FDA Ghana catalog (autocomplete for drug entry)
@@ -4297,6 +4334,7 @@ pub fn run() {
             commit_customer_import,
             commit_supplier_import,
             purge_demo_data,
+            wipe_all_stock,
             save_purchase,
             receive_purchase,
             update_purchase,
