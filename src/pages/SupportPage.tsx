@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { useStore } from "../store/useStore";
 import { getDeviceId } from "../db";
+import { HelpDocs } from "../components/HelpDocs";
 
 /** Support = a compose page. Staff write what happened, tap Send, and their
  * mail app opens with everything assembled (pharmacy, name, version, device
@@ -54,24 +55,43 @@ export function SupportPage() {
   const field =
     "w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary";
 
+  const [tab, setTab] = useState<"help" | "contact">("help");
+
   return (
-    <div className="flex h-full flex-col overflow-auto bg-surface-container-lowest p-margin-page">
-      <div className="mb-6">
+    <div className="flex h-full flex-col overflow-hidden bg-surface-container-lowest p-margin-page">
+      <div className="mb-4">
         <h2 className="text-headline-lg font-headline-lg text-on-surface">Support</h2>
-        <p className="text-body-sm font-body-sm text-on-surface-variant">
-          Describe the problem — your mail app opens with the message ready to send.
-        </p>
+        <div className="mt-3 flex w-fit rounded-full border border-outline-variant bg-surface p-1">
+          <button
+            onClick={() => setTab("help")}
+            className={`rounded-full px-4 py-1 text-label-md font-label-md ${tab === "help" ? "bg-primary text-on-primary" : "text-on-surface-variant hover:text-on-surface"}`}
+          >
+            Help
+          </button>
+          <button
+            onClick={() => setTab("contact")}
+            className={`rounded-full px-4 py-1 text-label-md font-label-md ${tab === "contact" ? "bg-primary text-on-primary" : "text-on-surface-variant hover:text-on-surface"}`}
+          >
+            Contact
+          </button>
+        </div>
       </div>
 
       <button
         onClick={() => setTourOpen(true)}
-        className="mb-6 flex h-10 w-fit items-center gap-2 rounded border border-primary/40 bg-primary/5 px-4 text-label-md font-label-md text-primary hover:bg-primary/10"
+        className="mb-4 flex h-10 w-fit items-center gap-2 rounded border border-primary/40 bg-primary/5 px-4 text-label-md font-label-md text-primary hover:bg-primary/10"
       >
         <span className="material-symbols-outlined text-[18px]">travel_explore</span>
         Take a product tour
       </button>
 
-      <div className="max-w-xl">
+      {tab === "help" ? (
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <HelpDocs />
+        </div>
+      ) : (
+        <div className="flex-1 overflow-auto">
+          <div className="max-w-xl">
         <label className="mb-4 block">
           <span className="mb-1 block text-body-md font-body-md text-on-surface">
             Pharmacy name
@@ -155,7 +175,9 @@ export function SupportPage() {
           Your mail app opens with the message ready. You can attach a screenshot
           there before sending — it helps a lot.
         </p>
-      </div>
+        </div>
+        </div>
+      )}
     </div>
   );
 }
