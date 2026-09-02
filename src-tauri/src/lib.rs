@@ -2665,6 +2665,13 @@ fn purge_demo_data(
 ) -> Result<DemoPurgeSummary, String> {
     let mut conn = open_db(&app)?;
     check_manager_pin(&conn, manager_pin)?;
+    // FKs are ON for normal operation (unlike migrations where they are OFF
+    // before the loop). The purge deletes parents (products, sales) that still
+    // have children (batches, items) — disable FKs for this one transaction so
+    // order doesn't matter and no legitimate user data can be blocked by a
+    // stray demo FK. Re-enabled on commit.
+    conn.execute("PRAGMA foreign_keys = OFF", [])
+        .map_err(|e| e.to_string())?;
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -2724,6 +2731,8 @@ fn purge_demo_data(
         .map_err(|e| e.to_string())?;
 
     tx.commit().map_err(|e| e.to_string())?;
+    // Re-enable FKs for the connection (next open_db will set it again anyway).
+    let _ = conn.execute("PRAGMA foreign_keys = ON", []);
     Ok(DemoPurgeSummary {
         sales,
         purchases,
