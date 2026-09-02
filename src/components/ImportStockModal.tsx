@@ -134,10 +134,6 @@ export function ImportStockModal({
     void doImport();
   };
 
-  const preview = sheet
-    ? sheet.rows.slice(0, 5).map((row) => rowToRecord(row, mapping))
-    : [];
-
   return (
     <div
       data-modal-open className="fixed inset-0 z-50 flex items-center justify-center bg-on-background/30 p-4 backdrop-blur-[2px]"
@@ -145,7 +141,7 @@ export function ImportStockModal({
         if (e.key === "Escape") onClose();
       }}
     >
-      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
+      <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
         <div className="flex items-center justify-between border-b border-outline-variant px-5 py-3">
           <div>
             <h3 className="text-headline-md font-headline-md text-on-surface">
@@ -231,42 +227,59 @@ export function ImportStockModal({
                 ))}
               </div>
 
-              {preview.length > 0 && (
-                <div className="mb-4 overflow-clip rounded border border-outline-variant">
-                  <p className="border-b border-outline-variant bg-surface-container-low px-3 py-1.5 text-label-md font-label-md font-bold text-on-surface">
-                    First rows as they'll be read
-                  </p>
-                  <div className="divide-y divide-outline-variant/50">
-                    {preview.map((r, i) => {
-                      const ov = fdaOverrides[i];
-                      const sug = fdaSuggestions[i];
-                      const displayName = ov ?? r?.name ?? "— no name —";
-                      const showSug = sug && sug.product_name.toLowerCase() !== (r?.name ?? "").toLowerCase() && !ov;
-                      return (
-                        <div key={i} className="flex flex-col gap-1 px-3 py-1.5">
-                          <div className="flex items-center justify-between gap-3 text-body-sm text-on-surface">
-                            <span className="truncate">{displayName}</span>
-                            <span className="shrink-0 font-data-mono text-data-mono text-on-surface-variant">
-                              {r?.barcode ?? "no barcode"} · {r?.stock_qty ?? 0} units ·{" "}
-                              {r?.selling_price != null ? `GH₵ ${r.selling_price}` : "no price"}
-                            </span>
-                          </div>
-                          {showSug && (
-                            <div className="flex items-center gap-2 rounded bg-primary/5 px-2 py-1">
-                              <span className="text-[11px] text-on-surface-variant">FDA: {sug.product_name}</span>
-                              <span className="text-[11px] text-on-surface-variant">· {([sug.generic_name, sug.strength].filter(Boolean).join(" · "))}</span>
-                              <button
-                                onClick={() => setFdaOverrides((m) => ({ ...m, [i]: sug.product_name.replace(/\s*\(.*\)\s*$/, "").trim() || sug.product_name }))}
-                                className="ml-auto shrink-0 rounded bg-primary px-2 py-0.5 text-[11px] font-bold text-on-primary hover:bg-on-primary-fixed-variant"
-                              >
-                                Use FDA
-                              </button>
-                            </div>
-                          )}
-                          {ov && <p className="text-[11px] text-primary">Will import as FDA name</p>}
-                        </div>
-                      );
-                    })}
+              {stats.recs.length > 0 && (
+                <div className="mb-4 overflow-hidden rounded-xl border border-outline-variant">
+                  <div className="flex items-center justify-between border-b border-outline-variant bg-surface-container-low px-3 py-2">
+                    <p className="text-label-md font-label-md font-bold text-on-surface">
+                      Review — {stats.recs.length.toLocaleString()} rows as they'll be read
+                    </p>
+                    <span className="text-[11px] text-on-surface-variant">Scroll to see all</span>
+                  </div>
+                  <div className="max-h-[50vh] overflow-auto">
+                    <table className="w-full border-collapse text-left text-body-sm">
+                      <thead className="sticky top-0 bg-surface-container-low text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">
+                        <tr>
+                          <th className="px-3 py-1.5">#</th>
+                          <th className="px-3 py-1.5">Name</th>
+                          <th className="px-3 py-1.5">Barcode</th>
+                          <th className="px-3 py-1.5 text-right">Qty</th>
+                          <th className="px-3 py-1.5 text-right">Price</th>
+                          <th className="px-3 py-1.5">FDA</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-outline-variant/30">
+                        {stats.recs.map((r, i) => {
+                          const ov = fdaOverrides[i];
+                          const sug = fdaSuggestions[i];
+                          const displayName = ov ?? r.name;
+                          const showSug = sug && sug.product_name.toLowerCase() !== r.name.toLowerCase() && !ov;
+                          return (
+                            <tr key={i} className="hover:bg-surface-container-low/50">
+                              <td className="px-3 py-1 font-data-mono text-data-mono text-on-surface-variant">{i + 1}</td>
+                              <td className="max-w-[260px] truncate px-3 py-1 font-medium text-on-surface" title={displayName}>
+                                {displayName}
+                                {showSug && (
+                                  <div className="mt-0.5 flex items-center gap-1 rounded bg-primary/5 px-1 py-0.5">
+                                    <span className="truncate text-[10px] text-on-surface-variant">FDA: {sug.product_name}</span>
+                                    <button
+                                      onClick={() => setFdaOverrides((m) => ({ ...m, [i]: sug.product_name.replace(/\s*\(.*\)\s*$/, "").trim() || sug.product_name }))}
+                                      className="ml-auto shrink-0 rounded bg-primary px-1.5 py-0.5 text-[10px] font-bold text-on-primary"
+                                    >
+                                      Use
+                                    </button>
+                                  </div>
+                                )}
+                                {ov && <span className="ml-1 text-[10px] text-primary">(FDA)</span>}
+                              </td>
+                              <td className="px-3 py-1 font-data-mono text-data-mono text-on-surface-variant">{r.barcode ?? "—"}</td>
+                              <td className="px-3 py-1 text-right font-data-mono text-data-mono">{r.stock_qty ?? 0}</td>
+                              <td className="px-3 py-1 text-right font-data-mono text-data-mono">{r.selling_price != null ? `GH₵ ${r.selling_price}` : "—"}</td>
+                              <td className="px-3 py-1 text-[11px] text-on-surface-variant">{sug ? sug.product_name.slice(0, 28) : "—"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}

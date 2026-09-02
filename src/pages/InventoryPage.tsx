@@ -331,30 +331,26 @@ export function InventoryPage() {
       </div>
 
       <div className="flex h-[calc(100vh-14rem)] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface-container-lowest">
-        <div className="flex items-center border-b border-outline-variant bg-surface-container-low px-4 py-2">
+        <div className="grid items-center border-b border-outline-variant bg-surface-container-low px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-on-surface-variant" style={{ gridTemplateColumns: "1fr 112px 144px 160px 112px 64px 64px 112px 80px" }}>
           {([
-            ["name", "flex-1", "Item Name"],
-            ["batch", "w-28", "Batch"],
-            ["supplier", "w-36", "Supplier"],
-            ["barcode", "w-40", "Barcode ID"],
-            ["expiry", "w-28", "Expiry"],
-            ["qty", "w-16 text-right pr-2", "Qty"],
-            ["reorder", "w-16 text-right pr-2", "Min"],
-          ] as const).map(([key, cls, label]) => (
+            ["name", "Item Name"],
+            ["batch", "Batch"],
+            ["supplier", "Supplier"],
+            ["barcode", "Barcode ID"],
+            ["expiry", "Expiry"],
+            ["qty", "Qty"],
+            ["reorder", "Min"],
+          ] as const).map(([key, label]) => (
             <button
               key={key}
               onClick={() => toggleSort(key)}
-              className={`${cls} font-label-md font-label-md uppercase tracking-wider text-on-surface-variant cursor-pointer hover:text-on-surface select-none transition-colors`}
+              className={`text-left font-label-md uppercase tracking-wider ${key === "qty" || key === "reorder" ? "text-right pr-2" : ""} cursor-pointer hover:text-on-surface select-none transition-colors`}
             >
               {label}{arrow(key)}
             </button>
           ))}
-          <div className="w-28 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
-            Status
-          </div>
-          <div className="w-20 font-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
-            Actions
-          </div>
+          <div>Status</div>
+          <div>Actions</div>
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -369,12 +365,12 @@ export function InventoryPage() {
               <Fragment key={p.id}>
               <div
                 ref={highlight?.kind === "product" && highlight.id === p.id ? flashRef : undefined}
-                className={`group flex items-center border-b border-outline-variant px-4 transition-colors hover:bg-surface-container-low ${
+                className={`group grid items-center border-b border-outline-variant px-4 transition-colors hover:bg-surface-container-low ${
                   st === "critical" ? "border-l-[3px] border-l-error bg-error/5" : ""
                 } ${highlight?.kind === "product" && highlight.id === p.id ? "flash-row" : ""}`}
-                style={{ height: 36 }}
+                style={{ height: 36, gridTemplateColumns: "1fr 112px 144px 160px 112px 64px 64px 112px 80px" }}
               >
-                <div className="flex min-w-0 flex-1 items-center gap-2 pr-4">
+                <div className="flex min-w-0 items-center gap-2 pr-4">
                   <button
                     onClick={() => void toggleBatches(p)}
                     title="Show batches (FEFO order — nearest expiry first)"
@@ -396,26 +392,26 @@ export function InventoryPage() {
                     </span>
                   ) : null}
                 </div>
-                <div className="w-28 truncate font-data-mono text-data-mono text-on-surface-variant">
+                <div className="truncate font-data-mono text-data-mono text-on-surface-variant">
                   {p.batch_no ?? "—"}
                 </div>
-                <div className="w-36 truncate pr-4 text-body-sm text-on-surface-variant">
+                <div className="truncate pr-4 text-body-sm text-on-surface-variant">
                   {p.supplier ?? "—"}
                 </div>
-                <div className="w-40 truncate font-data-mono text-data-mono text-on-surface-variant">
+                <div className="truncate font-data-mono text-data-mono text-on-surface-variant">
                   {p.barcode ?? "—"}
                 </div>
                 <div
-                  className={`w-28 text-body-sm ${
+                  className={`truncate text-body-sm ${
                     st === "critical" ? "font-medium text-error" : "text-on-surface-variant"
                   }`}
                 >
                   {p.expiry_date ?? "—"}
                 </div>
-                <div className="w-16 pr-4 text-right font-data-mono text-data-mono text-on-surface">
+                <div className="pr-4 text-right font-data-mono text-data-mono text-on-surface">
                   {p.stock_qty}
                 </div>
-                <div className="w-16 pr-4 text-right font-data-mono text-data-mono text-on-surface-variant">
+                <div className="pr-4 text-right font-data-mono text-data-mono text-on-surface-variant">
                   {editingReorder === p.id ? (
                     <input
                       autoFocus
@@ -450,10 +446,10 @@ export function InventoryPage() {
                     </span>
                   )}
                 </div>
-                <div className="w-28">
+                <div>
                   <StatusPill p={p} />
                 </div>
-                <div className="w-20 pr-1 text-right">
+                <div className="pr-1 text-right">
                   {!isWorker && p.active ? (
                     <span className="inline-flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                       <button
@@ -530,9 +526,14 @@ export function InventoryPage() {
           <div className="flex items-center gap-2">
             <span className="px-2 text-body-sm font-body-sm text-on-surface">Cost of stock:</span>
             <span className="font-data-mono text-data-mono font-bold text-primary">
-              {fmtMoney(
-                list.reduce((s, p) => s + p.cost_price * p.stock_qty, 0),
-              )}
+              {fmtMoney(list.reduce((s, p) => s + (p.cost_price || 0) * p.stock_qty, 0))}
+            </span>
+            {list.length > 0 && list.every((p) => !p.cost_price) && (
+              <span className="text-[11px] text-on-surface-variant">(no cost prices imported — add via Import or edit)</span>
+            )}
+            <span className="ml-3 text-body-sm text-on-surface-variant">Retail:</span>
+            <span className="font-data-mono text-data-mono font-bold text-on-surface">
+              {fmtMoney(list.reduce((s, p) => s + p.selling_price * p.stock_qty, 0))}
             </span>
           </div>
         </div>

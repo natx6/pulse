@@ -380,7 +380,7 @@ export function TopBar() {
                     </button>
                   )}
                 </div>
-                <div className="max-h-[22rem] overflow-y-auto">
+                <div className="max-h-[70vh] overflow-y-auto overscroll-contain">
                   <Section
                     title="Low stock"
                     items={low.map((p) => ({ name: p.name, hint: `${p.stock_qty} left`, id: p.id, kind: "product" as const }))}
