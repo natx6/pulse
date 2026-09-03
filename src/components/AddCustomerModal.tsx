@@ -11,6 +11,7 @@ interface Props {
  *  current sale. Reuses the QuickAddModal look: icon header, fields, footer. */
 export function AddCustomerModal({ onClose }: Props) {
   const setPatient = useStore((s) => s.setPatient);
+  const currentUser = useStore((s) => s.currentUser);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
@@ -31,7 +32,13 @@ export function AddCustomerModal({ onClose }: Props) {
     setBusy(true);
     setError("");
     try {
-      await addPatient(name, email, phone);
+      await addPatient(
+        name,
+        email,
+        phone,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       setPatient({ name: name.trim(), phone: phone.trim() });
       beep(true);
       onClose();

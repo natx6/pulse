@@ -172,6 +172,8 @@ export default function App() {
       const st = useStore.getState();
       if (e.key === "F2") {
         e.preventDefault();
+        // Receive-stock is manager-only — workers must not open intake.
+        if (st.currentUser?.role === "worker") return;
         st.setIntakeOpen(true);
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
@@ -200,12 +202,30 @@ export default function App() {
   }, []);
 
   // Optional shift auto-switch: when enabled, keep the operator matching the
-  // current time. Re-evaluates immediately when the toggle or the operator
-  // list changes, then every 30s. Handles overnight shifts.
+  // Theme: managers use the manual toggle, everyone else (login screen +
+  // workers) follows time (6am-6pm light, otherwise dark). Updates every minute.
   const isDark = useStore((s) => s.isDark);
+  const currentUserEarly = useStore((s) => s.currentUser);
+  const isWorkerEarly = currentUserEarly?.role === "worker";
+  const shouldAuto = !currentUserEarly || isWorkerEarly;
+  const [autoDark, setAutoDark] = useState(() => {
+    const h = new Date().getHours();
+    return h < 6 || h >= 18;
+  });
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", isDark);
-  }, [isDark]);
+    if (!shouldAuto) return;
+    const tick = () => {
+      const h = new Date().getHours();
+      setAutoDark(h < 6 || h >= 18);
+    };
+    tick();
+    const t = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(t);
+  }, [shouldAuto]);
+  const effectiveDark = shouldAuto ? autoDark : isDark;
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", effectiveDark);
+  }, [effectiveDark]);
 
   const autoOperator = useStore((s) => s.autoOperator);
   const operators = useStore((s) => s.operators);
@@ -231,7 +251,7 @@ export default function App() {
   // Workers are hidden from manager-only pages — bounce them to dashboard.
   useEffect(() => {
     if (!currentUser || currentUser.role !== "worker") return;
-    if (["restock", "analytics", "expenses", "settings"].includes(page)) {
+    if (["restock", "analytics", "settings"].includes(page)) {
       useStore.getState().setPage("dashboard");
     }
   }, [page, currentUser]);
@@ -327,11 +347,11 @@ export default function App() {
           {page === "history" && <HistoryPage />}
           {page === "customers" && <CustomersPage />}
           {page === "support" && <SupportPage />}
+          {page === "expenses" && <ExpensesPage />}
           {!isWorker && page === "restock" && <RestockPage />}
           {!isWorker && page === "analytics" && <AnalyticsPage />}
-          {!isWorker && page === "expenses" && <ExpensesPage />}
           {!isWorker && page === "settings" && <SettingsPage />}
-          {isWorker && ["restock", "analytics", "expenses", "settings"].includes(page) && (
+          {isWorker && ["restock", "analytics", "settings"].includes(page) && (
             <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
               <span className="material-symbols-outlined text-[40px] text-on-surface-variant">lock</span>
               <p className="text-headline-md font-headline-md text-on-surface">Manager required</p>

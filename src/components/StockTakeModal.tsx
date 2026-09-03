@@ -16,6 +16,7 @@ interface Props {
 export function StockTakeModal({ onClose }: Props) {
   const products = useStore((s) => s.products);
   const operator = useStore((s) => s.operator);
+  const currentUser = useStore((s) => s.currentUser);
   const refreshProducts = useStore((s) => s.refreshProducts);
 
   const [q, setQ] = useState("");
@@ -80,6 +81,7 @@ export function StockTakeModal({ onClose }: Props) {
         entered.map((e) => ({ product_id: e.id, counted: e.n })),
         operator || null,
         managerPin.trim() || null,
+        currentUser?.role ?? null,
       );
       await refreshProducts();
       beep(true);

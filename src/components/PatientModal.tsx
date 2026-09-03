@@ -93,7 +93,12 @@ export function PatientModal({ name, phone, onClose }: Props) {
     const v = Math.min(100, Math.max(0, Number(discountInput) || 0));
     setDiscountInput(v > 0 ? String(v) : "");
     try {
-      await updatePatientDiscount(name, v);
+      await updatePatientDiscount(
+        name,
+        v,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       setErr("");
       setDiscountSaved(true);
       setTimeout(() => setDiscountSaved(false), 1500);
@@ -188,7 +193,14 @@ export function PatientModal({ name, phone, onClose }: Props) {
     setSettleBusy(true);
     setSettleErr("");
     try {
-      await settleCredit(name, a, settleMethod, null, settlePin.trim() || null);
+      await settleCredit(
+        name,
+        a,
+        settleMethod,
+        null,
+        settlePin.trim() || null,
+        currentUser?.role ?? null,
+      );
       beep(true);
       await refreshBalance();
       setShowSettle(false);
@@ -251,25 +263,33 @@ export function PatientModal({ name, phone, onClose }: Props) {
                 Discount
               </p>
               <div className="flex items-center gap-1">
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={discountInput}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === "" || (Number(v) >= 0 && Number(v) <= 100)) setDiscountInput(v);
-                  }}
-                  placeholder="0"
-                  className="h-7 w-12 rounded border border-outline-variant bg-surface-container-lowest px-1 text-center font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
-                />
-                <span className="text-body-sm text-on-surface-variant">%</span>
-                <button
-                  onClick={() => void saveDiscount()}
-                  className="h-7 rounded bg-primary/10 px-2 text-[10px] font-bold text-primary hover:bg-primary/20"
-                >
-                  {discountSaved ? "✓" : "Set"}
-                </button>
+                {isWorker ? (
+                  <span className="font-data-mono text-data-mono text-on-surface">
+                    {discountInput ? `${discountInput}%` : "—"}
+                  </span>
+                ) : (
+                  <>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={discountInput}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === "" || (Number(v) >= 0 && Number(v) <= 100)) setDiscountInput(v);
+                      }}
+                      placeholder="0"
+                      className="h-7 w-12 rounded border border-outline-variant bg-surface-container-lowest px-1 text-center font-data-mono text-data-mono text-on-surface focus:border-primary focus:outline-none"
+                    />
+                    <span className="text-body-sm text-on-surface-variant">%</span>
+                    <button
+                      onClick={() => void saveDiscount()}
+                      className="h-7 rounded bg-primary/10 px-2 text-[10px] font-bold text-primary hover:bg-primary/20"
+                    >
+                      {discountSaved ? "✓" : "Set"}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>

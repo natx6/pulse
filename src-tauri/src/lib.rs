@@ -371,6 +371,7 @@ fn complete_sale(
     payments: Vec<Payment>,
     lines: Vec<SaleLine>,
     operator: Option<String>,
+    role: Option<String>,
     patient_name: Option<String>,
     patient_phone: Option<String>,
     discount_pct: Option<f64>,
@@ -381,6 +382,7 @@ fn complete_sale(
         payments,
         lines,
         operator,
+        role,
         patient_name,
         patient_phone,
         discount_pct,
@@ -406,6 +408,7 @@ fn complete_sale_impl(
     payments: Vec<Payment>,
     lines: Vec<SaleLine>,
     operator: Option<String>,
+    role: Option<String>,
     patient_name: Option<String>,
     patient_phone: Option<String>,
     discount_pct: Option<f64>,
@@ -613,6 +616,30 @@ fn complete_sale_impl(
         )
         .map_err(|e| e.to_string())?;
     }
+
+    let detail = format!(
+        "{} — GH₵ {:.2} via {} ({} items{})",
+        receipt_no,
+        total,
+        primary,
+        lines.len(),
+        patient_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(" for {s}"))
+            .unwrap_or_default()
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "sale.completed",
+        Some("sale"),
+        Some(&receipt_no),
+        Some(total),
+        Some(&detail),
+    )?;
 
     tx.commit().map_err(|e| e.to_string())?;
 
@@ -1083,6 +1110,8 @@ fn save_purchase(
     discount_type: String,
     discount_amount: f64,
     lines: Vec<PurchaseLine>,
+    operator: Option<String>,
+    role: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if lines.is_empty() {
         return Err("Add at least one product".into());
@@ -1199,6 +1228,29 @@ fn save_purchase(
         }
     }
 
+    let detail = format!(
+        "{} — {} ({} items, GH₵ {:.2}){}",
+        id,
+        sup_name.as_deref().unwrap_or("no supplier"),
+        lines.len(),
+        net_total,
+        if status == "Received" {
+            " — received to stock"
+        } else {
+            ""
+        }
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "purchase.saved",
+        Some("purchase"),
+        Some(&id),
+        Some(net_total),
+        Some(&detail),
+    )?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "id": id,
@@ -1216,6 +1268,8 @@ fn receive_purchase(
     app: AppHandle,
     purchase_id: String,
     lines: Vec<PurchaseReceiveLine>,
+    operator: Option<String>,
+    role: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if lines.is_empty() {
         return Err("Nothing to receive".into());
@@ -1326,6 +1380,23 @@ fn receive_purchase(
         .map_err(|e| e.to_string())?;
     }
 
+    let detail = format!(
+        "{} — {} units received{}",
+        ref_no.as_deref().unwrap_or(&purchase_id),
+        added,
+        if complete { " (complete)" } else { " (partial)" }
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "purchase.received",
+        Some("purchase"),
+        Some(&purchase_id),
+        None,
+        Some(&detail),
+    )?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "reference_no": ref_no,
@@ -1351,6 +1422,8 @@ fn update_purchase(
     discount_type: String,
     discount_amount: f64,
     lines: Vec<PurchaseLine>,
+    operator: Option<String>,
+    role: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if lines.is_empty() {
         return Err("Add at least one product".into());
@@ -1472,6 +1545,23 @@ fn update_purchase(
         .map_err(|e| e.to_string())?;
     }
 
+    let detail = format!(
+        "{} — edited ({} items, GH₵ {:.2})",
+        purchase_id,
+        lines.len(),
+        net_total
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "purchase.edited",
+        Some("purchase"),
+        Some(&purchase_id),
+        Some(net_total),
+        Some(&detail),
+    )?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "id": purchase_id,
@@ -1488,6 +1578,8 @@ fn cancel_purchase(
     app: AppHandle,
     purchase_id: String,
     reason: Option<String>,
+    operator: Option<String>,
+    role: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut conn = open_db(&app)?;
     let tx = conn
@@ -1515,6 +1607,21 @@ fn cancel_purchase(
         rusqlite::params![reason, purchase_id],
     )
     .map_err(|e| e.to_string())?;
+    let detail = format!(
+        "{} ({})",
+        ref_no.as_deref().unwrap_or(&purchase_id),
+        reason.as_deref().unwrap_or("no reason")
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "purchase.cancelled",
+        Some("purchase"),
+        Some(&purchase_id),
+        None,
+        Some(&detail),
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "id": purchase_id, "reference_no": ref_no }))
 }
@@ -1530,10 +1637,11 @@ fn record_payment(
     amount: f64,
     method: Option<String>,
     operator: Option<String>,
+    role: Option<String>,
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut conn = open_db(&app)?;
-    record_payment_impl(&mut conn, purchase_id, amount, method, operator, manager_pin)
+    record_payment_impl(&mut conn, purchase_id, amount, method, operator, role, manager_pin)
 }
 
 /// Actual record_payment logic — split from the command wrapper so tests can
@@ -1544,6 +1652,7 @@ fn record_payment_impl(
     amount: f64,
     method: Option<String>,
     operator: Option<String>,
+    role: Option<String>,
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if amount <= 0.0 {
@@ -1589,6 +1698,22 @@ fn record_payment_impl(
         rusqlite::params![purchase_id, amount, method, operator],
     )
     .map_err(|e| e.to_string())?;
+    let detail = format!(
+        "{} — GH₵ {:.2} via {}",
+        ref_no.as_deref().unwrap_or(&purchase_id),
+        amount,
+        method
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "supplier.paid",
+        Some("purchase"),
+        Some(&purchase_id),
+        Some(amount),
+        Some(&detail),
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     let balance = ((total - paid - amount) * 100.0).round() / 100.0;
     Ok(serde_json::json!({
@@ -1609,10 +1734,11 @@ fn settle_credit(
     amount: f64,
     method: Option<String>,
     operator: Option<String>,
+    role: Option<String>,
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut conn = open_db(&app)?;
-    settle_credit_impl(&mut conn, patient_name, amount, method, operator, manager_pin)
+    settle_credit_impl(&mut conn, patient_name, amount, method, operator, role, manager_pin)
 }
 
 /// Actual settle_credit logic — split from the command wrapper so tests can
@@ -1623,6 +1749,7 @@ fn settle_credit_impl(
     amount: f64,
     method: Option<String>,
     operator: Option<String>,
+    role: Option<String>,
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let name = patient_name.trim().to_string();
@@ -1675,6 +1802,17 @@ fn settle_credit_impl(
         rusqlite::params![name, amount, method, operator],
     )
     .map_err(|e| e.to_string())?;
+    let detail = format!("{name} — GH₵ {amount:.2} via {method}");
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "credit.settled",
+        Some("customer"),
+        Some(&name),
+        Some(amount),
+        Some(&detail),
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "patient_name": name,
@@ -1695,11 +1833,12 @@ fn return_sale(
     sale_id: i64,
     reason: Option<String>,
     operator: Option<String>,
+    role: Option<String>,
     lines: Vec<ReturnLine>,
     manager_pin: Option<String>,
 ) -> Result<ReturnResult, String> {
     let mut conn = open_db(&app)?;
-    return_sale_impl(&mut conn, sale_id, reason, operator, lines, manager_pin)
+    return_sale_impl(&mut conn, sale_id, reason, operator, role, lines, manager_pin)
 }
 
 /// The actual return_sale logic, taking an open connection directly rather
@@ -1710,6 +1849,7 @@ fn return_sale_impl(
     sale_id: i64,
     reason: Option<String>,
     operator: Option<String>,
+    role: Option<String>,
     lines: Vec<ReturnLine>,
     manager_pin: Option<String>,
 ) -> Result<ReturnResult, String> {
@@ -1819,6 +1959,29 @@ fn return_sale_impl(
         fefo_restore(&tx, *pid, batches.as_deref(), *qty)?;
     }
 
+    let detail = format!(
+        "{} — GH₵ {:.2} refunded ({} lines{})",
+        receipt_no,
+        total_refunded,
+        lines.len(),
+        reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(": {s}"))
+            .unwrap_or_default()
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "sale.returned",
+        Some("sale"),
+        Some(&receipt_no),
+        Some(total_refunded),
+        Some(&detail),
+    )?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(ReturnResult {
         receipt_no,
@@ -1835,17 +1998,19 @@ fn void_last_sale(
     app: AppHandle,
     sale_id: i64,
     operator: Option<String>,
+    role: Option<String>,
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let _ = operator; // nothing to stamp — the rows are deleted
     let mut conn = open_db(&app)?;
-    void_last_sale_impl(&mut conn, sale_id, manager_pin)
+    void_last_sale_impl(&mut conn, sale_id, operator, role, manager_pin)
 }
 
 /// The actual void logic (see return_sale_impl for why this is split out).
 fn void_last_sale_impl(
     conn: &mut rusqlite::Connection,
     sale_id: i64,
+    operator: Option<String>,
+    role: Option<String>,
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let tx = conn
@@ -1902,6 +2067,21 @@ fn void_last_sale_impl(
         fefo_restore(&tx, *pid, batches.as_deref(), *qty)?;
     }
 
+    // The sale rows are gone — the audit log is the only record this void
+    // ever happened, which is exactly why voids are the strongest shrinkage
+    // vector and stay PIN-gated.
+    let detail = format!("{receipt_no} voided — sale erased, stock restored");
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "sale.voided",
+        Some("sale"),
+        Some(&receipt_no),
+        None,
+        Some(&detail),
+    )?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "receipt_no": receipt_no }))
 }
@@ -1915,6 +2095,7 @@ fn adjust_stock(
     delta: i64,
     reason: String,
     operator: Option<String>,
+    role: Option<String>,
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if reason.trim().is_empty() {
@@ -1968,6 +2149,18 @@ fn adjust_stock(
         rusqlite::params![product_id, name, delta, reason.trim(), operator],
     )
     .map_err(|e| e.to_string())?;
+
+    let detail = format!("{name} {delta:+} → {new_stock} ({})", reason.trim());
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "stock.adjusted",
+        Some("product"),
+        Some(&product_id.to_string()),
+        Some(delta as f64),
+        Some(&detail),
+    )?;
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
@@ -2312,6 +2505,8 @@ fn parse_stock_file(path: String) -> Result<ParsedSheet, String> {
 fn commit_stock_import(
     app: AppHandle,
     records: Vec<StockImportRow>,
+    operator: Option<String>,
+    role: Option<String>,
 ) -> Result<ImportSummary, String> {
     if records.is_empty() {
         return Err("No rows to import".into());
@@ -2462,6 +2657,20 @@ fn commit_stock_import(
         }
     }
 
+    let detail = format!(
+        "stock import — {created} new, {updated} updated, {skipped} skipped"
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "stock.imported",
+        Some("import"),
+        None,
+        None,
+        Some(&detail),
+    )?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(ImportSummary {
         created,
@@ -2481,6 +2690,8 @@ fn commit_stock_import(
 fn commit_customer_import(
     app: AppHandle,
     records: Vec<CustomerImportRow>,
+    operator: Option<String>,
+    role: Option<String>,
 ) -> Result<ImportSummary, String> {
     if records.is_empty() {
         return Err("No rows to import".into());
@@ -2547,6 +2758,20 @@ fn commit_customer_import(
         }
     }
 
+    let detail = format!(
+        "customer import — {created} new, {updated} updated, {skipped} skipped"
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "customers.imported",
+        Some("import"),
+        None,
+        None,
+        Some(&detail),
+    )?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(ImportSummary {
         created,
@@ -2565,6 +2790,8 @@ fn commit_customer_import(
 fn commit_supplier_import(
     app: AppHandle,
     records: Vec<SupplierImportRow>,
+    operator: Option<String>,
+    role: Option<String>,
 ) -> Result<ImportSummary, String> {
     if records.is_empty() {
         return Err("No rows to import".into());
@@ -2630,6 +2857,20 @@ fn commit_supplier_import(
         }
     }
 
+    let detail = format!(
+        "supplier import — {created} new, {updated} updated, {skipped} skipped"
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "suppliers.imported",
+        Some("import"),
+        None,
+        None,
+        Some(&detail),
+    )?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(ImportSummary {
         created,
@@ -2662,6 +2903,8 @@ pub struct DemoPurgeSummary {
 fn purge_demo_data(
     app: AppHandle,
     manager_pin: Option<String>,
+    operator: Option<String>,
+    role: Option<String>,
 ) -> Result<DemoPurgeSummary, String> {
     let mut conn = open_db(&app)?;
     check_manager_pin(&conn, manager_pin)?;
@@ -2730,6 +2973,20 @@ fn purge_demo_data(
         )
         .map_err(|e| e.to_string())?;
 
+    let detail = format!(
+        "demo purge — {sales} sales, {purchases} purchases, {suppliers} suppliers, {products} products, {patients} patients"
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "demo.purged",
+        Some("demo"),
+        None,
+        None,
+        Some(&detail),
+    )?;
+
     tx.commit().map_err(|e| e.to_string())?;
     // Re-enable FKs for the connection (next open_db will set it again anyway).
     let _ = conn.execute("PRAGMA foreign_keys = ON", []);
@@ -2743,7 +3000,11 @@ fn purge_demo_data(
 }
 
 #[tauri::command]
-fn wipe_all_stock(app: AppHandle) -> Result<usize, String> {
+fn wipe_all_stock(
+    app: AppHandle,
+    operator: Option<String>,
+    role: Option<String>,
+) -> Result<usize, String> {
     let mut conn = open_db(&app)?;
     conn.execute("PRAGMA foreign_keys = OFF", [])
         .map_err(|e| e.to_string())?;
@@ -2767,9 +3028,21 @@ fn wipe_all_stock(app: AppHandle) -> Result<usize, String> {
         let sql = format!("DELETE FROM {}", tbl);
         tx.execute(&sql, []).map_err(|e| e.to_string())?;
     }
-    // Keep users, settings, fda_drugs, expenses, etc. — only business data wiped.
+    // Keep users, settings, fda_drugs, expenses, audit_log, etc. — only business data wiped.
     // Reset sqlite_sequence so ids start clean for a fresh-client demo.
     let _ = tx.execute("DELETE FROM sqlite_sequence WHERE name IN ('products','sales','purchases','product_batches')", []);
+    // The audit table itself survives the wipe — this row is the record that
+    // a wipe happened (dev/testing only).
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "data.wiped",
+        Some("database"),
+        None,
+        None,
+        Some("wiped all stock/sales/purchases/patients/suppliers"),
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     let _ = conn.execute("PRAGMA foreign_keys = ON", []);
     // Count wiped products for the toast.
@@ -2915,7 +3188,12 @@ fn search_fda_drugs(app: AppHandle, query: String, limit: Option<i64>) -> Result
 }
 
 #[tauri::command]
-fn import_fda_catalog(app: AppHandle, drugs: Vec<FdaDrug>) -> Result<usize, String> {
+fn import_fda_catalog(
+    app: AppHandle,
+    drugs: Vec<FdaDrug>,
+    operator: Option<String>,
+    role: Option<String>,
+) -> Result<usize, String> {
     if drugs.is_empty() {
         return Ok(0);
     }
@@ -2967,12 +3245,27 @@ fn import_fda_catalog(app: AppHandle, drugs: Vec<FdaDrug>) -> Result<usize, Stri
         .map_err(|e| e.to_string())?;
         count += 1;
     }
+    let detail = format!("FDA catalog refreshed — {count} drugs");
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "fda.imported",
+        Some("catalog"),
+        None,
+        None,
+        Some(&detail),
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(count)
 }
 
 #[tauri::command]
-async fn refresh_fda_catalog(app: AppHandle) -> Result<usize, String> {
+async fn refresh_fda_catalog(
+    app: AppHandle,
+    operator: Option<String>,
+    role: Option<String>,
+) -> Result<usize, String> {
     use serde::Deserialize;
     #[derive(Deserialize)]
     struct ApiRow {
@@ -3086,7 +3379,7 @@ async fn refresh_fda_catalog(app: AppHandle) -> Result<usize, String> {
         return Err("No DRUG rows returned from FDA register".into());
     }
     // Reuse the import logic (single transaction).
-    import_fda_catalog(app, all)
+    import_fda_catalog(app, all, operator, role)
 }
 
 // ---------------------------------------------------------------------------
@@ -3357,6 +3650,29 @@ fn migrate_plaintext_pin(conn: &rusqlite::Connection) -> Result<(), String> {
 const PIN_MAX_FAILURES: u32 = 5;
 const PIN_LOCKOUT_MS: u64 = 30_000;
 
+/// Central audit trail: one row per business action, written inside the same
+/// transaction as the action itself so the trail can never drift from the
+/// data. Never logs secrets (PINs, password hashes) — only what happened,
+/// who did it, and the money/stock involved.
+fn log_audit(
+    conn: &rusqlite::Connection,
+    operator: &Option<String>,
+    role: &Option<String>,
+    action: &str,
+    entity: Option<&str>,
+    entity_id: Option<&str>,
+    amount: Option<f64>,
+    detail: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO audit_log (operator, role, action, entity, entity_id, amount, detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![operator, role, action, entity, entity_id, amount, detail],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn check_manager_pin(
     conn: &rusqlite::Connection,
     provided: Option<String>,
@@ -3434,6 +3750,8 @@ fn set_manager_pin(
     app: AppHandle,
     current_pin: Option<String>,
     new_pin: Option<String>,
+    operator: Option<String>,
+    role: Option<String>,
 ) -> Result<(), String> {
     let new_pin = new_pin
         .as_deref()
@@ -3481,6 +3799,22 @@ fn set_manager_pin(
                 .map_err(|e| e.to_string())?;
         }
     }
+    // Log the fact of the change, never the PIN itself.
+    let detail = if new_pin.is_some() {
+        "manager PIN set/changed"
+    } else {
+        "manager PIN cleared"
+    };
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "pin.changed",
+        Some("settings"),
+        Some("manager_pin"),
+        None,
+        Some(detail),
+    )?;
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -3534,6 +3868,8 @@ fn create_user(
     displayName: String,
     password: String,
     role: String,
+    actor: Option<String>,
+    actorRole: Option<String>,
 ) -> Result<UserRow, String> {
     let username = username.trim().to_lowercase();
     let display_name = displayName.trim().to_string();
@@ -3572,6 +3908,19 @@ fn create_user(
     )
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
+    let detail = format!("{username} ({display_name}) created as {role}");
+    // No explicit transaction here (single-row insert) — the audit row
+    // follows on the same connection, same as the other user commands below.
+    let _ = log_audit(
+        &conn,
+        &actor,
+        &actorRole,
+        "user.created",
+        Some("user"),
+        Some(&id.to_string()),
+        None,
+        Some(&detail),
+    );
     let row = conn
         .query_row(
             "SELECT id, username, display_name, role, is_active, must_change_password, created_at FROM users WHERE id = ?1",
@@ -3636,8 +3985,11 @@ fn update_user(
     displayName: Option<String>,
     role: Option<String>,
     isActive: Option<bool>,
+    actor: Option<String>,
+    actorRole: Option<String>,
 ) -> Result<UserRow, String> {
     let conn = open_db(&app)?;
+    let mut changes: Vec<String> = Vec::new();
     if let Some(dn) = displayName {
         let dn = dn.trim().to_string();
         if dn.is_empty() {
@@ -3645,6 +3997,7 @@ fn update_user(
         }
         conn.execute("UPDATE users SET display_name = ?1 WHERE id = ?2", rusqlite::params![dn, id])
             .map_err(|e| e.to_string())?;
+        changes.push(format!("name → {dn}"));
     }
     if let Some(r) = role {
         let r = r.trim().to_lowercase();
@@ -3665,6 +4018,7 @@ fn update_user(
         }
         conn.execute("UPDATE users SET role = ?1 WHERE id = ?2", rusqlite::params![r, id])
             .map_err(|e| e.to_string())?;
+        changes.push(format!("role → {r}"));
     }
     if let Some(active) = isActive {
         // Prevent deactivating the last manager.
@@ -3681,6 +4035,23 @@ fn update_user(
         }
         conn.execute("UPDATE users SET is_active = ?1 WHERE id = ?2", rusqlite::params![if active { 1 } else { 0 }, id])
             .map_err(|e| e.to_string())?;
+        changes.push(if active { "reactivated".to_string() } else { "deactivated".to_string() });
+    }
+    if !changes.is_empty() {
+        let target: String = conn
+            .query_row("SELECT username FROM users WHERE id = ?1", [id], |row| row.get(0))
+            .unwrap_or_else(|_| format!("id {id}"));
+        let detail = format!("{target}: {}", changes.join(", "));
+        let _ = log_audit(
+            &conn,
+            &actor,
+            &actorRole,
+            "user.updated",
+            Some("user"),
+            Some(&id.to_string()),
+            None,
+            Some(&detail),
+        );
     }
     let row = conn
         .query_row(
@@ -3694,7 +4065,13 @@ fn update_user(
 
 #[allow(non_snake_case)]
 #[tauri::command]
-fn reset_user_password(app: AppHandle, id: i64, newPassword: String) -> Result<(), String> {
+fn reset_user_password(
+    app: AppHandle,
+    id: i64,
+    newPassword: String,
+    actor: Option<String>,
+    actorRole: Option<String>,
+) -> Result<(), String> {
     if newPassword.len() < 4 {
         return Err("Password must be at least 4 characters".into());
     }
@@ -3709,6 +4086,20 @@ fn reset_user_password(app: AppHandle, id: i64, newPassword: String) -> Result<(
     if n == 0 {
         return Err("User not found".into());
     }
+    let target: String = conn
+        .query_row("SELECT username FROM users WHERE id = ?1", [id], |row| row.get(0))
+        .unwrap_or_else(|_| format!("id {id}"));
+    let detail = format!("{target} password reset (must change on next login)");
+    let _ = log_audit(
+        &conn,
+        &actor,
+        &actorRole,
+        "user.password_reset",
+        Some("user"),
+        Some(&id.to_string()),
+        None,
+        Some(&detail),
+    );
     Ok(())
 }
 
@@ -3741,6 +4132,17 @@ fn change_own_password(
         rusqlite::params![hash, id],
     )
     .map_err(|e| e.to_string())?;
+    let detail = format!("{username} changed their own password");
+    let _ = log_audit(
+        &conn,
+        &Some(username.clone()),
+        &None,
+        "user.password_changed",
+        Some("user"),
+        Some(&id.to_string()),
+        None,
+        Some(&detail),
+    );
     Ok(())
 }
 
@@ -3758,6 +4160,7 @@ fn commit_stock_take_impl(
     conn: &mut rusqlite::Connection,
     lines: Vec<StockTakeLine>,
     operator: Option<String>,
+    role: Option<String>,
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if lines.is_empty() {
@@ -3826,6 +4229,22 @@ fn commit_stock_take_impl(
         changed.push((name, stock, l.counted));
     }
 
+    let detail = format!(
+        "{} counted, {} changed",
+        lines.len(),
+        changed.len()
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "stock.take_committed",
+        Some("stock_take"),
+        None,
+        None,
+        Some(&detail),
+    )?;
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "changed": changed.len(),
@@ -3875,10 +4294,11 @@ fn commit_stock_take(
     app: AppHandle,
     counts: Vec<StockTakeLine>,
     operator: Option<String>,
+    role: Option<String>,
     manager_pin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut conn = open_db(&app)?;
-    commit_stock_take_impl(&mut conn, counts, operator, manager_pin)
+    commit_stock_take_impl(&mut conn, counts, operator, role, manager_pin)
 }
 
 // --- Atomic intake: stock update/insert and batch row in ONE transaction ---
@@ -3914,7 +4334,12 @@ fn trim_opt(s: &Option<String>) -> Option<String> {
 }
 
 #[tauri::command]
-fn intake_stock(app: AppHandle, input: IntakePayload) -> Result<serde_json::Value, String> {
+fn intake_stock(
+    app: AppHandle,
+    input: IntakePayload,
+    operator: Option<String>,
+    role: Option<String>,
+) -> Result<serde_json::Value, String> {
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err("Product name is required".into());
@@ -3987,12 +4412,34 @@ fn intake_stock(app: AppHandle, input: IntakePayload) -> Result<serde_json::Valu
         trim_opt(&input.expiry_date).as_deref(),
         input.quantity,
     )?;
+    let detail = format!(
+        "{name} +{} (GH₵ {:.2}){}",
+        input.quantity,
+        input.selling_price,
+        if created { " — new product" } else { "" }
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "stock.intake",
+        Some("product"),
+        Some(&id.to_string()),
+        Some(input.quantity as f64),
+        Some(&detail),
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "id": id, "created": created }))
 }
 
 #[tauri::command]
-fn quick_add_product(app: AppHandle, name: String, selling_price: f64) -> Result<i64, String> {
+fn quick_add_product(
+    app: AppHandle,
+    name: String,
+    selling_price: f64,
+    operator: Option<String>,
+    role: Option<String>,
+) -> Result<i64, String> {
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err("Product name is required".into());
@@ -4008,6 +4455,17 @@ fn quick_add_product(app: AppHandle, name: String, selling_price: f64) -> Result
     .map_err(|e| e.to_string())?;
     let id = tx.last_insert_rowid();
     add_to_batch(&tx, id, None, None, 1)?;
+    let detail = format!("{name} @ GH₵ {selling_price:.2} (quick add at counter)");
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "product.quick_added",
+        Some("product"),
+        Some(&id.to_string()),
+        Some(selling_price),
+        Some(&detail),
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(id)
 }
@@ -4031,7 +4489,12 @@ pub struct NewProduct {
 }
 
 #[tauri::command]
-fn create_product(app: AppHandle, product: NewProduct) -> Result<i64, String> {
+fn create_product(
+    app: AppHandle,
+    product: NewProduct,
+    operator: Option<String>,
+    role: Option<String>,
+) -> Result<i64, String> {
     let name = product.name.trim().to_string();
     if name.is_empty() {
         return Err("Product name is required".into());
@@ -4078,6 +4541,20 @@ fn create_product(app: AppHandle, product: NewProduct) -> Result<i64, String> {
     if product.stock_qty > 0 {
         add_to_batch(&tx, id, product.batch_no.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()), product.expiry_date.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()), product.stock_qty)?;
     }
+    let detail = format!(
+        "{name} — {} in stock @ GH₵ {:.2}",
+        product.stock_qty, product.selling_price
+    );
+    log_audit(
+        &tx,
+        &operator,
+        &role,
+        "product.created",
+        Some("product"),
+        Some(&id.to_string()),
+        Some(product.selling_price),
+        Some(&detail),
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(id)
 }
@@ -4174,6 +4651,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0032_users",
         include_str!("../migrations/0032_users.sql"),
+    ),
+    (
+        "0033_audit_log",
+        include_str!("../migrations/0033_audit_log.sql"),
     ),
 ];
 
@@ -4424,6 +4905,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_err(), "quantity 0 must be rejected");
     }
@@ -4436,6 +4918,7 @@ mod tests {
             &mut conn,
             vec![cash(8.0)],
             vec![line(pid, "Paracetamol", -3, 8.0)],
+            None,
             None,
             None,
             None,
@@ -4454,6 +4937,7 @@ mod tests {
             &mut conn,
             vec![cash(1000.0)], // overpay so the total-coverage check can't fail either way
             vec![line(pid, "Paracetamol", 2, 0.01)],
+            None,
             None,
             None,
             None,
@@ -4479,6 +4963,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_err(), "selling more than what's in stock must be rejected");
     }
@@ -4492,6 +4977,7 @@ mod tests {
             &mut conn,
             vec![cash(70.0)],
             vec![line(pid, "Amoxicillin", 2, 35.0)],
+            None,
             None,
             None,
             None,
@@ -4525,6 +5011,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("sale should succeed");
 
@@ -4532,6 +5019,7 @@ mod tests {
             &mut conn,
             sale.sale_id,
             Some("customer changed mind".into()),
+            None,
             None,
             vec![ReturnLine {
                 product_id: pid,
@@ -4562,12 +5050,14 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("sale should succeed");
 
         return_sale_impl(
             &mut conn,
             sale.sale_id,
+            None,
             None,
             None,
             vec![ReturnLine {
@@ -4583,6 +5073,7 @@ mod tests {
         let second = return_sale_impl(
             &mut conn,
             sale.sale_id,
+            None,
             None,
             None,
             vec![ReturnLine {
@@ -4662,6 +5153,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("sale should succeed");
 
@@ -4696,6 +5188,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("sale should succeed");
 
@@ -4704,6 +5197,7 @@ mod tests {
         return_sale_impl(
             &mut conn,
             sale.sale_id,
+            None,
             None,
             None,
             vec![ReturnLine {
@@ -4742,6 +5236,7 @@ mod tests {
             &mut conn,
             vec![cash(24.0)],
             vec![line(pid, "Legacy", 3, 8.0)],
+            None,
             None,
             None,
             None,
@@ -4975,6 +5470,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("sale should succeed");
 
@@ -4984,13 +5480,14 @@ mod tests {
             quantity: 1,
         }];
         assert!(
-            return_sale_impl(&mut conn, sale.sale_id, None, None, lines.clone(), None).is_err(),
+            return_sale_impl(&mut conn, sale.sale_id, None, None, None, lines.clone(), None).is_err(),
             "return without the manager PIN must be refused"
         );
         assert!(
             return_sale_impl(
                 &mut conn,
                 sale.sale_id,
+                None,
                 None,
                 None,
                 lines.clone(),
@@ -5002,6 +5499,7 @@ mod tests {
         let ok = return_sale_impl(
             &mut conn,
             sale.sale_id,
+            None,
             None,
             None,
             lines,
@@ -5021,11 +5519,13 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("sale should succeed");
         return_sale_impl(
             &mut open_conn,
             sale2.sale_id,
+            None,
             None,
             None,
             vec![ReturnLine {
@@ -5049,19 +5549,20 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("sale should succeed");
         set_manager_pin(&conn, "9999");
 
         assert!(
-            void_last_sale_impl(&mut conn, sale.sale_id, None).is_err(),
+            void_last_sale_impl(&mut conn, sale.sale_id, None, None, None).is_err(),
             "void without a PIN must be refused"
         );
         assert!(
-            void_last_sale_impl(&mut conn, sale.sale_id, Some("0000".into())).is_err(),
+            void_last_sale_impl(&mut conn, sale.sale_id, None, None, Some("0000".into())).is_err(),
             "void with a wrong PIN must be refused"
         );
-        void_last_sale_impl(&mut conn, sale.sale_id, Some("9999".into()))
+        void_last_sale_impl(&mut conn, sale.sale_id, None, None, Some("9999".into()))
             .expect("the correct PIN must allow the void");
         let stock: i64 = conn
             .query_row("SELECT stock_qty FROM products WHERE id = ?1", [pid], |r| r.get(0))
@@ -5081,6 +5582,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("first sale should succeed");
         let _newer = complete_sale_impl(
@@ -5091,17 +5593,18 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("second sale should succeed");
 
         // A stale screen asking to void the OLDER sale must be refused —
         // only today's newest is ever voidable.
         assert!(
-            void_last_sale_impl(&mut conn, older.sale_id, None).is_err(),
+            void_last_sale_impl(&mut conn, older.sale_id, None, None, None).is_err(),
             "voiding a non-latest sale must be refused"
         );
         // Unknown / other-day ids are refused too.
-        assert!(void_last_sale_impl(&mut conn, 999_999, None).is_err());
+        assert!(void_last_sale_impl(&mut conn, 999_999, None, None, None).is_err());
     }
 
     #[test]
@@ -5116,6 +5619,7 @@ mod tests {
             vec![StockTakeLine { product_id: pid, counted: 12 }],
             None,
             None,
+            None,
         )
         .expect("an increase needs no PIN");
         // A reduction without/wrong PIN is refused outright.
@@ -5125,6 +5629,7 @@ mod tests {
                 vec![StockTakeLine { product_id: pid, counted: 9 }],
                 None,
                 None,
+                None,
             )
             .is_err()
         );
@@ -5133,6 +5638,7 @@ mod tests {
                 &mut conn,
                 vec![StockTakeLine { product_id: pid, counted: 9 }],
                 None,
+                None,
                 Some("0000".into()),
             )
             .is_err()
@@ -5140,6 +5646,7 @@ mod tests {
         commit_stock_take_impl(
             &mut conn,
             vec![StockTakeLine { product_id: pid, counted: 9 }],
+            None,
             None,
             Some("1357".into()),
         )
@@ -5258,7 +5765,7 @@ mod tests {
         set_manager_pin(&conn, "2468");
 
         assert!(
-            record_payment_impl(&mut conn, "PUR-1".into(), 200.0, None, None, None).is_err(),
+            record_payment_impl(&mut conn, "PUR-1".into(), 200.0, None, None, None, None).is_err(),
             "supplier payment without the manager PIN must be refused"
         );
         assert!(
@@ -5266,6 +5773,7 @@ mod tests {
                 &mut conn,
                 "PUR-1".into(),
                 200.0,
+                None,
                 None,
                 None,
                 Some("1111".into())
@@ -5283,6 +5791,7 @@ mod tests {
             200.0,
             Some("MoMo".into()),
             Some("Kwame".into()),
+            None,
             Some("2468".into()),
         )
         .expect("correct PIN allows the supplier payment");
@@ -5297,7 +5806,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        record_payment_impl(&mut open_conn, "PUR-2".into(), 80.0, None, None, None)
+        record_payment_impl(&mut open_conn, "PUR-2".into(), 80.0, None, None, None, None)
             .expect("without a configured PIN supplier payments need no PIN");
     }
 
@@ -5314,6 +5823,7 @@ mod tests {
             }],
             vec![line(pid, "Amox", 5, 5.0)],
             None,
+            None,
             Some("Ama".into()),
             None,
             None,
@@ -5329,6 +5839,7 @@ mod tests {
                 10.0,
                 None,
                 None,
+                None,
                 None
             )
             .is_err(),
@@ -5339,6 +5850,7 @@ mod tests {
                 &mut conn,
                 "Ama".into(),
                 10.0,
+                None,
                 None,
                 None,
                 Some("0000".into())
@@ -5357,6 +5869,7 @@ mod tests {
             10.0,
             Some("Cash".into()),
             Some("Akosua".into()),
+            None,
             Some("9999".into()),
         )
         .expect("correct PIN allows the settlement");
@@ -5392,6 +5905,7 @@ mod tests {
                 ],
                 Some("Ama".into()),
                 None,
+                None,
             )
             .is_err()
         );
@@ -5405,18 +5919,19 @@ mod tests {
             &mut conn,
             vec![
                 StockTakeLine {
-                    product_id: pid,
-                    counted: 8
-                },
-                StockTakeLine {
-                    product_id: other,
-                    counted: 50
-                },
-            ],
-            Some("Ama".into()),
-            None,
-        )
-        .expect("count should commit");
+                        product_id: pid,
+                        counted: 8
+                    },
+                    StockTakeLine {
+                        product_id: other,
+                        counted: 50
+                    },
+                ],
+                Some("Ama".into()),
+                None,
+                None,
+            )
+            .expect("count should commit");
         assert_eq!(r["changed"], 1, "only real variances count as changed");
         assert_eq!(r["unchanged"], 1);
 
@@ -5505,7 +6020,7 @@ mod stress_tests {
         let pid = add_product(&c, "Vit C", 2.0, 5.0, 10);
         add_batch(&c, pid, "B1", "2025-01-01", 5);
         add_batch(&c, pid, "B2", "2027-01-01", 5);
-        complete_sale_impl(&mut c, vec![cash(15.0)], vec![line(pid, "Vit C", 3, 5.0)], None, None, None, None)
+        complete_sale_impl(&mut c, vec![cash(15.0)], vec![line(pid, "Vit C", 3, 5.0)], None, None, None, None, None)
             .expect("sale");
         let q1: i64 = c
             .query_row("SELECT quantity FROM product_batches WHERE product_id=?1 AND batch_no='B1'", [pid], |r| r.get(0))
@@ -5577,7 +6092,7 @@ mod stress_tests {
                 }
                 let meta: Vec<(i64, i64)> = lines.iter().map(|l| (l.product_id, l.quantity)).collect();
                 let total: f64 = lines.iter().map(|l| l.quantity as f64 * 10.0).sum();
-                if let Ok(r) = complete_sale_impl(&mut c, vec![cash(total)], lines, None, None, None, None) {
+                if let Ok(r) = complete_sale_impl(&mut c, vec![cash(total)], lines, None, None, None, None, None) {
                     let mut rec = Vec::new();
                     for (pid, q) in &meta {
                         *expected.get_mut(pid).unwrap() -= *q;
@@ -5600,6 +6115,7 @@ mod stress_tests {
                     *sale_id,
                     Some("stress".into()),
                     None,
+                    None,
                     vec![ReturnLine { product_id: pid, quantity: rq }],
                     None,
                 )
@@ -5615,7 +6131,7 @@ mod stress_tests {
             } else if !sales.is_empty() {
                 // VOID — reverts the whole sale back into stock
                 let (sale_id, rec) = sales.pop().unwrap();
-                if void_last_sale_impl(&mut c, sale_id, None).is_ok() {
+                if void_last_sale_impl(&mut c, sale_id, None, None, None).is_ok() {
                     for (pid, q) in rec {
                         *expected.get_mut(&pid).unwrap() += q;
                     }
@@ -5687,6 +6203,7 @@ mod stress_tests {
             vec![Payment { method: "Credit".into(), amount: 30.0, reference: None }],
             vec![line(pid, "Cred", 3, 10.0)],
             None,
+            None,
             Some("Kwabena".into()),
             Some("0240000000".into()),
             None,
@@ -5705,7 +6222,7 @@ mod stress_tests {
             .unwrap();
         assert!((owed - 30.0).abs() < 0.01, "credit receivable should be 30, got {owed}");
 
-        let res = settle_credit_impl(&mut c, "Kwabena".into(), 30.0, Some("Cash".into()), None, None)
+        let res = settle_credit_impl(&mut c, "Kwabena".into(), 30.0, Some("Cash".into()), None, None, None)
             .expect("settle");
         assert!(
             (res["balance"].as_f64().unwrap()).abs() < 0.01,
@@ -5743,7 +6260,7 @@ mod stress_tests {
                     conn.execute_batch("PRAGMA busy_timeout = 5000;").expect("busy_timeout");
                 }
                 for _ in 0..per {
-                    match complete_sale_impl(&mut conn, vec![cash(2.0)], vec![line(pid, "Hot", 1, 2.0)], None, None, None, None) {
+                    match complete_sale_impl(&mut conn, vec![cash(2.0)], vec![line(pid, "Hot", 1, 2.0)], None, None, None, None, None) {
                         Ok(_) => {
                             done.fetch_add(1, Ordering::SeqCst);
                         }
@@ -5841,4 +6358,3 @@ mod stress_tests {
         eprintln!("analytics net-revenue scan over 20k sales: {:?}", t1.elapsed());
     }
 }
-

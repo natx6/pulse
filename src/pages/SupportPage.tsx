@@ -59,7 +59,7 @@ export function SupportPage() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-surface-container-lowest p-margin-page">
-      <div className="mb-4">
+      <div className="mb-4" data-tour="tour-support">
         <h2 className="text-headline-lg font-headline-lg text-on-surface">Support</h2>
         <div className="mt-3 flex w-fit rounded-full border border-outline-variant bg-surface p-1">
           <button

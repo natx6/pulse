@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { initDb } from "../db";
 import { fmtMoney } from "../lib/money";
+import { useStore } from "../store/useStore";
 import { PatientModal } from "../components/PatientModal";
 import { ImportCustomersModal } from "../components/ImportCustomersModal";
 
@@ -16,6 +17,8 @@ interface CustomerRow {
 }
 
 export function CustomersPage() {
+  const currentUser = useStore((s) => s.currentUser);
+  const isWorker = currentUser?.role === "worker";
   const [rows, setRows] = useState<CustomerRow[]>([]);
   const [count, setCount] = useState(0);
   const [q, setQ] = useState("");
@@ -86,13 +89,15 @@ export function CustomersPage() {
             {count} {count === 1 ? "person" : "people"} &middot; tap a row to view history &amp; edit
           </p>
         </div>
-        <button
-          onClick={() => setImporting(true)}
-          className="flex h-9 items-center gap-2 rounded border border-outline-variant bg-surface-container-low px-3 text-label-md font-label-md text-on-surface hover:bg-surface-container-lowest"
-        >
-          <span className="material-symbols-outlined text-[18px]">upload</span>
-          Import customers
-        </button>
+        {!isWorker && (
+          <button
+            onClick={() => setImporting(true)}
+            className="flex h-9 items-center gap-2 rounded border border-outline-variant bg-surface-container-low px-3 text-label-md font-label-md text-on-surface hover:bg-surface-container-lowest"
+          >
+            <span className="material-symbols-outlined text-[18px]">upload</span>
+            Import customers
+          </button>
+        )}
         <div className="relative min-w-[18rem]">
           <span className="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-sm text-outline">
             search

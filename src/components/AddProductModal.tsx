@@ -12,6 +12,7 @@ interface Props {
 export function AddProductModal({ onClose }: Props) {
   const refreshProducts = useStore((s) => s.refreshProducts);
   const fdaAutocomplete = useStore((s) => s.fdaAutocomplete);
+  const currentUser = useStore((s) => s.currentUser);
   const [name, setName] = useState("");
   const [barcode, setBarcode] = useState("");
   const [category, setCategory] = useState("");
@@ -111,7 +112,10 @@ export function AddProductModal({ onClose }: Props) {
         pack_size: pack,
         batch_no: batchNo.trim() || null,
         expiry_date: expiryDate.trim() || null,
-      });
+      },
+      currentUser?.display_name ?? null,
+      currentUser?.role ?? null,
+      );
       await refreshProducts();
       beep(true);
       onClose();

@@ -34,6 +34,7 @@ interface SplitRow {
 
 export function PaymentModal({ total, lines, discountPct, initialMethod, onClose, onComplete }: Props) {
   const operator = useStore((s) => s.operator);
+  const currentUser = useStore((s) => s.currentUser);
   const patient = useStore((s) => s.patient);
   const momoNumber = useStore((s) => s.momoNumber);
   const [method, setMethod] = useState<PaymentMethod>(initialMethod ?? "Cash");
@@ -166,6 +167,7 @@ export function PaymentModal({ total, lines, discountPct, initialMethod, onClose
         operator,
         patient,
         discountPct ?? 0,
+        currentUser?.role ?? null,
       );
       beep(true);
       onComplete(result, payments);

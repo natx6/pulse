@@ -165,7 +165,7 @@ export function DashboardPage() {
       ) : (
         <>
           {/* Money tiles */}
-          <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div className="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4" data-tour="tour-dashboard">
             <div className="rounded-xl border border-outline-variant bg-surface p-4">
               <p className="mb-1 text-label-md font-label-md uppercase tracking-wider text-on-surface-variant">
                 Net sales today

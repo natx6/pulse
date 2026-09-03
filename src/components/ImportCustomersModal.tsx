@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { backupDb, commitCustomerImport, parseCustomerFile } from "../db";
 import type { CustomerImportRow, ImportSummary, ParsedSheet } from "../db";
+import { useStore } from "../store/useStore";
 import { beep } from "../lib/audio";
 
 /** Bulk-load customers from an Excel/CSV export of the old system: pick file →
@@ -15,6 +16,7 @@ export function ImportCustomersModal({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const currentUser = useStore((s) => s.currentUser);
   const [phase, setPhase] = useState<"pick" | "map" | "done">("pick");
   const [fileName, setFileName] = useState("");
   const [sheet, setSheet] = useState<ParsedSheet | null>(null);
@@ -68,7 +70,11 @@ export function ImportCustomersModal({
     setErr("");
     try {
       const bpath = await backupDb();
-      const res = await commitCustomerImport(stats.recs);
+      const res = await commitCustomerImport(
+        stats.recs,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       setSummary(res);
       setBackupPath(bpath);
       setPhase("done");

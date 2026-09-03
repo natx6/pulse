@@ -9,6 +9,7 @@ export function QuickAddModal() {
   const setQuickAdd = useStore((s) => s.setQuickAdd);
   const addToCart = useStore((s) => s.addToCart);
   const refreshProducts = useStore((s) => s.refreshProducts);
+  const currentUser = useStore((s) => s.currentUser);
 
   const [name, setName] = useState("");
   const [price, setPrice] = useState("");
@@ -56,7 +57,12 @@ export function QuickAddModal() {
     }
     setBusy(true);
     try {
-      const id = await quickAddProduct(nm, pr);
+      const id = await quickAddProduct(
+        nm,
+        pr,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       await refreshProducts();
       const p = useStore.getState().products.find((x) => x.id === id);
       if (p) addToCart(p);

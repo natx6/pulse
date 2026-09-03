@@ -12,8 +12,10 @@ import {
   saveCashUp as dbSaveCashUp,
   listCashUps,
   loadControlledRegister,
+  loadAuditLog,
 } from "../db";
 import type {
+  AuditRow,
   CashUp,
   ControlledSummaryRow,
   ControlledTxn,
@@ -247,6 +249,7 @@ async function fetchReport(
 export function AnalyticsPage() {
   const products = useStore((s) => s.products);
   const operator = useStore((s) => s.operator);
+  const currentUser = useStore((s) => s.currentUser);
   const operators = useStore((s) => s.operators);
   const refreshProducts = useStore((s) => s.refreshProducts);
   const [range, setRange] = useState<Range>("today");
@@ -268,6 +271,9 @@ export function AnalyticsPage() {
   const [pinVoidTarget, setPinVoidTarget] = useState<{ id: number; receiptNo: string } | null>(null);
   const [notice, setNotice] = useState("");
   const [suppliers, setSuppliers] = useState<SupplierBalance[]>([]);
+  const [audit, setAudit] = useState<AuditRow[]>([]);
+  const [auditFilter, setAuditFilter] = useState("All");
+  const [auditSearch, setAuditSearch] = useState("");
   const [importingSuppliers, setImportingSuppliers] = useState(false);
   const [expenses, setExpenses] = useState<{ total: number; byCategory: { category: string; total: number }[] } | null>(null);
 
@@ -304,7 +310,7 @@ export function AnalyticsPage() {
         // sales/refunds above, and only counting expenses actually paid in
         // cash (a MoMo/card expense never touches the till).
         let dayExpenses = 0;
-        try {
+    try {
           const expOpCond = cashOp ? " AND operator = $2" : "";
           const [expRow] = await db.select<{ v: number }[]>(
             `SELECT COALESCE(SUM(amount),0) AS v FROM expenses WHERE date(timestamp) = $1 AND payment_method = 'Cash'${expOpCond}`,
@@ -347,15 +353,18 @@ export function AnalyticsPage() {
     setCashBusy(true);
     setCashErr("");
     try {
-      await dbSaveCashUp({
-        day: cashDay,
-        opening_float: Number(cashFloat) || 0,
-        counted,
-        variance: cashVariance,
-        operator,
-      });
+      await dbSaveCashUp(
+        {
+          day: cashDay,
+          opening_float: Number(cashFloat) || 0,
+          counted,
+          variance: cashVariance,
+          operator,
+        },
+        currentUser?.role ?? null,
+      );
       // Keep the standalone float in step with the committed cash-up.
-      await setTillFloat(cashDay, Number(cashFloat) || 0, operator);
+      await setTillFloat(cashDay, Number(cashFloat) || 0, operator, currentUser?.role ?? null);
       setCashUps(await listCashUps(cashDay));
       setCashSaved(true);
       setTimeout(() => setCashSaved(false), 1500);
@@ -461,6 +470,9 @@ export function AnalyticsPage() {
     expenseSummary(from, to)
       .then((es) => setExpenses(es))
       .catch(() => setExpenses({ total: 0, byCategory: [] }));
+    loadAuditLog(from, to)
+      .then(setAudit)
+      .catch(() => setAudit([]));
   }, [from, to, opFilter, methodFilter]);
 
 
@@ -502,7 +514,7 @@ export function AnalyticsPage() {
    * on success. */
   const runVoid = async (saleId: number, managerPin?: string | null): Promise<string | null> => {
     try {
-      const r = await voidLastSale(saleId, operator, managerPin);
+      const r = await voidLastSale(saleId, operator, managerPin, currentUser?.role ?? null);
       await refreshProducts();
       await load();
       setErr("");
@@ -594,6 +606,18 @@ export function AnalyticsPage() {
         String(c.dispensed),
         String(c.returned),
         String(c.adjusted),
+      ]),
+    );
+    rows.push([]);
+    rows.push(["Audit Trail", "Operator", "Role", "Amount (GH₵)", "Time", "Detail"]);
+    audit.forEach((a) =>
+      rows.push([
+        a.action,
+        a.operator ?? "",
+        a.role ?? "",
+        a.amount === null ? "" : a.amount.toFixed(2),
+        a.timestamp,
+        a.detail ?? "",
       ]),
     );
     try {
@@ -1019,32 +1043,83 @@ export function AnalyticsPage() {
       </div>
 
       <div className="mb-4 overflow-clip rounded border border-outline-variant bg-surface">
-        <h3 className="border-b border-outline-variant bg-surface-container-low px-3 py-2 text-label-md font-label-md font-bold text-on-surface">
-          Recent Stock Adjustments
-        </h3>
-        {report && report.adjustments.length === 0 && (
-          <p className="px-3 py-4 text-body-sm text-on-surface-variant">
-            None yet. Adjust stock from Inventory (damaged, expired, counting error…).
-          </p>
-        )}
-        {report?.adjustments.map((a, i) => (
-          <div key={i} className="flex items-center justify-between border-b border-outline-variant/50 px-3 py-1.5 last:border-0">
-            <span className={td}>
-              {a.product_name}
-              <span className="ml-2 text-[11px] text-on-surface-variant">
-                {a.reason}
-                {a.operator ? ` · ${a.operator}` : ""} · {a.timestamp}
-              </span>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-outline-variant bg-surface-container-low px-3 py-2">
+          <h3 className="text-label-md font-label-md font-bold text-on-surface">
+            Audit Trail{" "}
+            <span className="font-normal normal-case text-on-surface-variant">
+              every action in this range, newest first (max 500)
             </span>
-            <span
-              className={`font-data-mono text-data-mono font-bold ${
-                a.delta > 0 ? "text-primary" : "text-error"
-              }`}
+          </h3>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <span className="material-symbols-outlined pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[16px] text-on-surface-variant">search</span>
+              <input
+                value={auditSearch}
+                onChange={(e) => setAuditSearch(e.target.value)}
+                placeholder="Search — e.g. Ama, void, discount"
+                className="h-7 w-44 rounded border border-outline-variant bg-surface-container-lowest pl-7 pr-2 text-body-sm focus:border-primary focus:outline-none"
+              />
+            </div>
+            <select
+              value={auditFilter}
+              onChange={(e) => setAuditFilter(e.target.value)}
+              className="h-7 rounded border border-outline-variant bg-surface-container-lowest px-2 text-body-sm focus:border-primary focus:outline-none"
             >
-              {a.delta > 0 ? `+${a.delta}` : a.delta}
-            </span>
+              <option>All</option>
+              <option>Sales</option>
+              <option>Stock</option>
+              <option>Purchases</option>
+              <option>Money</option>
+              <option>Customers</option>
+              <option>Users</option>
+            </select>
           </div>
-        ))}
+        </div>
+        {(() => {
+          const q = auditSearch.trim().toLowerCase();
+          const byCat = (a: AuditRow) => {
+            if (auditFilter === "All") return true;
+            if (auditFilter === "Sales") return a.action.startsWith("sale.");
+            if (auditFilter === "Stock") return a.action.startsWith("stock.") || a.action.startsWith("product.") || a.action === "fda.imported";
+            if (auditFilter === "Purchases") return a.action.startsWith("purchase.") || a.action.startsWith("suppliers.");
+            if (auditFilter === "Money") return ["supplier.paid", "credit.settled", "expense.added", "expense.deleted", "cashup.saved", "till.float_set"].includes(a.action);
+            if (auditFilter === "Customers") return a.action.startsWith("customer") || a.action.startsWith("customers.");
+            if (auditFilter === "Users") return a.action.startsWith("user.") || a.action.startsWith("pin.") || a.action.startsWith("operator.") || a.action === "demo.purged" || a.action === "data.wiped";
+            return true;
+          };
+          const filtered = audit.filter((a) => {
+            if (!byCat(a)) return false;
+            if (!q) return true;
+            const hay = `${a.action} ${a.detail ?? ""} ${a.operator ?? ""} ${a.role ?? ""}`.toLowerCase();
+            return hay.includes(q);
+          });
+          if (filtered.length === 0) {
+            return (
+              <p className="px-3 py-4 text-body-sm text-on-surface-variant">
+                {audit.length === 0 ? "Nothing logged in this range yet." : "No matches — try a different filter or search."}
+              </p>
+            );
+          }
+          return filtered.map((a) => (
+            <div key={a.id} className="flex items-center justify-between gap-3 border-b border-outline-variant/50 px-3 py-1.5 last:border-0">
+              <span className={`${td} min-w-0`}>
+                <span className="rounded bg-surface-container px-1.5 py-0.5 font-data-mono text-[11px] text-on-surface-variant">
+                  {a.action}
+                </span>
+                <span className="ml-2 text-body-sm text-on-surface">{a.detail || `${a.entity ?? ""} ${a.entity_id ?? ""}`.trim() || "—"}</span>
+                <span className="ml-2 text-[11px] text-on-surface-variant">
+                  {a.operator || "—"}
+                  {a.role ? ` (${a.role})` : ""} · {a.timestamp}
+                </span>
+              </span>
+              {a.amount !== null && (
+                <span className="shrink-0 font-data-mono text-data-mono font-bold text-on-surface">
+                  {fmtMoney(a.amount)}
+                </span>
+              )}
+            </div>
+          ));
+        })()}
       </div>
 
       <div className="mb-4 overflow-clip rounded border border-outline-variant bg-surface">
@@ -1085,7 +1160,7 @@ export function AnalyticsPage() {
                   if (raw === "") return;
                   const n = Number(raw);
                   if (!Number.isFinite(n) || n < 0) return;
-                  void setTillFloat(cashDay, n, operator);
+                  void setTillFloat(cashDay, n, operator, currentUser?.role ?? null);
                 }}
                 inputMode="decimal"
                 placeholder="0.00"

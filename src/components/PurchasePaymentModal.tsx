@@ -18,6 +18,7 @@ const METHODS = ["Cash", "Mobile Money", "Bank Transfer", "Cheque"] as const;
  * appears and the backend refuses anything without it. */
 export function PurchasePaymentModal({ p, onClose, onPaid }: Props) {
   const operator = useStore((s) => s.operator);
+  const currentUser = useStore((s) => s.currentUser);
   const balance = Math.max(0, p.total_amount - p.paid_amount);
 
   const [amount, setAmount] = useState(String(balance));
@@ -49,7 +50,14 @@ export function PurchasePaymentModal({ p, onClose, onPaid }: Props) {
     setBusy(true);
     setErr("");
     try {
-      const r = await recordPayment(p.id, a, method, operator || null, managerPin.trim() || null);
+      const r = await recordPayment(
+        p.id,
+        a,
+        method,
+        operator || null,
+        managerPin.trim() || null,
+        currentUser?.role ?? null,
+      );
       beep(true);
       await onPaid(r);
     } catch (e) {

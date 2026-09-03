@@ -25,6 +25,7 @@ import { beep } from "../lib/audio";
 import { PinPromptModal } from "../components/PinPromptModal";
 
 function WipeAllStockButton() {
+  const currentUser = useStore((s) => s.currentUser);
   const [arm, setArm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -38,7 +39,7 @@ function WipeAllStockButton() {
     setBusy(true);
     setMsg("");
     try {
-      await wipeAllStock();
+      await wipeAllStock(currentUser?.display_name ?? null, currentUser?.role ?? null);
       beep(true);
       setMsg("Wiped — stock is now empty. Import your .xlsx now (the app will reload).");
       window.setTimeout(() => window.location.reload(), 800);
@@ -230,7 +231,12 @@ export function SettingsPage() {
     try {
       // The Rust side re-verifies `current` against the stored hash — the UI
       // check above is UX, not the gate.
-      await setManagerPin(pinActive ? currentPinInput.trim() : null, p || null);
+      await setManagerPin(
+        pinActive ? currentPinInput.trim() : null,
+        p || null,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       setPinActive(Boolean(p));
       setPinInput("");
       setCurrentPinInput("");
@@ -338,7 +344,11 @@ export function SettingsPage() {
     setPurgeBusy(true);
     setPurgeMsg("");
     try {
-      const r = await purgeDemoData(pin);
+      const r = await purgeDemoData(
+        pin,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       beep(true);
       setHasDemo(false);
       setPurgeMsg(
@@ -540,7 +550,12 @@ export function SettingsPage() {
                         const pw = window.prompt(`New password for @${u.username} (min 4):`);
                         if (!pw || pw.length < 4) return;
                         try {
-                          await resetUserPassword(u.id, pw);
+                          await resetUserPassword(
+                            u.id,
+                            pw,
+                            currentUser?.display_name ?? null,
+                            currentUser?.role ?? null,
+                          );
                           beep(true);
                           setUsers(await listUsers());
                         } catch (e) {
@@ -555,7 +570,12 @@ export function SettingsPage() {
                     <button
                       onClick={async () => {
                         try {
-                          await updateUser(u.id, { is_active: !u.is_active });
+                          await updateUser(
+                            u.id,
+                            { is_active: !u.is_active },
+                            currentUser?.display_name ?? null,
+                            currentUser?.role ?? null,
+                          );
                           setUsers(await listUsers());
                           beep(true);
                         } catch (e) {
@@ -596,7 +616,14 @@ export function SettingsPage() {
                 onClick={async () => {
                   setUsersErr("");
                   try {
-                    await createUser(newUsername.trim(), newDisplayName.trim(), newPassword, newRole);
+                    await createUser(
+                      newUsername.trim(),
+                      newDisplayName.trim(),
+                      newPassword,
+                      newRole,
+                      currentUser?.display_name ?? null,
+                      currentUser?.role ?? null,
+                    );
                     setNewUsername("");
                     setNewDisplayName("");
                     setNewPassword("");
@@ -705,7 +732,10 @@ export function SettingsPage() {
                 setFdaBusy(true);
                 setFdaMsg("");
                 try {
-                  const n = await refreshFdaCatalog();
+                  const n = await refreshFdaCatalog(
+                    currentUser?.display_name ?? null,
+                    currentUser?.role ?? null,
+                  );
                   beep(true);
                   setFdaMsg(`Updated — ${n.toLocaleString()} drugs. You can now type 2 letters in “Add Manual Item” to see matches.`);
                   await loadFdaCount();

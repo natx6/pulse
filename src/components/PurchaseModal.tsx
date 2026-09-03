@@ -74,6 +74,7 @@ export function PurchaseModal({
 }) {
   const editP = edit?.p ?? null;
   const products = useStore((s) => s.products);
+  const currentUser = useStore((s) => s.currentUser);
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [supplierId, setSupplierId] = useState<string>(
@@ -237,7 +238,13 @@ export function PurchaseModal({
     setSupBusy(true);
     setSupErr("");
     try {
-      const id = await addSupplier(supName, supPhone, supLocation);
+      const id = await addSupplier(
+        supName,
+        supPhone,
+        supLocation,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       setSuppliers(await loadSuppliers());
       setSupplierId(String(id));
       setNewSupOpen(false);
@@ -292,10 +299,18 @@ export function PurchaseModal({
       };
       let r: { id: string; total: number; items: number; received: boolean };
       if (editP) {
-        const u = await updatePurchase({ purchase_id: editP.id, ...common });
+        const u = await updatePurchase(
+          { purchase_id: editP.id, ...common },
+          currentUser?.display_name ?? null,
+          currentUser?.role ?? null,
+        );
         r = { ...u, received: false };
       } else {
-        r = await savePurchase(common);
+        r = await savePurchase(
+          common,
+          currentUser?.display_name ?? null,
+          currentUser?.role ?? null,
+        );
       }
       beep(true);
       await onSaved(r);

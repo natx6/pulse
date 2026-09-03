@@ -16,6 +16,7 @@ export function ImportStockModal({
   onDone: () => void;
 }) {
   const products = useStore((s) => s.products);
+  const currentUser = useStore((s) => s.currentUser);
   const fdaAutocomplete = useStore((s) => s.fdaAutocomplete);
   const [phase, setPhase] = useState<"pick" | "map" | "done">("pick");
   const [fileName, setFileName] = useState("");
@@ -108,7 +109,11 @@ export function ImportStockModal({
     setErr("");
     try {
       const bpath = await backupDb();
-      const res = await commitStockImport(stats.recs);
+      const res = await commitStockImport(
+        stats.recs,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       setSummary(res);
       setBackupPath(bpath);
       setPhase("done");

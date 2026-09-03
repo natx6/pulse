@@ -29,6 +29,7 @@ interface Props {
 /** Refund part or all of a sale. The sale stays; stock goes back on the shelf. */
 export function ReturnModal({ sale, onClose, onDone }: Props) {
   const operator = useStore((s) => s.operator);
+  const currentUser = useStore((s) => s.currentUser);
   const pharmacyName = useStore((s) => s.pharmacyName);
   const [items, setItems] = useState<SaleItem[]>([]);
   const [alreadyReturned, setAlreadyReturned] = useState<Record<number, number>>({});
@@ -113,6 +114,7 @@ export function ReturnModal({ sale, onClose, onDone }: Props) {
         reason.trim() || null,
         operator,
         managerPin.trim() || null,
+        currentUser?.role ?? null,
       );
       beep(true);
       setSlip(r);

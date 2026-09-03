@@ -128,6 +128,7 @@ const DOCS: DocSection[] = [
       { label: "Sales / Profit / Margin / VAT / Discount", does: "The KPIs for the range. VAT uses your tax rate; discount shows patient tiers." },
       { label: "Controlled-drug register", does: "The dangerous-drugs book — Dispensed/Received/Returned with prescriber fields. Print for inspectors." },
       { label: "Supplier Balances", does: "What you owe each supplier (opening + purchases − payments). Import suppliers with opening balances here." },
+      { label: "Audit Trail", does: "Every action in the range, newest first — sales, returns, voids, adjustments, purchases, payments, imports, expenses, logins' changes. Included in Export CSV." },
       { label: "Export CSV", does: "Writes the whole report (choose where to save) for the accountant or auditor." },
     ],
   },
@@ -182,7 +183,7 @@ export function HelpDocs() {
   const roleFiltered = useMemo(() => {
     const isWorker = currentUser?.role === "worker";
     if (!isWorker) return DOCS;
-    const hideSections = new Set(["restock", "reports", "expenses", "settings"]);
+    const hideSections = new Set(["restock", "reports", "settings"]);
     const hideButtons: Record<string, Set<string>> = {
       history: new Set(["Void (today's last sale only)", "Return"]),
       customers: new Set(["Settle", "Import customers"]),
@@ -222,7 +223,9 @@ export function HelpDocs() {
       <div className="flex-1 space-y-2 overflow-y-auto pr-1">
         {filtered.length === 0 && <p className="py-6 text-center text-body-sm text-on-surface-variant">No matches — try return, Add Product, FDA, or void</p>}
         {filtered.map((s) => {
-          const isOpen = open[s.id] ?? true;
+          // Collapsed by default; auto-expand everything while searching so
+          // matches are readable without tapping each section open.
+          const isOpen = q.trim() ? true : (open[s.id] ?? false);
           return (
             <div key={s.id} className="overflow-hidden rounded-xl border border-outline-variant bg-surface">
               <button

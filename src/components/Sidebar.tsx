@@ -34,7 +34,7 @@ export function Sidebar() {
 
   const isWorker = currentUser?.role === "worker";
   const visibleNav = isWorker
-    ? NAV.filter((n) => ["dashboard", "pos", "history", "customers", "inventory", "support"].includes(n.id))
+    ? NAV.filter((n) => ["dashboard", "pos", "history", "customers", "inventory", "expenses", "support"].includes(n.id))
     : NAV;
 
   return (

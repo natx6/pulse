@@ -47,6 +47,7 @@ function StatusPill({ p }: { p: Purchase }) {
  * detail view when the delivery arrives. */
 export function RestockPage() {
   const refreshProducts = useStore((s) => s.refreshProducts);
+  const currentUser = useStore((s) => s.currentUser);
   const highlight = useStore((s) => s.highlight);
   const setHighlight = useStore((s) => s.setHighlight);
 
@@ -117,7 +118,12 @@ export function RestockPage() {
       .filter((l) => l.qty > 0);
     if (lines.length === 0) return;
     try {
-      const r = await receivePurchase(detail.p.id, lines);
+      const r = await receivePurchase(
+        detail.p.id,
+        lines,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       await refreshProducts();
       await load();
       const done = r.complete
@@ -149,7 +155,12 @@ export function RestockPage() {
     if (!detail) return;
     setDetailErr("");
     try {
-      await cancelPurchase(detail.p.id, null);
+      await cancelPurchase(
+        detail.p.id,
+        null,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       await load();
       setMsg(`${detail.p.reference_no ?? detail.p.id} cancelled.`);
       setDetail(null);

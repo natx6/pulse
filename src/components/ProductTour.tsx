@@ -14,13 +14,25 @@ interface Step {
 const STEPS: Step[] = [
   {
     title: "Welcome to Pulse",
-    body: "Here's a 30-second tour of the five things you'll use every day. You can skip anytime — and replay it later from the Support tab.",
+    body: "Here's a quick tour of every tab — what it's for and the buttons you'll use. You can skip anytime — and replay it later from the Support tab.",
+  },
+  {
+    page: "dashboard",
+    target: "tour-dashboard",
+    title: "Dashboard",
+    body: "Your morning glance — today's sales, what's in the till, and what needs attention: low stock, expiring items, and open purchases. Tap a name to jump straight there.",
   },
   {
     page: "pos",
     target: "tour-pos",
     title: "Make a sale",
     body: "Scan or search a product, then tap a payment method — Cash, Card or Mobile Money — to check out. The cart and totals are on the left.",
+  },
+  {
+    page: "history",
+    target: "tour-history",
+    title: "History",
+    body: "Every sale lives here. Filter by date, patient, or receipt to reprint a receipt — and handle returns when a customer brings goods back.",
   },
   {
     page: "inventory",
@@ -59,6 +71,12 @@ const STEPS: Step[] = [
     body: "Copy the database to a flash drive or second disk often — it's your insurance against theft, fire or a dead laptop.",
   },
   {
+    page: "support",
+    target: "tour-support",
+    title: "Support & help",
+    body: "Stuck? Search the per-tab help guides here, replay this tour anytime, or send a report straight to support with everything pre-filled.",
+  },
+  {
     title: "You're set",
     body: "That's the daily loop. Need help later? The Support tab has this tour, the keyboard shortcuts and contacts. Happy dispensing!",
   },
@@ -79,7 +97,7 @@ export function ProductTour() {
   const currentUser = useStore((s) => s.currentUser);
   const isWorker = currentUser?.role === "worker";
   const steps = isWorker
-    ? STEPS.filter((s) => !["restock", "analytics", "expenses", "settings"].includes(s.page ?? ""))
+    ? STEPS.filter((s) => !["restock", "analytics", "settings"].includes(s.page ?? ""))
     : STEPS;
   const [step, setStep] = useState(0);
   const [rect, setRect] = useState<Box | null>(null);
@@ -171,6 +189,14 @@ export function ProductTour() {
       {/* Click-block layer — keeps the app non-interactive during the tour. */}
       <div className="absolute inset-0" onClick={() => undefined} />
 
+      {/* Centered steps (welcome/finish) have no spotlight target — dim the
+          whole screen instead so the card stands out like the rest. */}
+      {!rect && (
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{ background: "rgba(0,0,0,0.62)" }}
+        />
+      )}
       {/* Spotlight: a transparent box whose huge shadow dims everything else. */}
       {rect && (
         <div

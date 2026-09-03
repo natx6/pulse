@@ -130,6 +130,8 @@ export async function addPatient(
   name: string,
   email: string | null,
   phone: string | null,
+  operator?: string | null,
+  role?: string | null,
 ): Promise<void> {
   const d = await initDb();
   const trimmed = name.trim();
@@ -165,6 +167,10 @@ export async function addPatient(
       );
     }
   }
+  await auditLog({
+    operator, role, action: "customer.created", entity: "customer",
+    entity_id: trimmed, detail: `${trimmed}${ph ? ` (${ph})` : ""} added`,
+  });
 }
 
 export interface Operator {
@@ -181,21 +187,38 @@ export async function loadOperators(): Promise<Operator[]> {
   );
 }
 
-export async function saveOperator(op: {
-  name: string;
-  shift_start: string | null;
-  shift_end: string | null;
-}): Promise<void> {
+export async function saveOperator(
+  op: {
+    name: string;
+    shift_start: string | null;
+    shift_end: string | null;
+  },
+  operator?: string | null,
+  role?: string | null,
+): Promise<void> {
   const d = await initDb();
   await d.execute(
     "INSERT INTO operators (name, shift_start, shift_end) VALUES ($1, $2, $3)",
     [op.name.trim(), op.shift_start, op.shift_end],
   );
+  await auditLog({
+    operator, role, action: "operator.created", entity: "operator",
+    entity_id: op.name.trim(), detail: `${op.name.trim()} shift added`,
+  });
 }
 
-export async function deleteOperator(id: number): Promise<void> {
+export async function deleteOperator(
+  id: number,
+  operator?: string | null,
+  role?: string | null,
+): Promise<void> {
   const d = await initDb();
+  const [row] = await d.select<{ name: string }[]>("SELECT name FROM operators WHERE id = $1", [id]);
   await d.execute("DELETE FROM operators WHERE id = $1", [id]);
+  await auditLog({
+    operator, role, action: "operator.deleted", entity: "operator",
+    entity_id: id, detail: `${row?.name ?? `id ${id}`} shift removed`,
+  });
 }
 
 export async function loadProducts(): Promise<Product[]> {
@@ -223,23 +246,49 @@ export async function loadProductsAll(): Promise<Product[]> {
 
 /** Archive (0) or restore (1) a product. Archived items leave the POS and
  * inventory lists but keep their sales history. */
-export async function setProductActive(id: number, active: number): Promise<void> {
+export async function setProductActive(
+  id: number,
+  active: number,
+  operator?: string | null,
+  role?: string | null,
+): Promise<void> {
   const d = await initDb();
+  const [row] = await d.select<{ name: string }[]>("SELECT name FROM products WHERE id = $1", [id]);
   await d.execute("UPDATE products SET active = $1 WHERE id = $2", [active, id]);
+  await auditLog({
+    operator, role, action: active ? "product.restored" : "product.archived",
+    entity: "product", entity_id: id, detail: row?.name ?? `id ${id}`,
+  });
 }
 
-export async function saveReorderLevel(id: number, level: number): Promise<void> {
+export async function saveReorderLevel(
+  id: number,
+  level: number,
+  operator?: string | null,
+  role?: string | null,
+): Promise<void> {
   const d = await initDb();
   await d.execute("UPDATE products SET reorder_level = $1 WHERE id = $2", [level, id]);
+  await auditLog({
+    operator, role, action: "product.reorder_changed", entity: "product",
+    entity_id: id, detail: `reorder level → ${level}`,
+  });
 }
 
 /** Units per purchase pack (carton of 10 strips = 10). Min 1. */
-export async function savePackSize(id: number, packSize: number): Promise<void> {
+export async function savePackSize(
+  id: number,
+  packSize: number,
+  operator?: string | null,
+  role?: string | null,
+): Promise<void> {
   const d = await initDb();
-  await d.execute("UPDATE products SET pack_size = $1 WHERE id = $2", [
-    Math.max(1, Math.floor(packSize) || 1),
-    id,
-  ]);
+  const v = Math.max(1, Math.floor(packSize) || 1);
+  await d.execute("UPDATE products SET pack_size = $1 WHERE id = $2", [v, id]);
+  await auditLog({
+    operator, role, action: "product.pack_changed", entity: "product",
+    entity_id: id, detail: `units per pack → ${v}`,
+  });
 }
 
 export interface IntakeInput {
@@ -257,12 +306,74 @@ export interface IntakeInput {
   packSize?: number | null;
 }
 
+/** One row for the central audit trail (migration 0033). Fire-and-forget:
+ * the business write already committed — a failed audit insert only logs to
+ * console, it never blocks the sale/adjustment that just happened. */
+export async function auditLog(entry: {
+  operator?: string | null;
+  role?: string | null;
+  action: string;
+  entity?: string | null;
+  entity_id?: string | number | null;
+  amount?: number | null;
+  detail?: string | null;
+}): Promise<void> {
+  try {
+    const d = await initDb();
+    await d.execute(
+      `INSERT INTO audit_log (operator, role, action, entity, entity_id, amount, detail)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        entry.operator ?? null,
+        entry.role ?? null,
+        entry.action,
+        entry.entity ?? null,
+        entry.entity_id === undefined || entry.entity_id === null
+          ? null
+          : String(entry.entity_id),
+        entry.amount ?? null,
+        entry.detail ?? null,
+      ],
+    );
+  } catch (e) {
+    console.error("audit log failed:", e);
+  }
+}
+
+export interface AuditRow {
+  id: number;
+  timestamp: string;
+  operator: string | null;
+  role: string | null;
+  action: string;
+  entity: string | null;
+  entity_id: string | null;
+  amount: number | null;
+  detail: string | null;
+}
+
+/** Newest-first audit rows for a date range (cap 500). */
+export async function loadAuditLog(from: string, to: string): Promise<AuditRow[]> {
+  const d = await initDb();
+  const rows = await d.select<AuditRow[]>(
+    `SELECT id, timestamp, operator, role, action, entity, entity_id, amount, detail
+     FROM audit_log WHERE date(timestamp) BETWEEN $1 AND $2
+     ORDER BY id DESC LIMIT 500`,
+    [from, to],
+  );
+  return rows.map((r) => ({ ...r, amount: r.amount === null ? null : Number(r.amount) }));
+}
+
 /** Merge received units onto the product's FEFO ledger — now done atomically
  * inside the Rust intake command; kept only for signature history. */
 
 /** Restock: update existing product by barcode (adds qty) or create a new
  * one — atomic in Rust (stock + FEFO batch row in one transaction). */
-export async function intakeStock(input: IntakeInput): Promise<{ id: number; created: boolean }> {
+export async function intakeStock(
+  input: IntakeInput,
+  operator?: string | null,
+  role?: string | null,
+): Promise<{ id: number; created: boolean }> {
   return await invoke("intake_stock", {
     input: {
       barcode: input.barcode,
@@ -278,6 +389,8 @@ export async function intakeStock(input: IntakeInput): Promise<{ id: number; cre
       unit: input.unit,
       pack_size: input.packSize ?? null,
     },
+    operator: operator ?? null,
+    role: role ?? null,
   });
 }
 
@@ -285,8 +398,10 @@ export async function intakeStock(input: IntakeInput): Promise<{ id: number; cre
 export async function quickAddProduct(
   name: string,
   sellingPrice: number,
+  operator?: string | null,
+  role?: string | null,
 ): Promise<number> {
-  return await invoke("quick_add_product", { name, sellingPrice });
+  return await invoke("quick_add_product", { name, sellingPrice, operator: operator ?? null, role: role ?? null });
 }
 
 export interface NewProduct {
@@ -306,8 +421,12 @@ export interface NewProduct {
   expiry_date?: string | null;
 }
 
-export async function createProduct(p: NewProduct): Promise<number> {
-  return await invoke("create_product", { product: p });
+export async function createProduct(
+  p: NewProduct,
+  operator?: string | null,
+  role?: string | null,
+): Promise<number> {
+  return await invoke("create_product", { product: p, operator: operator ?? null, role: role ?? null });
 }
 
 /** Per-batch breakdown of a product's stock (FEFO ledger), nearest expiry first. */
@@ -329,11 +448,13 @@ export async function completeSale(
   operator: string | null,
   patient: { name: string; phone: string } | null = null,
   discountPct: number = 0,
+  role?: string | null,
 ): Promise<SaleResult> {
   return await invoke("complete_sale", {
     payments,
     lines,
     operator,
+    role: role ?? null,
     patientName: patient?.name?.trim() || null,
     patientPhone: patient?.phone?.trim() || null,
     discountPct: discountPct || null,
@@ -382,8 +503,9 @@ export async function returnSale(
   reason: string | null,
   operator: string | null,
   managerPin?: string | null,
+  role?: string | null,
 ): Promise<ReturnResult> {
-  return await invoke("return_sale", { saleId, lines, reason, operator, managerPin });
+  return await invoke("return_sale", { saleId, lines, reason, operator, role: role ?? null, managerPin });
 }
 
 /** Delete a sale entirely — the UI sends the exact row it displayed; Rust
@@ -393,8 +515,9 @@ export async function voidLastSale(
   saleId: number,
   operator: string | null,
   managerPin?: string | null,
+  role?: string | null,
 ): Promise<{ receipt_no: string }> {
-  return await invoke("void_last_sale", { saleId, operator, managerPin });
+  return await invoke("void_last_sale", { saleId, operator, role: role ?? null, managerPin });
 }
 
 // ---- Loss prevention ----
@@ -415,8 +538,10 @@ export async function isManagerPinSet(): Promise<boolean> {
 export async function setManagerPin(
   currentPin: string | null,
   newPin: string | null,
+  operator?: string | null,
+  role?: string | null,
 ): Promise<void> {
-  await invoke("set_manager_pin", { currentPin, newPin });
+  await invoke("set_manager_pin", { currentPin, newPin, operator: operator ?? null, role: role ?? null });
 }
 
 /** Whether `pin` verifies against the configured manager PIN. Used to unlock
@@ -437,8 +562,9 @@ export async function commitStockTake(
   counts: StockTakeCount[],
   operator: string | null,
   managerPin?: string | null,
+  role?: string | null,
 ): Promise<{ changed: number; unchanged: number }> {
-  return await invoke("commit_stock_take", { counts, operator, managerPin });
+  return await invoke("commit_stock_take", { counts, operator, role: role ?? null, managerPin });
 }
 
 /** Copy the database to an external folder (flash drive); returns the file path. */
@@ -454,8 +580,9 @@ export async function adjustStock(
   reason: string,
   operator: string | null,
   managerPin?: string | null,
+  role?: string | null,
 ): Promise<{ product_id: number; delta: number; new_stock: number }> {
-  return await invoke("adjust_stock", { productId, delta, reason, operator, managerPin });
+  return await invoke("adjust_stock", { productId, delta, reason, operator, role: role ?? null, managerPin });
 }
 
 export interface BackupInfo {
@@ -499,18 +626,26 @@ export interface CashUp {
 }
 
 /** Record a daily till reconciliation. */
-export async function saveCashUp(input: {
-  day: string;
-  opening_float: number;
-  counted: number;
-  variance: number;
-  operator: string | null;
-}): Promise<void> {
+export async function saveCashUp(
+  input: {
+    day: string;
+    opening_float: number;
+    counted: number;
+    variance: number;
+    operator: string | null;
+  },
+  role?: string | null,
+): Promise<void> {
   const d = await initDb();
   await d.execute(
     "INSERT INTO cash_ups (day, operator, opening_float, counted, variance) VALUES ($1,$2,$3,$4,$5)",
     [input.day, input.operator, input.opening_float, input.counted, input.variance],
   );
+  await auditLog({
+    operator: input.operator, role, action: "cashup.saved", entity: "cash_up",
+    entity_id: input.day, amount: input.counted,
+    detail: `${input.day} — counted GH₵ ${Number(input.counted).toFixed(2)} (variance GH₵ ${Number(input.variance).toFixed(2)})`,
+  });
 }
 
 /** Past cash-ups for a day, newest first. */
@@ -537,6 +672,7 @@ export async function setTillFloat(
   day: string,
   amount: number,
   operator: string | null,
+  role?: string | null,
 ): Promise<void> {
   const d = await initDb();
   await d.execute(
@@ -544,6 +680,11 @@ export async function setTillFloat(
      ON CONFLICT(day) DO UPDATE SET amount = excluded.amount, operator = excluded.operator`,
     [day, amount || 0, operator],
   );
+  await auditLog({
+    operator, role, action: "till.float_set", entity: "till_float",
+    entity_id: day, amount: amount || 0,
+    detail: `${day} — opening float GH₵ ${Number(amount || 0).toFixed(2)}`,
+  });
 }
 
 /** Write CSV rows (client-rendered) to the path the user chose in the
@@ -603,8 +744,10 @@ export async function parseStockFile(path: string): Promise<ParsedSheet> {
  * create. A match updates prices/qty; a new row inserts a product. */
 export async function commitStockImport(
   records: StockImportRow[],
+  operator?: string | null,
+  role?: string | null,
 ): Promise<ImportSummary> {
-  return await invoke("commit_stock_import", { records });
+  return await invoke("commit_stock_import", { records, operator: operator ?? null, role: role ?? null });
 }
 
 /** Parse a customers export — same file reader as stock. */
@@ -616,8 +759,10 @@ export async function parseCustomerFile(path: string): Promise<ParsedSheet> {
  * discount / opening balance (take the larger owed); no match → create. */
 export async function commitCustomerImport(
   records: CustomerImportRow[],
+  operator?: string | null,
+  role?: string | null,
 ): Promise<ImportSummary> {
-  return await invoke("commit_customer_import", { records });
+  return await invoke("commit_customer_import", { records, operator: operator ?? null, role: role ?? null });
 }
 
 /** One mapped row of a suppliers export. */
@@ -637,8 +782,10 @@ export async function parseSupplierFile(path: string): Promise<ParsedSheet> {
  * location / opening balance (take the larger owed); no match → create. */
 export async function commitSupplierImport(
   records: SupplierImportRow[],
+  operator?: string | null,
+  role?: string | null,
 ): Promise<ImportSummary> {
-  return await invoke("commit_supplier_import", { records });
+  return await invoke("commit_supplier_import", { records, operator: operator ?? null, role: role ?? null });
 }
 
 export interface DemoPurgeSummary {
@@ -651,8 +798,12 @@ export interface DemoPurgeSummary {
 
 /** Wipe all sample/demo rows (manager-PIN protected) so a database can be
  * handed to a real client clean. */
-export async function purgeDemoData(managerPin: string | null): Promise<DemoPurgeSummary> {
-  return await invoke("purge_demo_data", { managerPin });
+export async function purgeDemoData(
+  managerPin: string | null,
+  operator?: string | null,
+  role?: string | null,
+): Promise<DemoPurgeSummary> {
+  return await invoke("purge_demo_data", { managerPin, operator: operator ?? null, role: role ?? null });
 }
 
 
@@ -674,8 +825,11 @@ export async function hasDemoData(): Promise<boolean> {
   return (rows[0]?.n ?? 0) > 0;
 }
 
-export async function wipeAllStock(): Promise<number> {
-  return await invoke("wipe_all_stock");
+export async function wipeAllStock(
+  operator?: string | null,
+  role?: string | null,
+): Promise<number> {
+  return await invoke("wipe_all_stock", { operator: operator ?? null, role: role ?? null });
 }
 
 export interface FdaDrug {
@@ -700,12 +854,19 @@ export async function searchFdaDrugs(query: string, limit = 20): Promise<FdaDrug
   return await invoke("search_fda_drugs", { query, limit });
 }
 
-export async function importFdaCatalog(drugs: FdaDrug[]): Promise<number> {
-  return await invoke("import_fda_catalog", { drugs });
+export async function importFdaCatalog(
+  drugs: FdaDrug[],
+  operator?: string | null,
+  role?: string | null,
+): Promise<number> {
+  return await invoke("import_fda_catalog", { drugs, operator: operator ?? null, role: role ?? null });
 }
 
-export async function refreshFdaCatalog(): Promise<number> {
-  return await invoke("refresh_fda_catalog");
+export async function refreshFdaCatalog(
+  operator?: string | null,
+  role?: string | null,
+): Promise<number> {
+  return await invoke("refresh_fda_catalog", { operator: operator ?? null, role: role ?? null });
 }
 
 export interface AppUser {
@@ -723,8 +884,10 @@ export async function createUser(
   displayName: string,
   password: string,
   role: "manager" | "worker",
+  actor?: string | null,
+  actorRole?: string | null,
 ): Promise<AppUser> {
-  return await invoke("create_user", { username, displayName, password, role });
+  return await invoke("create_user", { username, displayName, password, role, actor: actor ?? null, actorRole: actorRole ?? null });
 }
 
 export async function loginUser(username: string, password: string): Promise<AppUser> {
@@ -738,17 +901,26 @@ export async function listUsers(): Promise<AppUser[]> {
 export async function updateUser(
   id: number,
   opts: { display_name?: string; role?: "manager" | "worker"; is_active?: boolean },
+  actor?: string | null,
+  actorRole?: string | null,
 ): Promise<AppUser> {
   return await invoke("update_user", {
     id,
     displayName: opts.display_name ?? null,
     role: opts.role ?? null,
     isActive: opts.is_active ?? null,
+    actor: actor ?? null,
+    actorRole: actorRole ?? null,
   });
 }
 
-export async function resetUserPassword(id: number, newPassword: string): Promise<void> {
-  return await invoke("reset_user_password", { id, newPassword });
+export async function resetUserPassword(
+  id: number,
+  newPassword: string,
+  actor?: string | null,
+  actorRole?: string | null,
+): Promise<void> {
+  return await invoke("reset_user_password", { id, newPassword, actor: actor ?? null, actorRole: actorRole ?? null });
 }
 
 export async function changeOwnPassword(
@@ -781,6 +953,8 @@ export async function addSupplier(
   name: string,
   phone?: string,
   location?: string,
+  operator?: string | null,
+  role?: string | null,
 ): Promise<number> {
   const d = await initDb();
   const rows = await d.select<{ id: number }[]>(
@@ -792,6 +966,10 @@ export async function addSupplier(
   if (!rows[0]?.id) {
     throw new Error(`Couldn't resolve supplier "${name.trim()}"`);
   }
+  await auditLog({
+    operator, role, action: "supplier.saved", entity: "supplier",
+    entity_id: rows[0].id, detail: `${name.trim()} added/confirmed`,
+  });
   return rows[0].id;
 }
 
@@ -889,6 +1067,8 @@ export interface SavePurchaseInput {
  * 'Received') the stock commit. All pricing math is recomputed there. */
 export async function savePurchase(
   input: SavePurchaseInput,
+  operator?: string | null,
+  role?: string | null,
 ): Promise<{ id: string; total: number; items: number; received: boolean }> {
   // Tauri v2 commands expect camelCase keys for top-level args; the nested
   // line objects keep snake_case (plain serde structs).
@@ -902,6 +1082,8 @@ export async function savePurchase(
     discountType: input.discount_type,
     discountAmount: input.discount_amount,
     lines: input.lines,
+    operator: operator ?? null,
+    role: role ?? null,
   });
 }
 
@@ -911,8 +1093,10 @@ export async function savePurchase(
 export async function receivePurchase(
   purchaseId: string,
   lines: { line_id: string; qty: number; invoice_cost?: number | null }[],
+  operator?: string | null,
+  role?: string | null,
 ): Promise<{ reference_no: string | null; added: number; complete: boolean; warnings: string[] }> {
-  return await invoke("receive_purchase", { purchaseId, lines });
+  return await invoke("receive_purchase", { purchaseId, lines, operator: operator ?? null, role: role ?? null });
 }
 
 export interface UpdatePurchaseInput {
@@ -931,6 +1115,8 @@ export interface UpdatePurchaseInput {
 /** Edit a Draft/Ordered purchase before any stock is received (atomic in Rust). */
 export async function updatePurchase(
   input: UpdatePurchaseInput,
+  operator?: string | null,
+  role?: string | null,
 ): Promise<{ id: string; total: number; items: number }> {
   return await invoke("update_purchase", {
     purchaseId: input.purchase_id,
@@ -943,6 +1129,8 @@ export async function updatePurchase(
     discountType: input.discount_type,
     discountAmount: input.discount_amount,
     lines: input.lines,
+    operator: operator ?? null,
+    role: role ?? null,
   });
 }
 
@@ -950,8 +1138,10 @@ export async function updatePurchase(
 export async function cancelPurchase(
   purchaseId: string,
   reason: string | null,
+  operator?: string | null,
+  role?: string | null,
 ): Promise<{ id: string; reference_no: string | null }> {
-  return await invoke("cancel_purchase", { purchaseId, reason });
+  return await invoke("cancel_purchase", { purchaseId, reason, operator: operator ?? null, role: role ?? null });
 }
 
 /** Settle a customer's book balance — a payment against outstanding credit.
@@ -962,8 +1152,9 @@ export async function settleCredit(
   method: string,
   operator: string | null,
   managerPin?: string | null,
+  role?: string | null,
 ): Promise<{ patient_name: string; paid: number; balance: number }> {
-  return await invoke("settle_credit", { patientName, amount, method, operator, managerPin });
+  return await invoke("settle_credit", { patientName, amount, method, operator, role: role ?? null, managerPin });
 }
 
 /** Outstanding customer credit (book) balances: what each customer owes. */
@@ -1110,8 +1301,9 @@ export async function recordPayment(
   method: string,
   operator: string | null,
   managerPin?: string | null,
+  role?: string | null,
 ): Promise<{ reference_no: string | null; paid: number; balance: number }> {
-  return await invoke("record_payment", { purchaseId, amount, method, operator, managerPin });
+  return await invoke("record_payment", { purchaseId, amount, method, operator, role: role ?? null, managerPin });
 }
 
 // ---- Expenses (petty cash) ----
@@ -1132,18 +1324,28 @@ const EXPENSE_CATEGORIES = [
 ];
 export { EXPENSE_CATEGORIES };
 
-export async function addExpense(e: {
-  category: string;
-  description: string;
-  amount: number;
-  operator: string;
-  paymentMethod: string;
-}): Promise<void> {
+export async function addExpense(
+  e: {
+    category: string;
+    description: string;
+    amount: number;
+    operator: string;
+    paymentMethod: string;
+  },
+  actor?: string | null,
+  role?: string | null,
+): Promise<void> {
   const d = await initDb();
   await d.execute(
     "INSERT INTO expenses (category, description, amount, operator, payment_method) VALUES ($1, $2, $3, $4, $5)",
     [e.category, e.description || null, e.amount, e.operator || null, e.paymentMethod || "Cash"],
   );
+  const idRow = await d.select<{ id: number }[]>("SELECT last_insert_rowid() AS id");
+  await auditLog({
+    operator: actor ?? e.operator ?? null, role, action: "expense.added",
+    entity: "expense", entity_id: idRow[0]?.id ?? null, amount: e.amount,
+    detail: `${e.category} — GH₵ ${Number(e.amount).toFixed(2)} via ${e.paymentMethod || "Cash"}${e.description ? ` (${e.description})` : ""}`,
+  });
 }
 
 export async function listExpenses(from: string, to: string): Promise<Expense[]> {
@@ -1167,9 +1369,28 @@ export async function expenseSummary(from: string, to: string): Promise<{ total:
   return { total: Number(tot?.v ?? 0), byCategory: byCat.map((c) => ({ ...c, total: Number(c.total) })) };
 }
 
-export async function deleteExpense(id: number): Promise<void> {
+export async function deleteExpense(
+  id: number,
+  operator?: string | null,
+  role?: string | null,
+): Promise<void> {
   const d = await initDb();
+  // Capture what we're about to remove — the audit row is the only record
+  // left once the DELETE below commits.
+  const [row] = await d.select<
+    { category: string; description: string | null; amount: number; payment_method: string }[]
+  >(
+    "SELECT category, description, amount, payment_method FROM expenses WHERE id = $1",
+    [id],
+  );
   await d.execute("DELETE FROM expenses WHERE id = $1", [id]);
+  if (row) {
+    await auditLog({
+      operator, role, action: "expense.deleted", entity: "expense",
+      entity_id: id, amount: Number(row.amount),
+      detail: `${row.category} — GH₵ ${Number(row.amount).toFixed(2)} via ${row.payment_method || "Cash"}${row.description ? ` (${row.description})` : ""} deleted`,
+    });
+  }
 }
 
 // ---- Supplier balances ----
@@ -1224,7 +1445,12 @@ export async function supplierBalances(): Promise<SupplierBalance[]> {
 
 // ---- Patient discount tier ----
 
-export async function updatePatientDiscount(name: string, discountPct: number): Promise<void> {
+export async function updatePatientDiscount(
+  name: string,
+  discountPct: number,
+  operator?: string | null,
+  role?: string | null,
+): Promise<void> {
   const d = await initDb();
   if (!Number.isFinite(discountPct) || discountPct < 0 || discountPct > 100) {
     throw new Error("Discount must be between 0 and 100");
@@ -1236,6 +1462,10 @@ export async function updatePatientDiscount(name: string, discountPct: number): 
   if (res.rowsAffected === 0) {
     throw new Error(`No customer named "${name}" to update.`);
   }
+  await auditLog({
+    operator, role, action: "customer.discount_changed", entity: "customer",
+    entity_id: name, detail: `${name} discount → ${discountPct}%`,
+  });
 }
 
 export async function getPatientDiscount(name: string): Promise<number> {

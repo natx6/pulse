@@ -248,7 +248,7 @@ export function HistoryPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-end gap-3 border-b border-outline-variant px-gutter py-density-medium">
+      <div className="flex flex-wrap items-end gap-3 border-b border-outline-variant px-gutter py-density-medium" data-tour="tour-history">
         <label className="flex flex-col gap-1">
           <span className="text-label-sm font-label-sm text-on-surface-variant">Period</span>
           <select

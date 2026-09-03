@@ -51,6 +51,8 @@ export function PosPage() {
   const restoreHeld = useStore((s) => s.restoreHeld);
   const refreshProducts = useStore((s) => s.refreshProducts);
   const setQuickAdd = useStore((s) => s.setQuickAdd);
+  const currentUser = useStore((s) => s.currentUser);
+  const isWorker = currentUser?.role === "worker";
 
   const [category, setCategory] = useState("All Categories");
   const [payMethod, setPayMethod] = useState<PaymentMethod | null>(null);
@@ -222,16 +224,17 @@ export function PosPage() {
     if (!reorder || orderBusy) return;
     setOrderBusy(true);
     try {
-      const r = await savePurchase({
-        supplier_id: null,
-        supplier_name: null,
-        reference_no: null,
-        purchase_date: new Date().toISOString().slice(0, 10),
-        pay_term: "Cash",
-        status: "Ordered",
-        discount_type: "None",
-        discount_amount: 0,
-        lines: [
+      const r = await savePurchase(
+        {
+          supplier_id: null,
+          supplier_name: null,
+          reference_no: null,
+          purchase_date: new Date().toISOString().slice(0, 10),
+          pay_term: "Cash",
+          status: "Ordered",
+          discount_type: "None",
+          discount_amount: 0,
+          lines: [
           {
             product_id: reorder.id,
             product_name: reorder.name,
@@ -244,7 +247,10 @@ export function PosPage() {
             batch_no: null,
           },
         ],
-      });
+        },
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       beep(true);
       setReorder(null);
       setFlash(`${r.id} created — receive it in Requisitions.`);
@@ -414,7 +420,7 @@ export function PosPage() {
                       {fmtMoney(p.selling_price)}
                     </span>
                     <div className="flex items-center gap-1">
-                      {stockStatus(p) !== "in" && (
+                      {!isWorker && stockStatus(p) !== "in" && (
                         <Tip label="Order more of this item — receive it later in Requisitions">
                           <button
                             onClick={(e) => {

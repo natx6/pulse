@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { backupDb, commitSupplierImport, parseSupplierFile } from "../db";
 import type { SupplierImportRow, ImportSummary, ParsedSheet } from "../db";
+import { useStore } from "../store/useStore";
 import { beep } from "../lib/audio";
 
 /** Bulk-load suppliers from an Excel/CSV export of the old system: pick file →
@@ -15,6 +16,7 @@ export function ImportSuppliersModal({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const currentUser = useStore((s) => s.currentUser);
   const [phase, setPhase] = useState<"pick" | "map" | "done">("pick");
   const [fileName, setFileName] = useState("");
   const [sheet, setSheet] = useState<ParsedSheet | null>(null);
@@ -68,7 +70,11 @@ export function ImportSuppliersModal({
     setErr("");
     try {
       const bpath = await backupDb();
-      const res = await commitSupplierImport(stats.recs);
+      const res = await commitSupplierImport(
+        stats.recs,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       setSummary(res);
       setBackupPath(bpath);
       setPhase("done");

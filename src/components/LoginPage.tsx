@@ -1,7 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { loginUser } from "../db";
 import { useStore } from "../store/useStore";
-import { beep } from "../lib/audio";
 
 export function LoginPage() {
   const setCurrentUser = useStore((s) => s.setCurrentUser);
@@ -9,43 +8,66 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const busySince = useRef<number | null>(null);
+  useEffect(() => {
+    if (!busy) {
+      busySince.current = null;
+      return;
+    }
+    busySince.current = Date.now();
+    const t = window.setInterval(() => {
+      if (busySince.current && Date.now() - busySince.current > 4000) {
+        setBusy(false);
+        setErr("Sign-in is taking too long — try again.");
+        busySince.current = null;
+        window.clearInterval(t);
+      }
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [busy]);
 
   const doLogin = async () => {
     const u = username.trim();
     const p = password.trim();
     if (!u || !p) {
       setErr("Username and password are required.");
-      beep(false);
       return;
     }
     setBusy(true);
     setErr("");
+    let user;
     try {
-      const user = await loginUser(u, p);
-      beep(true);
-      setCurrentUser(user);
-      // Clear the form for next login.
-      setUsername("");
-      setPassword("");
-      if (user.must_change_password) {
-        // Keep the user logged in but force a password change UX via Settings or a prompt.
-        // For now the manager can reset via Users tab.
-      }
+      user = await loginUser(u, p);
     } catch (e) {
       setErr(String(e).replace(/^Error: /, ""));
-      beep(false);
+      setBusy(false);
+      return;
+    }
+    try {
+      setCurrentUser(user);
+      setUsername("");
+      setPassword("");
+    } catch (e) {
+      setErr(String(e).replace(/^Error: /, ""));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="flex h-full flex-col items-center justify-center bg-surface-container-lowest p-8">
+    <div className="flex h-full w-full items-center justify-center bg-surface-container-lowest p-8">
       <div className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface p-6 shadow-lg">
-        <div className="mb-6 text-center">
-          <span className="material-symbols-outlined text-[48px] text-primary">local_pharmacy</span>
-          <h2 className="mt-2 text-headline-lg font-headline-lg text-on-surface">Pulse</h2>
-          <p className="text-body-sm font-body-sm text-on-surface-variant">Sign in to continue</p>
+        <div className="mb-6 flex flex-col items-center gap-3 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded bg-primary text-headline-lg font-bold text-on-primary">
+            P
+          </div>
+          <div>
+            <h2 className="text-headline-lg font-headline-lg leading-none tracking-tight text-on-surface">
+              Pulse
+            </h2>
+            <p className="mt-1 text-[10px] uppercase tracking-wider text-on-surface-variant">Pharmacy MS</p>
+            <p className="mt-1 text-body-sm font-body-sm text-on-surface-variant">Sign in to continue</p>
+          </div>
         </div>
 
         <label className="mb-3 block">
@@ -83,7 +105,7 @@ export function LoginPage() {
         </button>
 
         <p className="mt-4 text-center text-body-sm font-body-sm text-on-surface-variant">
-          Default manager is <span className="font-mono">manager / manager</span> — change it after first login in Settings → Users.
+          Default manager is <span className="font-mono">manager / manager</span> — or your manager PIN if one was set before. Change it after first login in Settings → Users.
         </p>
       </div>
     </div>

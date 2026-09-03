@@ -17,6 +17,7 @@ const fmt = (d: Date) =>
 
 export function ExpensesPage() {
   const operator = useStore((s) => s.operator);
+  const currentUser = useStore((s) => s.currentUser);
 
   const [from, setFrom] = useState(fmt(new Date()));
   const [to, setTo] = useState(fmt(new Date()));
@@ -54,7 +55,11 @@ export function ExpensesPage() {
     setBusy(true);
     setErr("");
     try {
-      await addExpense({ category: cat, description: desc, amount: a, operator: operator || "", paymentMethod: payMethod });
+      await addExpense(
+        { category: cat, description: desc, amount: a, operator: operator || "", paymentMethod: payMethod },
+        currentUser?.display_name ?? operator ?? null,
+        currentUser?.role ?? null,
+      );
       beep(true);
       setFlash(`GH₵ ${a.toFixed(2)} recorded`);
       setTimeout(() => setFlash(""), 3000);
@@ -79,7 +84,7 @@ export function ExpensesPage() {
     }
     setConfirmDel(null);
     try {
-      await deleteExpense(id);
+      await deleteExpense(id, currentUser?.display_name ?? operator ?? null, currentUser?.role ?? null);
       beep(true);
       await load();
     } catch (e) {

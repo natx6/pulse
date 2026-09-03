@@ -8,6 +8,7 @@ import { DateField } from "./DateField";
 export function IntakeModal() {
   const open = useStore((s) => s.intakeOpen);
   const setIntakeOpen = useStore((s) => s.setIntakeOpen);
+  const currentUser = useStore((s) => s.currentUser);
   const products = useStore((s) => s.products);
   const refreshProducts = useStore((s) => s.refreshProducts);
 
@@ -51,6 +52,9 @@ export function IntakeModal() {
   }, [open]);
 
   if (!open) return null;
+  // Belt-and-braces: the F2 shortcut already ignores workers, but never
+  // render intake for them even if the flag was set another way.
+  if (currentUser?.role === "worker") return null;
 
   const packSize = Math.max(0, Math.floor(Number(pack)) || 0);
 
@@ -98,20 +102,24 @@ export function IntakeModal() {
     }
     setBusy(true);
     try {
-      const res = await intakeStock({
-        barcode: barcode.trim() || null,
-        name: nm,
-        quantity: n,
-        costPrice: cost ? Number(cost) : null,
-        sellingPrice: p,
-        batchNo: batch.trim() || null,
-        expiryDate: expiry || null,
-        supplier: supplier.trim() || null,
-        manufacturer: manufacturer.trim() || null,
-        category: category.trim() || null,
-        unit: unit.trim() || null,
-        packSize: packSize > 1 ? packSize : null,
-      });
+      const res = await intakeStock(
+        {
+          barcode: barcode.trim() || null,
+          name: nm,
+          quantity: n,
+          costPrice: cost ? Number(cost) : null,
+          sellingPrice: p,
+          batchNo: batch.trim() || null,
+          expiryDate: expiry || null,
+          supplier: supplier.trim() || null,
+          manufacturer: manufacturer.trim() || null,
+          category: category.trim() || null,
+          unit: unit.trim() || null,
+          packSize: packSize > 1 ? packSize : null,
+        },
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       await refreshProducts();
       beep(true);
       setMessage({

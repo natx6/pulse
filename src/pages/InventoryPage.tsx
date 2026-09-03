@@ -175,7 +175,12 @@ export function InventoryPage() {
     }
     setArchiveArmed(null);
     try {
-      await setProductActive(p.id, 0);
+      await setProductActive(
+        p.id,
+        0,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       await refreshProducts();
       if (showArchived) {
         setArchived((a) => a.filter((x) => x.id !== p.id));
@@ -192,7 +197,12 @@ export function InventoryPage() {
 
   const doRestore = async (p: Product) => {
     try {
-      await setProductActive(p.id, 1);
+      await setProductActive(
+        p.id,
+        1,
+        currentUser?.display_name ?? null,
+        currentUser?.role ?? null,
+      );
       setArchived((a) => a.filter((x) => x.id !== p.id));
       await refreshProducts();
       beep(true);
@@ -246,13 +256,30 @@ export function InventoryPage() {
     try {
       if (hasDelta) {
         const fullReason = note.trim() ? `${reason} — ${note.trim()}` : reason;
-        await adjustStock(adjust.id, d, fullReason, operator, adjustPin.trim() || null);
+        await adjustStock(
+          adjust.id,
+          d,
+          fullReason,
+          operator,
+          adjustPin.trim() || null,
+          currentUser?.role ?? null,
+        );
       }
       if (hasReorderChange) {
-        await saveReorderLevel(adjust.id, newLevel);
+        await saveReorderLevel(
+          adjust.id,
+          newLevel,
+          currentUser?.display_name ?? null,
+          currentUser?.role ?? null,
+        );
       }
       if (hasPackChange) {
-        await savePackSize(adjust.id, newPack);
+        await savePackSize(
+          adjust.id,
+          newPack,
+          currentUser?.display_name ?? null,
+          currentUser?.role ?? null,
+        );
       }
       await refreshProducts();
       beep(true);
@@ -451,7 +478,12 @@ export function InventoryPage() {
                       onBlur={async () => {
                         const v = Math.max(0, Math.floor(Number(reorderVal)) || 0);
                         if (v !== p.reorder_level) {
-                          await saveReorderLevel(p.id, v);
+                          await saveReorderLevel(
+                            p.id,
+                            v,
+                            currentUser?.display_name ?? null,
+                            currentUser?.role ?? null,
+                          );
                           await refreshProducts();
                         }
                         setEditingReorder(null);
