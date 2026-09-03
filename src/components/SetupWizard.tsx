@@ -94,7 +94,9 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
 
           {step === 0 && (
             <div>
-              <span className="material-symbols-outlined mb-2 text-[40px] text-primary">local_pharmacy</span>
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded bg-primary text-headline-md font-bold text-on-primary">
+                P
+              </div>
               <p className="text-title-sm font-medium text-on-surface">Welcome to Pulse</p>
               <p className="mt-2 text-body-sm text-on-surface-variant">
                 Let's get your pharmacy ready. This takes a minute: your shop details, a manager

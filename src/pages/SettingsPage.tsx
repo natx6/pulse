@@ -11,58 +11,15 @@ import {
   restoreBackup,
   restoreFromDir,
   restartApp,
-  purgeDemoData,
-  hasDemoData,
   refreshFdaCatalog,
   listUsers,
   createUser,
   updateUser,
   resetUserPassword,
-  wipeAllStock,
 } from "../db";
 import type { AppUser, BackupInfo } from "../db";
 import { beep } from "../lib/audio";
 import { PinPromptModal } from "../components/PinPromptModal";
-
-function WipeAllStockButton() {
-  const currentUser = useStore((s) => s.currentUser);
-  const [arm, setArm] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
-  const doWipe = async () => {
-    if (!arm) {
-      setArm(true);
-      window.setTimeout(() => setArm(false), 4000);
-      return;
-    }
-    setArm(false);
-    setBusy(true);
-    setMsg("");
-    try {
-      await wipeAllStock(currentUser?.display_name ?? null, currentUser?.role ?? null);
-      beep(true);
-      setMsg("Wiped — stock is now empty. Import your .xlsx now (the app will reload).");
-      window.setTimeout(() => window.location.reload(), 800);
-    } catch (e) {
-      setMsg(String(e).replace(/^Error: /, ""));
-      beep(false);
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div>
-      <button
-        onClick={() => void doWipe()}
-        disabled={busy}
-        className={`h-9 rounded px-4 text-label-md font-label-md shadow-sm transition-colors disabled:opacity-50 ${arm ? "bg-error text-on-error hover:bg-error/90" : "border border-warn/40 bg-warn/10 text-warn hover:bg-warn/20"}`}
-      >
-        {busy ? "Wiping…" : arm ? "Tap again to wipe everything" : "Wipe all stock"}
-      </button>
-      {msg && <p className="mt-2 text-body-sm font-body-sm text-on-surface-variant">{msg}</p>}
-    </div>
-  );
-}
 
 export function SettingsPage() {
   const pharmacyName = useStore((s) => s.pharmacyName);
@@ -113,17 +70,7 @@ export function SettingsPage() {
 
   /** Flash-drive restore awaiting its manager-PIN confirmation. */
   const [pinDriveRestore, setPinDriveRestore] = useState<string | null>(null);
-  /** Clear-sample-data two-tap confirm + manager-PIN gate. */
-  const [purgeArm, setPurgeArm] = useState(false);
-  const [purgeBusy, setPurgeBusy] = useState(false);
-  const [purgeMsg, setPurgeMsg] = useState("");
-  const [pinTargetPurge, setPinTargetPurge] = useState(false);
-  /** Whether any demo/sample row exists — gates the "Clear sample data"
-   * control so it stays hidden in release builds (empty database). */
-  const [hasDemo, setHasDemo] = useState(false);
-  useEffect(() => {
-    hasDemoData().then(setHasDemo).catch(() => setHasDemo(false));
-  }, []);
+
   const [fdaCount, setFdaCount] = useState<number | null>(null);
   const [fdaBusy, setFdaBusy] = useState(false);
   const [fdaMsg, setFdaMsg] = useState("");
@@ -321,47 +268,7 @@ export function SettingsPage() {
     }
   };
 
-  /** Two-step confirm for clearing sample data, then a manager-PIN prompt. */
-  const armPurge = async () => {
-    if (!purgeArm) {
-      setPurgeArm(true);
-      window.setTimeout(() => setPurgeArm((a) => (a ? false : a)), 4000);
-      return;
-    }
-    setPurgeArm(false);
-    try {
-      if (await isManagerPinSet()) {
-        setPinTargetPurge(true);
-        return;
-      }
-    } catch {
-      /* fall through — the Rust gate still protects the command */
-    }
-    await runPurge(null);
-  };
 
-  const runPurge = async (pin: string | null) => {
-    setPurgeBusy(true);
-    setPurgeMsg("");
-    try {
-      const r = await purgeDemoData(
-        pin,
-        currentUser?.display_name ?? null,
-        currentUser?.role ?? null,
-      );
-      beep(true);
-      setHasDemo(false);
-      setPurgeMsg(
-        `Cleared ${r.sales} sample sale(s), ${r.purchases} demo purchase(s), ${r.suppliers} supplier, ${r.products} catalog item(s), ${r.patients} sample patient. The database is now clean.`,
-      );
-    } catch (e) {
-      setPurgeMsg(String(e).replace(/^Error: /, ""));
-      beep(false);
-      throw e;
-    } finally {
-      setPurgeBusy(false);
-    }
-  };
 
   const save = async () => {
     setSettingsErr("");
@@ -769,49 +676,7 @@ export function SettingsPage() {
             {fdaMsg && <p className="mt-2 text-body-sm font-body-sm text-on-surface-variant">{fdaMsg}</p>}
           </div>
 
-          {/* Hand a clean database to a real client: wipe every sample row the
-              seed created (demo sales, the "Demo Wholesale" supplier + its
-              purchase, the sample catalog, the "Ama Mensah" sample patient).
-              Real imports are untouched. Manager-PIN gated. Only shown when demo
-              data actually exists — i.e. on dev/debug builds; release ships empty
-              so this control is hidden there. */}
-          {hasDemo && (
-          <div className="mt-3 rounded border border-error/30 bg-error/5 p-3">
-            <p className="text-body-md font-body-md text-on-surface">Starting fresh?</p>
-            <p className="mt-1 mb-3 text-body-sm font-body-sm text-on-surface-variant">
-              Remove all sample/demo data so the database is clean for a real
-              pharmacy. Your own imported products, customers and suppliers are
-              left exactly as they are. Manager PIN required.
-            </p>
-            <button
-              onClick={() => void armPurge()}
-              disabled={purgeBusy}
-              className={`h-9 rounded px-4 text-label-md font-label-md shadow-sm transition-colors disabled:opacity-50 ${
-                purgeArm
-                  ? "bg-error text-on-error hover:bg-error/90"
-                  : "border border-outline-variant bg-surface text-on-surface hover:bg-surface-variant"
-              }`}
-            >
-              {purgeBusy
-                ? "Clearing…"
-                : purgeArm
-                  ? "Tap again to confirm"
-                  : "Clear sample data"}
-            </button>
-            {purgeMsg && (
-              <p className="mt-2 text-body-sm font-body-sm text-on-surface-variant">{purgeMsg}</p>
-            )}
-          </div>
-          )}
-          {import.meta.env.DEV && (
-            <div className="mt-3 rounded border border-warn/30 bg-warn/5 p-3">
-              <p className="text-body-md font-body-md text-on-surface">Wipe all stock (dev only)</p>
-              <p className="mt-1 mb-3 text-body-sm font-body-sm text-on-surface-variant">
-                Deletes <span className="font-medium">all</span> products, batches, sales, purchases, suppliers and patients — leaves users, settings and the FDA catalog. For testing imports as if for a new client.
-              </p>
-              <WipeAllStockButton />
-            </div>
-          )}
+
           {backupErr && (
             <p className="mb-2 text-body-sm font-body-sm text-error">{backupErr}</p>
           )}
@@ -1000,22 +865,7 @@ export function SettingsPage() {
         />
       )}
 
-      {pinTargetPurge && (
-        <PinPromptModal
-          title="Clear sample data"
-          detail="This permanently removes all demo/sample rows (sample sales, the demo supplier, the sample catalog, the sample patient). Your real data is untouched. Enter the manager PIN to continue."
-          onSubmit={async (pin) => {
-            try {
-              await runPurge(pin);
-              setPinTargetPurge(false);
-              return null;
-            } catch (e) {
-              return String(e).replace(/^Error: /, "");
-            }
-          }}
-          onClose={() => setPinTargetPurge(false)}
-        />
-      )}
+
     </div>
   );
 }
