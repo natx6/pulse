@@ -4,6 +4,7 @@ import { fmtMoney } from "../lib/money";
 import { DateField } from "../components/DateField";
 import { ReceiptModal } from "../components/ReceiptModal";
 import { ReturnModal } from "../components/ReturnModal";
+import { useStore } from "../store/useStore";
 import type { CartLine, PaymentLine, SaleResult } from "../types";
 
 interface HistorySale {
@@ -94,6 +95,8 @@ function rangeDates(r: Range, customFrom: string, customTo: string): { from: str
  * are append-only (returns/voids are recorded separately, never deleted), so
  * this is a faithful audit trail — totals subtract refunds where relevant. */
 export function HistoryPage() {
+  const currentUser = useStore((s) => s.currentUser);
+  const isWorker = currentUser?.role === "worker";
   const [range, setRange] = useState<Range>("today");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -479,17 +482,19 @@ export function HistoryPage() {
                 <span className="material-symbols-outlined text-[18px]">receipt_long</span>
                 Reprint
               </button>
-              <button
-                disabled={!selected || !detail}
-                onClick={() =>
-                  selected &&
-                  setReturnTarget({ id: selected.id, receipt_no: selected.receipt_no, timestamp: selected.timestamp })
-                }
-                className="flex flex-1 items-center justify-center gap-2 rounded bg-error px-4 py-2 text-label-md font-label-md text-on-error hover:opacity-90 disabled:opacity-50"
-              >
-                <span className="material-symbols-outlined text-[18px]">assignment_return</span>
-                Refund
-              </button>
+              {!isWorker && (
+                <button
+                  disabled={!selected || !detail}
+                  onClick={() =>
+                    selected &&
+                    setReturnTarget({ id: selected.id, receipt_no: selected.receipt_no, timestamp: selected.timestamp })
+                  }
+                  className="flex flex-1 items-center justify-center gap-2 rounded bg-error px-4 py-2 text-label-md font-label-md text-on-error hover:opacity-90 disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[18px]">assignment_return</span>
+                  Refund
+                </button>
+              )}
             </div>
           </div>
         </div>
