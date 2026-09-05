@@ -121,6 +121,12 @@ export default function App() {
         // No release yet, offline, or install hiccup — never block the app.
         console.error("auto-update:", e);
         setUpdating(null);
+        try {
+          const { useToast } = await import("./store/toast");
+          useToast.getState().show(`Update check failed: ${String(e).replace(/^Error: /, "")}`, "error");
+        } catch {
+          /* toast store not ready — ignore */
+        }
       }
     })();
     return () => {

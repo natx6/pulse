@@ -522,6 +522,7 @@ export function HistoryPage() {
             setReturnTarget(null);
             void load();
             if (selected) void loadDetail(selected);
+            void useStore.getState().refreshProducts();
           }}
         />
       )}

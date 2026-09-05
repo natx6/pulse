@@ -14,6 +14,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  version-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Version sync check (package.json == tauri.conf.json == Cargo.toml)
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAURI=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          CARGO=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          echo "package.json: $PKG"
+          echo "tauri.conf.json: $TAURI"
+          echo "Cargo.toml: $CARGO"
+          if [ "$PKG" != "$TAURI" ] || [ "$PKG" != "$CARGO" ]; then
+            echo "::error::Version mismatch — package.json ($PKG) / tauri.conf.json ($TAURI) / Cargo.toml ($CARGO) must match. Run: npm run bump -- $PKG"
+            exit 1
+          fi
+
   frontend:
     runs-on: ubuntu-latest
     steps:

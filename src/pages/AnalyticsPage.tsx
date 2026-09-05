@@ -1100,25 +1100,29 @@ export function AnalyticsPage() {
               </p>
             );
           }
-          return filtered.map((a) => (
-            <div key={a.id} className="flex items-center justify-between gap-3 border-b border-outline-variant/50 px-3 py-1.5 last:border-0">
-              <span className={`${td} min-w-0`}>
-                <span className="rounded bg-surface-container px-1.5 py-0.5 font-data-mono text-[11px] text-on-surface-variant">
-                  {a.action}
-                </span>
-                <span className="ml-2 text-body-sm text-on-surface">{a.detail || `${a.entity ?? ""} ${a.entity_id ?? ""}`.trim() || "—"}</span>
-                <span className="ml-2 text-[11px] text-on-surface-variant">
-                  {a.operator || "—"}
-                  {a.role ? ` (${a.role})` : ""} · {a.timestamp}
-                </span>
-              </span>
-              {a.amount !== null && (
-                <span className="shrink-0 font-data-mono text-data-mono font-bold text-on-surface">
-                  {fmtMoney(a.amount)}
-                </span>
-              )}
+          return (
+            <div className="max-h-[540px] overflow-y-auto">
+              {filtered.map((a) => (
+                <div key={a.id} className="flex items-center justify-between gap-3 border-b border-outline-variant/50 px-3 py-1.5 last:border-0">
+                  <span className={`${td} min-w-0`}>
+                    <span className="rounded bg-surface-container px-1.5 py-0.5 font-data-mono text-[11px] text-on-surface-variant">
+                      {a.action}
+                    </span>
+                    <span className="ml-2 text-body-sm text-on-surface">{a.detail || `${a.entity ?? ""} ${a.entity_id ?? ""}`.trim() || "—"}</span>
+                    <span className="ml-2 text-[11px] text-on-surface-variant">
+                      {a.operator || "—"}
+                      {a.role ? ` (${a.role})` : ""} · {a.timestamp}
+                    </span>
+                  </span>
+                  {a.amount !== null && (
+                    <span className="shrink-0 font-data-mono text-data-mono font-bold text-on-surface">
+                      {fmtMoney(a.amount)}
+                    </span>
+                  )}
+                </div>
+              ))}
             </div>
-          ));
+          );
         })()}
       </div>
 

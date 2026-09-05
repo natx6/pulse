@@ -93,10 +93,12 @@ const DOCS: DocSection[] = [
       { label: "tune (row)", does: "Quick fix for one product — quantity ± (reducing needs Manager PIN if set), Reason, Reorder, Pack." },
       { label: "Print Label", does: "Print a scannable Code39 shelf label." },
       { label: "Archive", does: "Hide a discontinued item from POS/Inventory (two taps). Archived toggle brings them back." },
+      { label: "Cost of stock / Retail footer", does: "Cost = Σ cost_price × qty. After import Cost is 0 until you add buying prices; after you Receive a requisition, Cost jumps because unit_cost_net from the supplier is saved into each product. Retail = Σ selling_price × qty." },
     ],
     mixup: [
       { vs: "Import vs Add Product", pick: "Import = 100s of items at once from Excel. Add Product = one by hand from the shelf." },
       { vs: "Receive vs Stock take", pick: "Receive = truck delivered, log what came. Stock take = you doubt the shelf, count everything and fix." },
+      { vs: "Cost stays 0?", pick: "Import rows with no Cost column → Cost stays 0. Add buying prices via Import (cost column) or Receive (unit cost)." },
     ],
   },
   {

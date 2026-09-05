@@ -38,6 +38,7 @@ const UNIT_TYPES = [
   "Solution", "Suspension", "Powder", "Granules",
   "Suppository", "Patch", "Ring", "Sponge",
   "Pen", "Spray", "Gel", "Lotion",
+  "Bar", "Tin",
 ] as const;
 const PAY_TERMS = ["Cash", "Credit", "30 Days", "60 Days"] as const;
 

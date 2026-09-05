@@ -35,7 +35,7 @@ export function AddProductModal({ onClose }: Props) {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [supplierMode, setSupplierMode] = useState<"select" | "new">("select");
   const [categories, setCategories] = useState<string[]>([]);
-  const [categoryMode, setCategoryMode] = useState<"select" | "new">("select");
+  const [showCat, setShowCat] = useState(false);
 
   useEffect(() => {
     loadSuppliers().then(setSuppliers).catch(() => setSuppliers([]));
@@ -181,7 +181,6 @@ export function AddProductModal({ onClose }: Props) {
                         const fdaCat = (d.product_sub_category || d.product_category || "").trim();
                         if (fdaCat && fdaCat.toLowerCase() !== "drug" && fdaCat.toLowerCase() !== "drugs") {
                           setCategory(fdaCat);
-                          setCategoryMode("select");
                           setCategories((prev) => (prev.includes(fdaCat) ? prev : [...prev, fdaCat].sort()));
                         }
                         // Do not auto-fill supplier from FDA — supplier is the local wholesaler
@@ -235,47 +234,51 @@ export function AddProductModal({ onClose }: Props) {
                   </label>
                   <label className="block">
                     <span className="mb-0.5 block text-label-md font-label-md text-on-surface">Category</span>
-                    {categoryMode === "select" ? (
-                      <select
+                    <div className="relative">
+                      <input
                         value={category}
-                        onChange={(e) => {
-                          if (e.target.value === "__new__") {
-                            setCategoryMode("new");
-                            setCategory("");
-                          } else {
-                            setCategory(e.target.value);
-                          }
-                        }}
-                        className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
-                      >
-                        <option value="">— Select category —</option>
-                        {categories.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
-                          </option>
-                        ))}
-                        <option value="__new__">+ New category…</option>
-                      </select>
-                    ) : (
-                      <div className="flex gap-2">
-                        <input
-                          value={category}
-                          onChange={(e) => setCategory(e.target.value)}
-                          placeholder="e.g. Analgesic"
-                          className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setCategoryMode("select");
-                            setCategory("");
-                          }}
-                          className="shrink-0 rounded border border-outline-variant px-2 text-label-md text-on-surface hover:bg-surface-variant"
-                        >
-                          Select
-                        </button>
-                      </div>
-                    )}
+                        onChange={(e) => setCategory(e.target.value)}
+                        onFocus={() => setShowCat(true)}
+                        onBlur={() => window.setTimeout(() => setShowCat(false), 120)}
+                        placeholder="Search or type new — e.g. Analgesic"
+                        className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                      {showCat && (
+                        <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-40 overflow-auto rounded border border-outline-variant bg-surface shadow-lg">
+                          {categories
+                            .filter((c) => !category.trim() || c.toLowerCase().includes(category.trim().toLowerCase()))
+                            .slice(0, 20)
+                            .map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  setCategory(c);
+                                  setShowCat(false);
+                                }}
+                                className="w-full px-3 py-1.5 text-left text-body-sm hover:bg-surface-container-low"
+                              >
+                                {c}
+                              </button>
+                            ))}
+                          {category.trim() &&
+                            !categories.some((c) => c.toLowerCase() === category.trim().toLowerCase()) && (
+                              <button
+                                type="button"
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  setCategories((prev) => [...prev, category.trim()].sort());
+                                  setShowCat(false);
+                                }}
+                                className="w-full border-t border-outline-variant/50 px-3 py-1.5 text-left text-body-sm font-medium text-primary hover:bg-primary/5"
+                              >
+                                + Use “{category.trim()}”
+                              </button>
+                            )}
+                        </div>
+                      )}
+                    </div>
                   </label>
                 </div>
 
