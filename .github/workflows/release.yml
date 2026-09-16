@@ -125,6 +125,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.platform }}
+          # 7-day retention: artifacts are staging for the release job in the
+          # same run — once published, the release holds the files, so old
+          # 90-day copies just burn Actions storage quota.
+          retention-days: 7
           # One plain glob per line — @actions/glob does NOT support {..} braces.
           # Only AppImage (Linux) and app.tar.gz (macOS) and nsis (Windows) are
           # updater targets; deb/dmg are manual installers, not auto-update.
