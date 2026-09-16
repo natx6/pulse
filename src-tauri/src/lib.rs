@@ -5301,6 +5301,8 @@ mod tests {
             payments: vec!["Cash 700.00".into()],
             change: Some("4.00".into()),
             footer: Some("Thank you. Get well soon.".into()),
+            customer: Some("Ama Mensah".into()),
+            cashier: Some("Kwame".into()),
         }
     }
 
@@ -5321,6 +5323,14 @@ mod tests {
             "receipt number must appear in the output"
         );
         assert!(bytes_contain(&out, b"TOTAL"), "totals block must be labelled");
+        assert!(
+            bytes_contain(&out, b"Customer: Ama Mensah"),
+            "customer must appear in the output"
+        );
+        assert!(
+            bytes_contain(&out, b"Served by: Kwame"),
+            "cashier must appear in the output"
+        );
     }
 
     #[test]
