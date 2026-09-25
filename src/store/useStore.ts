@@ -115,7 +115,7 @@ export const useStore = create<AppState>((set, get) => ({
   products: [],
   productsLoaded: false,
   taxRate: 0,
-  pharmacyName: "Cardiac Pharmacy",
+  pharmacyName: "Pulse Pharmacy",
   operator: "",
   receiptFooter: "",
   autoOperator: false,

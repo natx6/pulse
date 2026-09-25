@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the Cardiac app icon (blue rounded square + bold white C) with stdlib only.
+"""Generate the Pulse app icon (blue rounded square + bold white P) with stdlib only.
 
-The C matches the in-app marks: bold, white, on primary blue #0060a8.
+The P matches the in-app marks: bold, white, on primary blue #0060a8.
 Rendered with 2x supersampling so edges stay smooth at small sizes.
 """
-import math
 import struct
 import zlib
 
@@ -13,24 +12,22 @@ SS = 2  # supersample factor
 BG = (0, 96, 168, 255)      # primary blue #0060a8
 FG = (255, 255, 255, 255)
 
-# C geometry (in final pixels, scaled by SS internally)
+# P geometry (final pixels; scaled by SS internally). Bold geometric P:
+# full-height stem on the left, bowl across the top half.
 CX = CY = SIZE // 2
-R_OUT, R_IN = 330, 175          # bold ring
-GAP_HALF = math.radians(40)     # opening centered on the east side
-TAN_GAP = math.tan(GAP_HALF)
-RM = (R_OUT + R_IN) / 2         # tip circle radius
-TIP_X = RM * math.cos(GAP_HALF)
-TIP_Y = RM * math.sin(GAP_HALF)
-CAP_R = (R_OUT - R_IN) / 2      # rounded gap ends
-CORNER = 120                    # background corner radius (bolder than before)
+TOP, BOWL_BOT = CY - 330, CY + 90     # bowl vertical extent
+BAR = 130                             # stroke thickness
+STEM_L, STEM_R = CX - 260, CX - 120   # stem horizontal extent
+BOWL_R = CX + 260                     # bowl right edge
+STEM_BOT = CY + 330                   # stem bottom (full height)
+# Counter (hole): inside the bowl, clear of every stroke.
+CTR_L, CTR_R = STEM_R, BOWL_R - BAR
+CTR_T, CTR_B = TOP + BAR, BOWL_BOT - BAR
+CORNER = 120                          # background corner radius
 
 S = SS
-cx, cy = CX * S, CY * S
-r_out, r_in = R_OUT * S, R_IN * S
-tip_x, tip_y = TIP_X * S, TIP_Y * S
-cap_r = CAP_R * S
-corner = CORNER * S
 W = SIZE * S
+corner = CORNER * S
 
 
 def in_round_rect(x, y):
@@ -42,27 +39,23 @@ def in_round_rect(x, y):
     return (x - cx_) ** 2 + (y - cy_) ** 2 <= m * m
 
 
+def in_p(x, y):
+    """True if supersampled point (x, y) is inside the P glyph."""
+    in_stem = STEM_L * S <= x < STEM_R * S and TOP * S <= y < STEM_BOT * S
+    in_bowl = STEM_L * S <= x < BOWL_R * S and TOP * S <= y < BOWL_BOT * S
+    in_counter = CTR_L * S <= x < CTR_R * S and CTR_T * S <= y < CTR_B * S
+    return (in_stem or in_bowl) and not in_counter
+
+
 def white_cov(px, py):
-    """Fraction (0..1) of the SSxSS block covered by the C."""
+    """Fraction (0..1) of the SSxSS block covered by the P."""
     n = 0
     for oy in range(SS):
         y = py * SS + oy
-        dy = y - cy
         for ox in range(SS):
             x = px * SS + ox
-            dx = x - cx
-            d2 = dx * dx + dy * dy
-            if not (r_in * r_in < d2 < r_out * r_out):
-                continue
-            # gap wedge on the east side?
-            in_gap = dx > 0 and abs(dy) < dx * TAN_GAP
-            if in_gap:
-                # rounded ends: disks around both wedge tips stay white
-                dtx = abs(dx) - tip_x
-                dty1 = abs(dy) - tip_y
-                if dtx * dtx + dty1 * dty1 > cap_r * cap_r:
-                    continue
-            n += 1
+            if in_p(x, y):
+                n += 1
     return n / (SS * SS)
 
 

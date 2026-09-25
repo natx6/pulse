@@ -1,4 +1,4 @@
--- Cardiac sample dataset for evaluation, demos and testing. Loaded on demand
+-- Pulse sample dataset for evaluation, demos and testing. Loaded on demand
 -- via the seed_demo_data command (Settings → Sample data), NOT at startup,
 -- so real client databases never inherit anything fake.
 --

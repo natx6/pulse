@@ -41,11 +41,11 @@ export function Sidebar() {
     <nav className="fixed left-0 top-0 z-30 flex h-screen w-64 flex-col bg-[#191c20] px-gutter py-density-medium text-primary-fixed">
       <div className="mb-8 mt-2 flex items-center gap-3 px-2">
         <div className="flex h-10 w-10 items-center justify-center rounded bg-primary text-headline-md font-bold text-on-primary">
-          C
+          P
         </div>
         <div>
           <h1 className="text-headline-lg font-headline-lg leading-none tracking-tight">
-            Cardiac
+            Pulse
           </h1>
           <p className="mt-1 text-[10px] uppercase tracking-wider text-white/50">
             Pharmacy MS

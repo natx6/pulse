@@ -366,26 +366,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cardiac"
-version = "0.4.16"
-dependencies = [
- "calamine",
- "csv",
- "rand 0.8.7",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-process",
- "tauri-plugin-sql",
- "tauri-plugin-updater",
-]
-
-[[package]]
 name = "cargo-platform"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3148,6 +3128,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "pulse"
+version = "0.4.16"
+dependencies = [
+ "calamine",
+ "csv",
+ "rand 0.8.7",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-process",
+ "tauri-plugin-sql",
+ "tauri-plugin-updater",
 ]
 
 [[package]]

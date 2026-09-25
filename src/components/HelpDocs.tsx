@@ -17,7 +17,7 @@ const DOCS: DocSection[] = [
     title: "Dashboard",
     icon: "space_dashboard",
     summary: "Where you stand right now — today's money and what needs attention.",
-    when: "You open Cardiac. First thing you see every morning.",
+    when: "You open Pulse. First thing you see every morning.",
     buttons: [
       { label: "Sales today / Profit / In till", does: "Today's takings, your profit, and what should be in the drawer (opening float + cash in − refunds − cash expenses)." },
       { label: "Low stock / Expiring / Expired pills", does: "Tap a name to jump to Inventory and reorder. Critical = stock is 0." },
@@ -155,7 +155,7 @@ const DOCS: DocSection[] = [
       { label: "Pharmacy", does: "Name, tax %, MoMo number, receipt footer — appears on receipts." },
       { label: "Logins", does: "Owner/manager adds accounts (Username / Display name / Temp password / Role: owner, manager, mca). MCA sees POS, Inventory, Customers, own Reports, theme-only Settings, add-only Expenses. Reset PW / Deactivate anyone but the last active owner/manager." },
       { label: "Printer", does: "ESC/POS host:port (default 9100). Receipts print straight to it, no dialog." },
-      { label: "Backups", does: "Save to flash drive (copies cardiac.key too — keep them together). Restore swaps the DB and restarts. Auto-backups every 10th sale, on exit, and from Reports; newest 20 kept." },
+      { label: "Backups", does: "Save to flash drive (copies pulse.key too — keep them together). Restore swaps the DB and restarts. Auto-backups every 10th sale, on exit, and from Reports; newest 20 kept." },
       { label: "FDA Ghana catalog", does: "Shows 7,987 DRUG/DRUGS count. Update FDA catalog pulls the yearly register (30-60s, needs internet) with a progress bar — then works offline. Enable FDA autocomplete toggle hides suggestions everywhere (Quick Add, Add Product, Import)." },
       { label: "Starting fresh?", does: "Clear sample data — demo rows only (DMO-, Demo Wholesale, Ama Mensah). Only shows when demo data exists (dev). Wipe all stock (dev only) empties everything for import testing — keeps users/settings/FDA." },
       { label: "Appearance", does: "Dark mode toggle." },

@@ -310,11 +310,11 @@ export default function App() {
       <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background text-on-background font-body-md antialiased">
         <div className="flex items-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded bg-primary text-headline-lg font-bold text-on-primary">
-            C
+            P
           </div>
           <div>
             <p className="text-headline-lg font-headline-lg leading-none tracking-tight text-on-surface">
-              Cardiac
+              Pulse
             </p>
             <p className="mt-1 text-[10px] uppercase tracking-wider text-on-surface-variant">
               Pharmacy MS
@@ -400,7 +400,7 @@ export default function App() {
           <div className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface p-5 shadow-lg">
             <h3 className="flex items-center gap-2 text-headline-md font-headline-md text-on-surface">
               <span className="material-symbols-outlined text-[20px]">system_update</span>
-              Updating Cardiac to v{updating.version}
+              Updating Pulse to v{updating.version}
             </h3>
             <p className="mt-1 text-body-sm font-body-sm text-on-surface-variant">
               {updating.note}

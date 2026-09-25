@@ -1,4 +1,4 @@
--- Cardiac Pharmacy — initial schema.
+-- Pulse Pharmacy — initial schema.
 -- Demo seed data included for first-run; delete the rows to start clean.
 
 CREATE TABLE IF NOT EXISTS products (

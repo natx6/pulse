@@ -130,7 +130,7 @@ export function TopBar() {
   // but genuinely NEW problems still raise the badge.
   const [dismissed, setDismissed] = useState<Record<string, boolean>>(() => {
     try {
-      return JSON.parse(localStorage.getItem("cardiac.alerts.dismissed") ?? "{}");
+      return JSON.parse(localStorage.getItem("pulse.alerts.dismissed") ?? "{}");
     } catch {
       return {};
     }
@@ -138,7 +138,7 @@ export function TopBar() {
   const persistDismissed = (d: Record<string, boolean>) => {
     setDismissed(d);
     try {
-      localStorage.setItem("cardiac.alerts.dismissed", JSON.stringify(d));
+      localStorage.setItem("pulse.alerts.dismissed", JSON.stringify(d));
     } catch {
       /* storage full/blocked — dismissal just won't survive restart */
     }

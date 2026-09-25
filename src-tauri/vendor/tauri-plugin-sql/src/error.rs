@@ -16,10 +16,10 @@ pub enum Error {
     DatabaseNotLoaded(String),
     #[error("unsupported datatype: {0}")]
     UnsupportedDatatype(String),
-    /// Cardiac patch: cardiac.key (the SQLCipher encryption key) is missing or
+    /// Pulse patch: pulse.key (the SQLCipher encryption key) is missing or
     /// unreadable — the app must start once to generate it before any
     /// database connection can be made.
-    #[error("database key file is missing or unreadable — restart Cardiac once to generate it")]
+    #[error("database key file is missing or unreadable — restart Pulse once to generate it")]
     DatabaseKeyMissing,
 }
 

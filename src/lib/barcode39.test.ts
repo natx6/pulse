@@ -25,8 +25,8 @@ describe("code39Bars / code39Width", () => {
   });
 
   it("produces the same width for the same input", () => {
-    const a = code39Width("CARDIAC1");
-    const b = code39Width("CARDIAC1");
+    const a = code39Width("PULSE1");
+    const b = code39Width("PULSE1");
     expect(a).toBe(b);
     expect(a).toBeGreaterThan(0);
   });

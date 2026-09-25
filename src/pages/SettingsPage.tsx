@@ -137,7 +137,7 @@ export function SettingsPage() {
     try {
       const picked = await openDialog({
         directory: true,
-        title: "Pick the folder holding the cardiac-*.db + cardiac.key pair",
+        title: "Pick the folder holding the pulse-*.db + pulse.key pair",
       });
       if (!picked) return; // dialog cancelled
       // Same gate as the backup-list restore: Rust re-verifies regardless of UI.
@@ -291,7 +291,7 @@ export function SettingsPage() {
   const save = async () => {
     setSettingsErr("");
     try {
-      await saveSetting("pharmacy_name", name.trim() || "Cardiac Pharmacy");
+      await saveSetting("pharmacy_name", name.trim() || "Pulse Pharmacy");
       await saveSetting("tax_rate", tax.trim() || "0");
       await saveSetting("receipt_footer", footer.trim());
       await saveSetting("support_email", support.trim());
@@ -306,7 +306,7 @@ export function SettingsPage() {
       const ceiling = Math.min(100, Math.max(0, Number(maxDisc) || 0));
       await saveSetting("max_discount_pct", String(ceiling));
       applySettings({
-        pharmacyName: name.trim() || "Cardiac Pharmacy",
+        pharmacyName: name.trim() || "Pulse Pharmacy",
         taxRate: Number(tax) || 0,
         receiptFooter: footer.trim(),
         supportEmail: support.trim(),
@@ -690,7 +690,7 @@ export function SettingsPage() {
           </p>
           <p className="mb-3 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-body-sm font-body-sm text-primary">
             Your data is encrypted. "Save to flash drive…" copies{" "}
-            <span className="font-data-mono">cardiac.key</span> next to the
+            <span className="font-data-mono">pulse.key</span> next to the
             backup — keep the two together: a backup without its key file can
             never be opened.
           </p>
@@ -701,7 +701,7 @@ export function SettingsPage() {
               Moving to a new computer?
             </p>
             <p className="mt-1 mb-3 text-body-sm font-body-sm text-on-surface-variant">
-              Install Cardiac here, plug in the flash drive, then tap Restore.
+              Install Pulse here, plug in the flash drive, then tap Restore.
               Everything on this machine is replaced with the flash drive's
               copy — sales, patients, credit books, all of it.
             </p>

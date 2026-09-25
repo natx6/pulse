@@ -59,11 +59,11 @@ export function LoginPage() {
       <div className="w-full max-w-sm rounded-xl border border-outline-variant bg-surface p-6 shadow-lg">
         <div className="mb-6 flex flex-col items-center gap-3 text-center">
           <div className="flex h-12 w-12 items-center justify-center rounded bg-primary text-headline-lg font-bold text-on-primary">
-            C
+            P
           </div>
           <div>
             <h2 className="text-headline-lg font-headline-lg leading-none tracking-tight text-on-surface">
-              Cardiac
+              Pulse
             </h2>
             <p className="mt-1 text-[10px] uppercase tracking-wider text-on-surface-variant">Pharmacy MS</p>
             <p className="mt-1 text-body-sm font-body-sm text-on-surface-variant">Sign in to continue</p>

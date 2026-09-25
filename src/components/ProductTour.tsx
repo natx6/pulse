@@ -13,7 +13,7 @@ interface Step {
 
 const STEPS: Step[] = [
   {
-    title: "Welcome to Cardiac",
+    title: "Welcome to Pulse",
     body: "Here's a quick tour of every tab — what it's for and the buttons you'll use. You can skip anytime — and replay it later from the Support tab.",
   },
   {

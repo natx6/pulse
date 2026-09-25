@@ -1,6 +1,6 @@
-# Cardiac — Complete Feature Inventory
+# Pulse — Complete Feature Inventory
 
-Cardiac is a lightweight, offline-first pharmacy management system for the
+Pulse is a lightweight, offline-first pharmacy management system for the
 Ghanaian market, built as a desktop app (Tauri 2 + React + SQLite). Design
 ethos: "scan, sell, go" — no long processes, no required forms, everything
 reachable in one or two taps. All data lives in a local SQLite database and
@@ -10,7 +10,7 @@ the app works fully offline (power cuts and flaky internet are assumed).
 
 ## 1. Application shell
 
-- Single desktop window titled "Cardiac" (pharmacy name shown inside the app is
+- Single desktop window titled "Pulse" (pharmacy name shown inside the app is
   editable in Settings and never hard-codes the window title).
 - Left sidebar navigation: Dashboard, POS, Inventory, Requisitions, Reports,
   Expenses,
@@ -247,9 +247,9 @@ what needs attention.
   forget to end. No PIN = single-user mode with everything open.
 - **Encryption at rest**: the whole database (sales, patients, credit) is
   AES-256 encrypted via SQLCipher with a random per-install key kept in
-  `cardiac.key` next to it — a copied/stolen `cardiac.db` alone is unreadable.
+  `pulse.key` next to it — a copied/stolen `pulse.db` alone is unreadable.
   Existing plaintext databases are encrypted automatically on first launch of
-  this version. External backups are encrypted too, so keep `cardiac.key`
+  this version. External backups are encrypted too, so keep `pulse.key`
   somewhere safe: restoring onto another machine needs both files.
   Complementary layer for laptop theft: OS disk encryption.
 - **Backups card**: every backup in `backups/` (name, size, date) with a
@@ -259,7 +259,7 @@ what needs attention.
   fresh WAL-safe snapshot to any folder — flash drive or second disk — for
   offsite insurance against theft and fire. Backups are encrypted with the
   same key as the database: a restore onto another machine needs that
-  machine's `cardiac.key` replaced with this install's copy too.
+  machine's `pulse.key` replaced with this install's copy too.
 - **Dark mode**: a toggle in an Appearance card switches the whole app
   between light and dark via a CSS custom-property token system (colors
   only, no separate dark-mode components), saved as a setting so it
@@ -277,7 +277,7 @@ what needs attention.
 ## 9. Data & reliability
 
 - SQLite, WAL journal mode. Database, backups, and CSV exports live in the
-  OS config dir (`~/.config/com.cardiac.pharmacy/` on Linux).
+  OS config dir (`~/.config/com.pulse.pharmacy/` on Linux).
 - **Automatic backups**: after every 10th sale and on app exit (plus the
   manual button) — WAL-safe via the SQLite online backup API, so a power cut
   mid-shift can never cost more than the current day's partial data. The
@@ -337,7 +337,7 @@ problem is visual.
 - No per-user login (roles are app-level manager/cashier, unlocked by the
   manager PIN rather than named accounts).
 - No NHIS/insurance claims or e-invoicing.
-- No live MoMo API integration (the merchant number is displayed; Cardiac
+- No live MoMo API integration (the merchant number is displayed; Pulse
   doesn't move money itself).
 - No USB-serial thermal driver (ESC/POS works over TCP 9100; a USB printer
   can be shared onto the network by its host).
@@ -357,7 +357,7 @@ problem is visual.
   `releases/latest/download/latest.json` on launch (production only — the
   dev app never checks). A newer release is downloaded, installed and the
   app restarts, with a small progress overlay. Releases are signed with an
-  ed25519 keypair (`~/.cardiac-updater.key` + password); the private key lives
+  ed25519 keypair (`~/.pulse-updater.key` + password); the private key lives
   in the GitHub secrets `TAURI_SIGNING_PRIVATE_KEY` /
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and the public key is baked into
   `tauri.conf.json`. The release workflow signs artifacts and assembles

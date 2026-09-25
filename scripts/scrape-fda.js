@@ -35,7 +35,7 @@ async function fetchPage(start, length, draw) {
     headers: {
       "X-Requested-With": "XMLHttpRequest",
       Accept: "application/json",
-      "User-Agent": "Cardiac-FDA-Scraper/1.0",
+      "User-Agent": "Pulse-FDA-Scraper/1.0",
     },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} for start=${start}`);
@@ -89,7 +89,7 @@ async function main() {
   const fs = await import("fs");
   fs.writeFileSync(OUT, JSON.stringify(all, null, 2));
   console.log(`\nDone. Wrote ${all.length} DRUG/DRUGS to ${OUT}`);
-  console.log(`To load into Cardiac: Settings → Update FDA catalog (or call import_fda_catalog)`);
+  console.log(`To load into Pulse: Settings → Update FDA catalog (or call import_fda_catalog)`);
 }
 
 main().catch((e) => {

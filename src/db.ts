@@ -6,7 +6,7 @@ import type { BatchRow, PaymentLine, Product, SaleLine, SaleResult } from "./typ
 let db: Database | null = null;
 
 /**
- * Absolute path pointing at app_config_dir/cardiac.db — the same file the
+ * Absolute path pointing at app_config_dir/pulse.db — the same file the
  * Rust side (db_path) reads/writes. tauri-plugin-sql resolves relative
  * sqlite:// URLs against app_data_dir, which differs from app_config_dir
  * on Linux (~/.local/share vs ~/.config), so we must use an absolute URL
@@ -15,7 +15,7 @@ let db: Database | null = null;
 export async function dbUrl(): Promise<string> {
   const dir = await appConfigDir();
   const sep = dir.endsWith("/") || dir.endsWith("\\") ? "" : "/";
-  return `sqlite:${dir}${sep}cardiac.db`;
+  return `sqlite:${dir}${sep}pulse.db`;
 }
 
 export async function initDb(): Promise<Database> {
@@ -43,7 +43,7 @@ async function seedSettings() {
   const rows = await d.select<{ key: string }[]>("SELECT key FROM settings");
   const have = new Set(rows.map((r) => r.key));
   const defaults: Record<string, string> = {
-    pharmacy_name: "Cardiac Pharmacy",
+    pharmacy_name: "Pulse Pharmacy",
     tax_rate: "0",
     operator: "",
     receipt_footer: "Thank you. Get well soon.",
@@ -102,7 +102,7 @@ export async function getSettings(): Promise<AppSettings> {
   );
   const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   return {
-    pharmacyName: map.pharmacy_name ?? "Cardiac Pharmacy",
+    pharmacyName: map.pharmacy_name ?? "Pulse Pharmacy",
     taxRate: Number(map.tax_rate ?? 0),
     operator: map.operator ?? "",
     receiptFooter: map.receipt_footer ?? "",
@@ -610,7 +610,7 @@ export async function restoreBackup(name: string, pin: string | null): Promise<s
 }
 
 /** Disaster-recovery restore: `dir` is a flash-drive folder holding a
- * cardiac-*.db + cardiac.key pair (from backupDbToDir). Validates the pair,
+ * pulse-*.db + pulse.key pair (from backupDbToDir). Validates the pair,
  * swaps both into place; call restartApp() right after. Gated by the
  * manager PIN on the Rust side when one is configured — same as the
  * backup-list restore. */

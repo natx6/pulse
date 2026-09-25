@@ -36,7 +36,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
     setBusy(true);
     setErr("");
     try {
-      await saveSetting("pharmacy_name", name.trim() || "Cardiac Pharmacy");
+      await saveSetting("pharmacy_name", name.trim() || "Pulse Pharmacy");
       await saveSetting("tax_rate", tax.trim() || "0");
       await saveSetting("receipt_footer", footer.trim());
       await saveSetting("momo_number", momo.trim());
@@ -47,7 +47,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
       }
       await saveSetting("setup_complete", "1");
       const next: Partial<AppSettings> = {
-        pharmacyName: name.trim() || "Cardiac Pharmacy",
+        pharmacyName: name.trim() || "Pulse Pharmacy",
         taxRate: Number(tax) || 0,
         receiptFooter: footer.trim(),
         momoNumber: momo.trim(),
@@ -79,7 +79,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-on-background/40 p-4 backdrop-blur-[2px]">
       <div className="flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface shadow-lg">
         <div className="flex items-center justify-between border-b border-outline-variant px-5 py-3">
-          <h3 className="text-headline-md font-headline-md text-on-surface">Set up Cardiac</h3>
+          <h3 className="text-headline-md font-headline-md text-on-surface">Set up Pulse</h3>
           <span className="text-label-md font-label-md text-on-surface-variant">
             Step {Math.min(step + 1, steps.length)} / {steps.length}
           </span>
@@ -95,9 +95,9 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
           {step === 0 && (
             <div>
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded bg-primary text-headline-md font-bold text-on-primary">
-                C
+                P
               </div>
-              <p className="text-title-sm font-medium text-on-surface">Welcome to Cardiac</p>
+              <p className="text-title-sm font-medium text-on-surface">Welcome to Pulse</p>
               <p className="mt-2 text-body-sm text-on-surface-variant">
                 Let's get your pharmacy ready. This takes a minute: your shop details, a manager
                 PIN to protect voids and refunds, and an optional import of your existing products,
@@ -284,7 +284,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
               <span className="material-symbols-outlined mb-2 text-[40px] text-success">check_circle</span>
               <p className="text-title-sm font-medium text-on-surface">You're all set</p>
               <p className="mt-2 text-body-sm text-on-surface-variant">
-                Cardiac is ready. Start a sale from the POS, or import more data any time from
+                Pulse is ready. Start a sale from the POS, or import more data any time from
                 Inventory / Customers / Analytics.
               </p>
             </div>
@@ -320,7 +320,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
               disabled={busy}
               className="rounded bg-primary px-5 py-1.5 text-label-md font-label-md text-on-primary shadow-sm hover:bg-on-primary-fixed-variant disabled:opacity-50"
             >
-              {busy ? "Saving…" : "Go to Cardiac"}
+              {busy ? "Saving…" : "Go to Pulse"}
             </button>
           )}
         </div>

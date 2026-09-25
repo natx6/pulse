@@ -599,7 +599,7 @@ export function AnalyticsPage() {
     const rows: string[][] = [];
     // Each tab exports only what it shows.
     const isStock = reportTab === "stock";
-    rows.push([`Cardiac Reports (${isStock ? "Stock" : "Financial"}) — ${rangeLabel}`]);
+    rows.push([`Pulse Reports (${isStock ? "Stock" : "Financial"}) — ${rangeLabel}`]);
     // MCA exports carry their own scope in the header (and never the
     // business-wide sections below).
     rows.push([`Operator: ${isMca ? selfName : opFilter}`]);

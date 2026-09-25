@@ -112,21 +112,21 @@ pub struct ImportSummary {
     errors: Vec<String>,
 }
 
-/// MUST match tauri-plugin-sql's resolution of "sqlite:cardiac.db": the plugin
+/// MUST match tauri-plugin-sql's resolution of "sqlite:pulse.db": the plugin
 /// resolves relative sqlite paths against the app CONFIG dir on Linux
-/// app_config_dir is the canonical home for cardiac.db — all Rust commands
+/// app_config_dir is the canonical home for pulse.db — all Rust commands
 /// and the plugin-sql frontend resolve against this same directory.
 /// (plugin-sql is pointed here via an absolute sqlite:// URL from db.ts.)
 fn db_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    Ok(dir.join("cardiac.db"))
+    Ok(dir.join("pulse.db"))
 }
 
 // ---------------------------------------------------------------------------
 // Encryption at rest (SQLCipher)
 //
-// cardiac.db is AES-256 encrypted via SQLCipher. The 256-bit key is generated
-// once per install and kept in cardiac.key beside the database:
+// pulse.db is AES-256 encrypted via SQLCipher. The 256-bit key is generated
+// once per install and kept in pulse.key beside the database:
 //
 //   - protects against the db file being copied/stolen on its own (backups,
 //     sync folders, flash drives) — such copies are opaque without the key
@@ -135,14 +135,14 @@ fn db_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 //     / FileVault / LUKS) is the complementary layer for laptop theft.
 //
 // External backups are encrypted with the same key — restoring one onto a
-// fresh machine requires copying cardiac.key along with it.
+// fresh machine requires copying pulse.key along with it.
 // ---------------------------------------------------------------------------
 
 /// Path of the SQLCipher key file. Same directory as db_path so they travel
 /// together; tauri-plugin-sql's vendored patch reads this exact location too.
 fn db_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    Ok(dir.join("cardiac.key"))
+    Ok(dir.join("pulse.key"))
 }
 
 /// Read the install's database key, generating + persisting a fresh 256-bit
@@ -201,7 +201,7 @@ fn ensure_db_key(app: &AppHandle) -> Result<String, String> {
     }
 }
 
-/// Open a connection to cardiac.db and unlock it. `PRAGMA key` MUST be the
+/// Open a connection to pulse.db and unlock it. `PRAGMA key` MUST be the
 /// first statement on the connection — anything before it reads garbage.
 pub fn open_db(app: &AppHandle) -> Result<rusqlite::Connection, String> {
     let conn = rusqlite::Connection::open(db_path(app)?).map_err(|e| e.to_string())?;
@@ -228,7 +228,7 @@ fn probe_decrypted(conn: &rusqlite::Connection) -> bool {
         .is_ok()
 }
 
-/// One-time migration: encrypt an existing PLAINTEXT cardiac.db in place.
+/// One-time migration: encrypt an existing PLAINTEXT pulse.db in place.
 ///
 /// Runs at startup before migrations. If the live db reads fine WITHOUT a key
 /// it is legacy plaintext: copy it into a fresh SQLCipher-encrypted file via
@@ -240,7 +240,7 @@ fn migrate_plaintext_db(app: &AppHandle) -> Result<(), String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     // Leftover from an interrupted migration: the encrypted copy is already
     // in place, so the stash is redundant — wipe it.
-    let old = dir.join("cardiac.db.plaintext");
+    let old = dir.join("pulse.db.plaintext");
     if old.exists() {
         zero_and_remove(&old);
     }
@@ -273,7 +273,7 @@ fn migrate_plaintext_db(app: &AppHandle) -> Result<(), String> {
     };
 
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let tmp = dir.join("cardiac.db.encrypting");
+    let tmp = dir.join("pulse.db.encrypting");
     let _ = fs::remove_file(&tmp);
 
     {
@@ -327,7 +327,7 @@ fn migrate_plaintext_db(app: &AppHandle) -> Result<(), String> {
         let _ = flush.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get::<_, i64>(0));
     }
     for sidecar in ["-wal", "-shm"] {
-        let _ = fs::remove_file(dir.join(format!("cardiac.db{sidecar}")));
+        let _ = fs::remove_file(dir.join(format!("pulse.db{sidecar}")));
     }
     fs::rename(&path, &old).map_err(|e| format!("swap failed: {e}"))?;
     fs::rename(&tmp, &path).map_err(|e| {
@@ -682,7 +682,7 @@ fn write_backup(app: &AppHandle) -> Result<String, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_millis();
-    let dst = bdir.join(format!("cardiac-{}.db", epoch));
+    let dst = bdir.join(format!("pulse-{}.db", epoch));
     backup_to_path(&src_path, &dst, &ensure_db_key(app)?)?;
     prune_backups(&bdir);
     Ok(dst.to_string_lossy().into_owned())
@@ -2260,7 +2260,7 @@ fn restore_backup(app: AppHandle, name: String, manager_pin: Option<String>) -> 
             f.read_exact(&mut header)
                 .map_err(|_| "Not a valid backup".to_string())?;
             if &header != b"SQLite format 3\0" {
-                return Err("Not a valid Cardiac backup (unreadable with this install's key)".into());
+                return Err("Not a valid Pulse backup (unreadable with this install's key)".into());
             }
         }
     }
@@ -2274,7 +2274,7 @@ fn restore_backup(app: AppHandle, name: String, manager_pin: Option<String>) -> 
         &dir.join("backups").join(format!("pre-restore-{}.db", epoch)),
         &ensure_db_key(&app)?,
     )?;
-    // Swap — atomically. fs::copy straight onto cardiac.db truncates the live
+    // Swap — atomically. fs::copy straight onto pulse.db truncates the live
     // file first, so a mid-copy crash (power loss, disk full) would leave a
     // corrupt main db. Copy to a temp name on the same filesystem, then
     // rename (atomic on POSIX and Windows).
@@ -2285,9 +2285,9 @@ fn restore_backup(app: AppHandle, name: String, manager_pin: Option<String>) -> 
         let _ = fs::remove_file(&tmp);
         return Err(e.to_string());
     }
-    let _ = fs::remove_file(dir.join("cardiac.db-wal"));
-    let _ = fs::remove_file(dir.join("cardiac.db-shm"));
-    Ok(format!("Restored {}. Cardiac will restart.", name))
+    let _ = fs::remove_file(dir.join("pulse.db-wal"));
+    let _ = fs::remove_file(dir.join("pulse.db-shm"));
+    Ok(format!("Restored {}. Pulse will restart.", name))
 }
 
 /// Restart the app immediately (never returns). Used after a backup restore.
@@ -2308,19 +2308,19 @@ fn swap_in_restored_pair(
     src_key: &std::path::Path,
     stash: &std::path::Path,
 ) -> Result<(), String> {
-    let live_db = conf.join("cardiac.db");
+    let live_db = conf.join("pulse.db");
     // Roll BOTH files back from the stash. Only move the stashed db back if
     // no live db exists — after a partial copy we must not clobber a file
     // that might be mid-write.
     let rollback = || {
-        if stash.join("cardiac.db").is_file() && !conf.join("cardiac.db").exists() {
-            let _ = fs::rename(stash.join("cardiac.db"), conf.join("cardiac.db"));
+        if stash.join("pulse.db").is_file() && !conf.join("pulse.db").exists() {
+            let _ = fs::rename(stash.join("pulse.db"), conf.join("pulse.db"));
         }
-        if stash.join("cardiac.key").is_file() {
-            let _ = fs::copy(stash.join("cardiac.key"), conf.join("cardiac.key"));
+        if stash.join("pulse.key").is_file() {
+            let _ = fs::copy(stash.join("pulse.key"), conf.join("pulse.key"));
         }
     };
-    let tmp = conf.join("cardiac.db.restore-tmp");
+    let tmp = conf.join("pulse.db.restore-tmp");
     if let Err(e) = fs::copy(src_db, &tmp) {
         rollback();
         return Err(format!("Couldn't copy {}: {e}", src_db.display()));
@@ -2330,17 +2330,17 @@ fn swap_in_restored_pair(
         rollback();
         return Err(format!("Couldn't put restored db into place: {e}"));
     }
-    if let Err(e) = fs::copy(src_key, conf.join("cardiac.key")) {
+    if let Err(e) = fs::copy(src_key, conf.join("pulse.key")) {
         // Roll back: put the original pair back exactly as it was.
         let _ = fs::remove_file(&live_db);
         rollback();
-        return Err(format!("Couldn't copy cardiac.key into place: {e}"));
+        return Err(format!("Couldn't copy pulse.key into place: {e}"));
     }
     Ok(())
 }
 
 /// Restore a flash-drive pair produced by backup_to_dir: `dir` holds a
-/// cardiac-*.db and the matching cardiac.key. Copies BOTH into the config dir
+/// pulse-*.db and the matching pulse.key. Copies BOTH into the config dir
 /// (the live key is stashed aside first so a wrong-key restore is itself
 /// recoverable), then the caller restarts. This is the disaster-recovery
 /// path — moving an install to a new machine.
@@ -2360,7 +2360,7 @@ fn restore_from_dir(
     if !path.is_absolute() || !path.is_dir() {
         return Err("Pick the folder that holds the flash-drive backup".into());
     }
-    // Find the newest cardiac-*.db in the folder.
+    // Find the newest pulse-*.db in the folder.
     let mut candidates: Vec<std::path::PathBuf> = fs::read_dir(path)
         .map_err(|e| format!("Can't read {}: {}", dir, e))?
         .flatten()
@@ -2369,18 +2369,18 @@ fn restore_from_dir(
             p.is_file()
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .map(|n| n.starts_with("cardiac-") && n.ends_with(".db"))
+                    .map(|n| n.starts_with("pulse-") && n.ends_with(".db"))
                     .unwrap_or(false)
         })
         .collect();
     candidates.sort();
     let Some(src_db) = candidates.pop() else {
-        return Err("No cardiac-*.db backup found in that folder".into());
+        return Err("No pulse-*.db backup found in that folder".into());
     };
-    let src_key = path.join("cardiac.key");
+    let src_key = path.join("pulse.key");
     if !src_key.is_file() {
         return Err(
-            "cardiac.key is missing from that folder — a backup without its key can't be opened"
+            "pulse.key is missing from that folder — a backup without its key can't be opened"
                 .into(),
         );
     }
@@ -2388,11 +2388,11 @@ fn restore_from_dir(
     // Validate BEFORE touching anything: the incoming key must open the
     // incoming database.
     let key = fs::read_to_string(&src_key)
-        .map_err(|e| format!("Can't read cardiac.key: {e}"))?
+        .map_err(|e| format!("Can't read pulse.key: {e}"))?
         .trim()
         .to_string();
     if key.is_empty() {
-        return Err("cardiac.key in that folder is empty".into());
+        return Err("pulse.key in that folder is empty".into());
     }
     {
         let probe = rusqlite::Connection::open(&src_db).map_err(|e| e.to_string())?;
@@ -2410,7 +2410,7 @@ fn restore_from_dir(
     // file BEFORE stashing it — otherwise recent transactions that lived only
     // in the -wal would silently vanish from the stashed snapshot if this
     // restore has to be rolled back.
-    let live_db = conf.join("cardiac.db");
+    let live_db = conf.join("pulse.db");
     if live_db.is_file() {
         let flush = rusqlite::Connection::open(&live_db).map_err(|e| e.to_string())?;
         let _ = flush.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get::<_, i64>(0));
@@ -2421,7 +2421,7 @@ fn restore_from_dir(
     // left behind would corrupt whichever db lands next to them.
     let stash = conf.join(format!("pre-external-restore-{}", std::process::id()));
     let _ = fs::create_dir_all(&stash);
-    for name in ["cardiac.db", "cardiac.key", "cardiac.db-wal", "cardiac.db-shm"] {
+    for name in ["pulse.db", "pulse.key", "pulse.db-wal", "pulse.db-shm"] {
         let p = conf.join(name);
         if p.is_file() {
             let _ = fs::rename(&p, stash.join(name));
@@ -2431,10 +2431,10 @@ fn restore_from_dir(
         return Err(e);
     }
     // Drop stale sidecars from the previous install.
-    let _ = fs::remove_file(conf.join("cardiac.db-wal"));
-    let _ = fs::remove_file(conf.join("cardiac.db-shm"));
+    let _ = fs::remove_file(conf.join("pulse.db-wal"));
+    let _ = fs::remove_file(conf.join("pulse.db-shm"));
     Ok(format!(
-        "Restored {}. Cardiac will restart.",
+        "Restored {}. Pulse will restart.",
         src_db.file_name().unwrap_or_default().to_string_lossy()
     ))
 }
@@ -4191,21 +4191,21 @@ fn backup_to_dir(app: AppHandle, dir: String) -> Result<String, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_millis();
-    let dst = path.join(format!("cardiac-{}.db", epoch));
+    let dst = path.join(format!("pulse-{}.db", epoch));
     let key = ensure_db_key(&app)?;
     backup_to_path(&db_path(&app)?, &dst, &key)?;
-    // The database is unreadable without its key — copy cardiac.key alongside
+    // The database is unreadable without its key — copy pulse.key alongside
     // so one flash-drive save is a complete, restorable pair.
-    let key_dst = path.join("cardiac.key");
+    let key_dst = path.join("pulse.key");
     let key_src = app
         .path()
         .app_config_dir()
         .map_err(|e| e.to_string())?
-        .join("cardiac.key");
+        .join("pulse.key");
     std::fs::copy(&key_src, &key_dst)
-        .map_err(|e| format!("couldn't copy cardiac.key: {e}"))?;
+        .map_err(|e| format!("couldn't copy pulse.key: {e}"))?;
     Ok(format!(
-        "{} (+ cardiac.key)",
+        "{} (+ pulse.key)",
         dst.to_string_lossy().into_owned()
     ))
 }
@@ -5283,7 +5283,7 @@ mod tests {
             host: "192.168.1.50".into(),
             port: 9100,
             width: 42,
-            pharmacy_name: "Cardiac Pharmacy".into(),
+            pharmacy_name: "Pulse Pharmacy".into(),
             receipt_no: "RCPT-20260822-003".into(),
             timestamp: "2026-08-22 10:14".into(),
             lines: vec![
@@ -5356,7 +5356,7 @@ mod tests {
         // Exercises the exact mechanics migrate_plaintext_db uses: a legacy
         // plaintext file becomes an encrypted one, is unreadable without the
         // key, readable with it, and keeps its user_version across the copy.
-        let dir = std::env::temp_dir().join(format!("cardiac-sqlcipher-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pulse-sqlcipher-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let plain_path = dir.join("plain.db");
         let enc_path = dir.join("enc.db");
@@ -5651,62 +5651,62 @@ mod tests {
 
     #[test]
     fn external_restore_swap_rolls_back_both_files_on_failure() {
-        let dir = std::env::temp_dir().join(format!("cardiac-swap-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pulse-swap-test-{}", std::process::id()));
         let conf = dir.join("conf");
         fs::create_dir_all(&conf).unwrap();
 
         // Live install: original db + key.
-        fs::write(conf.join("cardiac.db"), b"ORIGINAL-DB").unwrap();
-        fs::write(conf.join("cardiac.key"), "original-key").unwrap();
+        fs::write(conf.join("pulse.db"), b"ORIGINAL-DB").unwrap();
+        fs::write(conf.join("pulse.key"), "original-key").unwrap();
         let stash = dir.join("stash");
         fs::create_dir_all(&stash).unwrap();
         // The command stashes both before calling the swap.
-        fs::rename(conf.join("cardiac.db"), stash.join("cardiac.db")).unwrap();
-        fs::rename(conf.join("cardiac.key"), stash.join("cardiac.key")).unwrap();
+        fs::rename(conf.join("pulse.db"), stash.join("pulse.db")).unwrap();
+        fs::rename(conf.join("pulse.key"), stash.join("pulse.key")).unwrap();
 
         // Incoming pair: valid db, but a key path that DOESN'T EXIST — the
         // key-copy step fails after the db has already been swapped in.
         let drive = dir.join("drive");
         fs::create_dir_all(&drive).unwrap();
-        fs::write(drive.join("cardiac-1.db"), b"RESTORED-DB").unwrap();
+        fs::write(drive.join("pulse-1.db"), b"RESTORED-DB").unwrap();
 
-        let result = swap_in_restored_pair(&conf, &drive.join("cardiac-1.db"), &drive.join("nope.key"), &stash);
+        let result = swap_in_restored_pair(&conf, &drive.join("pulse-1.db"), &drive.join("nope.key"), &stash);
         assert!(result.is_err(), "missing key must fail the swap");
 
         // THE regression: the live db must be back — an install must never
         // be left without its own database file.
         assert_eq!(
-            fs::read(conf.join("cardiac.db")).unwrap(),
+            fs::read(conf.join("pulse.db")).unwrap(),
             b"ORIGINAL-DB",
             "failed restore must roll the ORIGINAL db back into place"
         );
         assert_eq!(
-            fs::read_to_string(conf.join("cardiac.key")).unwrap(),
+            fs::read_to_string(conf.join("pulse.key")).unwrap(),
             "original-key",
             "failed restore must roll the original key back"
         );
         // No temp file left behind.
-        assert!(!conf.join("cardiac.db.restore-tmp").exists());
+        assert!(!conf.join("pulse.db.restore-tmp").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn external_restore_swap_succeeds_happily() {
-        let dir = std::env::temp_dir().join(format!("cardiac-swap-ok-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pulse-swap-ok-test-{}", std::process::id()));
         let conf = dir.join("conf");
         fs::create_dir_all(&conf).unwrap();
         let stash = dir.join("stash");
         fs::create_dir_all(&stash).unwrap();
         let drive = dir.join("drive");
         fs::create_dir_all(&drive).unwrap();
-        fs::write(drive.join("cardiac-2.db"), b"RESTORED-DB").unwrap();
+        fs::write(drive.join("pulse-2.db"), b"RESTORED-DB").unwrap();
         fs::write(drive.join("key"), "new-key").unwrap();
 
-        swap_in_restored_pair(&conf, &drive.join("cardiac-2.db"), &drive.join("key"), &stash)
+        swap_in_restored_pair(&conf, &drive.join("pulse-2.db"), &drive.join("key"), &stash)
             .expect("a valid pair must swap in cleanly");
 
-        assert_eq!(fs::read(conf.join("cardiac.db")).unwrap(), b"RESTORED-DB");
-        assert_eq!(fs::read_to_string(conf.join("cardiac.key")).unwrap(), "new-key");
+        assert_eq!(fs::read(conf.join("pulse.db")).unwrap(), b"RESTORED-DB");
+        assert_eq!(fs::read_to_string(conf.join("pulse.key")).unwrap(), "new-key");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -6020,7 +6020,7 @@ mod tests {
 /// Stress / chaos suite. Builds on the existing `tests` helpers but targets
 /// invariants a pharmacy POS must never break: stock & money conservation under
 /// random ops, FEFO correctness, concurrent-write safety, migration
-/// idempotency, and query performance at scale. Runs with `cargo test -p cardiac`.
+/// idempotency, and query performance at scale. Runs with `cargo test -p pulse`.
 #[cfg(test)]
 mod stress_tests {
     use super::*;
@@ -6290,7 +6290,7 @@ mod stress_tests {
     /// actual stock read from the DB after the run, plus the busy-error count.
     fn concurrency_soak(set_busy_timeout: bool) -> (i64, i64, i64) {
         let path = std::env::temp_dir().join(format!(
-            "cardiac_stress_{}_{}.sqlite",
+            "pulse_stress_{}_{}.sqlite",
             std::process::id(),
             UNIQ.fetch_add(1, Ordering::SeqCst)
         ));

@@ -1,11 +1,11 @@
 [package]
-name = "cardiac"
+name = "pulse"
 version = "0.4.16"
-description = "Cardiac Pharmacy Management System"
+description = "Pulse Pharmacy Management System"
 edition = "2021"
 
 [lib]
-name = "cardiac_lib"
+name = "pulse_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

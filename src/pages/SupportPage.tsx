@@ -32,7 +32,7 @@ export function SupportPage() {
 
   const mailto = supportEmail
     ? `mailto:${supportEmail}?subject=${encodeURIComponent(
-        `Cardiac support — ${phName.trim() || pharmacyName}`,
+        `Pulse support — ${phName.trim() || pharmacyName}`,
       )}&body=${encodeURIComponent(
         [
           `Pharmacy: ${phName.trim() || pharmacyName}`,

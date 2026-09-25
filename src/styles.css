@@ -295,7 +295,7 @@ body {
   }
 }
 
-/* Attention cardiac used to spotlight a specific row after following a
+/* Attention pulse used to spotlight a specific row after following a
  * notification deep-link (e.g. a low-stock product in Inventory). Blinks
  * repeatedly, then the highlight is cleared by the page after a few seconds. */
 @keyframes pulse-flash {

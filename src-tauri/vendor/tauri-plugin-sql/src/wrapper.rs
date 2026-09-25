@@ -80,9 +80,9 @@ impl DbPool {
         {
             #[cfg(feature = "sqlite")]
             "sqlite" => {
-                // Cardiac patch: the database is encrypted at rest (SQLCipher).
+                // Pulse patch: the database is encrypted at rest (SQLCipher).
                 // Every connection must present the per-install key from
-                // cardiac.key as its very first statement. sqlx reserves the
+                // pulse.key as its very first statement. sqlx reserves the
                 // `key` pragma slot ahead of its own pragmas exactly for
                 // this, so `.pragma("key", …)` executes before WAL/FK setup.
                 let app_path = _app
@@ -95,7 +95,7 @@ impl DbPool {
                 let conn_file = path_mapper(app_path.clone(), conn_url);
                 let conn_file = conn_file.strip_prefix("sqlite:").unwrap_or(&conn_file);
 
-                let key = std::fs::read_to_string(app_path.join("cardiac.key"))
+                let key = std::fs::read_to_string(app_path.join("pulse.key"))
                     .map_err(|_| crate::Error::DatabaseKeyMissing)?
                     .trim()
                     .to_string();

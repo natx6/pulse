@@ -352,7 +352,7 @@ export function AddProductModal({ onClose }: Props) {
                       value={unit}
                       onChange={(e) => setUnit(e.target.value)}
                       placeholder="e.g. strip (10 tabs)"
-                      list="cardiac-unit-forms"
+                      list="pulse-unit-forms"
                       className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
                     />
                   </label>
@@ -362,7 +362,7 @@ export function AddProductModal({ onClose }: Props) {
                       value={dosageForm}
                       onChange={(e) => setDosageForm(e.target.value)}
                       placeholder="e.g. Tablet"
-                      list="cardiac-dosage-forms"
+                      list="pulse-dosage-forms"
                       className="h-9 w-full rounded border border-outline-variant bg-surface-container-lowest px-3 text-body-md text-on-surface focus:border-primary focus:outline-none"
                     />
                   </label>
@@ -382,12 +382,12 @@ export function AddProductModal({ onClose }: Props) {
                     </select>
                   </label>
                 </div>
-                <datalist id="cardiac-unit-forms">
+                <datalist id="pulse-unit-forms">
                   {["strip", "bottle", "sachet", "box", "pack", "tube", "vial", "ampoule", "blister", "carton"].map((u) => (
                     <option key={u} value={u} />
                   ))}
                 </datalist>
-                <datalist id="cardiac-dosage-forms">
+                <datalist id="pulse-dosage-forms">
                   {["Tablet", "Capsule", "Syrup", "Suspension", "Injection", "Cream", "Ointment", "Drops", "Inhaler", "Powder", "Suppository", "Gel", "Lotion", "Spray"].map((f) => (
                     <option key={f} value={f} />
                   ))}
