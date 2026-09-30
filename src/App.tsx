@@ -91,21 +91,33 @@ export default function App() {
 
   // Auto-update: installed builds check for a newer release on launch and
   // raise a banner — the worker picks the moment, nothing downloads or
-  // restarts mid-shift uninvited. The dev app never checks.
+  // restarts mid-shift uninvited. The dev app never checks. A failed check
+  // retries every 15 minutes and when the network comes back, so one bad
+  // launch (offline, unpublished release) doesn't silence updates all day.
+  // A dismissed banner ("Later") stays dismissed until next launch.
   const availableUpdate = useStore((s) => s.availableUpdate);
   const setAvailableUpdate = useStore((s) => s.setAvailableUpdate);
   const [updateNotif, setUpdateNotif] = useState(true);
   useEffect(() => {
     if (import.meta.env.DEV) return;
     let cancelled = false;
-    void (async () => {
+    // Settles only when an update is found — a quiet "nothing yet" keeps the
+    // 15-minute retry alive, so a release published mid-shift still raises
+    // the banner without a relaunch. Retries never toast.
+    let settled = false;
+    const runCheck = async (quiet: boolean) => {
+      if (cancelled || settled) return;
       try {
         const found = await checkForUpdate();
-        if (!cancelled && found) setAvailableUpdate(found);
+        if (cancelled) return;
+        if (found) {
+          setAvailableUpdate(found);
+          settled = true;
+        }
       } catch (e) {
         // Offline, no published release yet, bad manifest — never block the app.
         console.error("auto-update:", e);
-        if (!cancelled) {
+        if (!quiet && !cancelled) {
           try {
             const { useToast } = await import("./store/toast");
             useToast.getState().show(String(e instanceof Error ? e.message : e), "error");
@@ -114,9 +126,17 @@ export default function App() {
           }
         }
       }
-    })();
+    };
+    void runCheck(false);
+    const retry = window.setInterval(() => {
+      if (!document.hidden) void runCheck(true);
+    }, 15 * 60 * 1000);
+    const onOnline = () => void runCheck(true);
+    window.addEventListener("online", onOnline);
     return () => {
       cancelled = true;
+      window.clearInterval(retry);
+      window.removeEventListener("online", onOnline);
     };
   }, []);
 
