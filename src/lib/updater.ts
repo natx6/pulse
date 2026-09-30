@@ -18,6 +18,8 @@ export function friendlyUpdateError(e: unknown): string {
     return "The update server answered with garbage (usually right after publishing — wait a minute and retry).";
   if (/signature/i.test(raw))
     return "The download's signature didn't match — don't retry blindly, tell the manager.";
+  if (/invalid updater binary format/i.test(raw))
+    return "The update downloaded but doesn't match how this copy was installed (rpm/deb vs AppImage) — grab the matching installer from the releases page and install it once; later updates then flow on their own.";
   if (/network|offline|dns|timed? ?out|failed to fetch|connection/i.test(raw))
     return "Couldn't reach the update server — check the internet connection and retry.";
   return raw || "Update check failed for an unknown reason.";

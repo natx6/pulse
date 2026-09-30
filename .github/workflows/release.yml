@@ -130,8 +130,11 @@ jobs:
           # 90-day copies just burn Actions storage quota.
           retention-days: 7
           # One plain glob per line — @actions/glob does NOT support {..} braces.
-          # Only AppImage (Linux) and app.tar.gz (macOS) and nsis (Windows) are
-          # updater targets; deb/dmg are manual installers, not auto-update.
+          # Updater targets: nsis (Windows), app.tar.gz (macOS), and on Linux
+          # AppImage AND deb/rpm — the updater picks {os}-{arch}-{installer}
+          # first (e.g. linux-x86_64-rpm), so an rpm-installed app fetches the
+          # rpm instead of choking on the AppImage ("invalid updater binary
+          # format"). dmg stays a manual installer, not auto-update.
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/dmg/*.dmg
@@ -141,6 +144,8 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.sig
             src-tauri/target/release/bundle/macos/*.sig
             src-tauri/target/release/bundle/appimage/*.sig
+            src-tauri/target/release/bundle/deb/*.sig
+            src-tauri/target/release/bundle/rpm/*.sig
             # macOS updater bundle only — NOT deb internals (control/data.tar.gz)
             src-tauri/target/release/bundle/macos/*.tar.gz
           if-no-files-found: error
@@ -178,6 +183,18 @@ jobs:
                   return "windows-x86_64"
               if "x64.app.tar.gz" in n:
                   return "darwin-x86_64"
+              # deb/rpm-installed apps ask for {os}-{arch}-{installer} first —
+              # without these keys they fall back to the AppImage and die at
+              # install with "invalid updater binary format". Checked before
+              # the arm64 rule below so aarch64 packages map correctly.
+              if "amd64.deb" in n or "x86_64.deb" in n:
+                  return "linux-x86_64-deb"
+              if "amd64.rpm" in n or "x86_64.rpm" in n:
+                  return "linux-x86_64-rpm"
+              if "aarch64.deb" in n or "arm64.deb" in n:
+                  return "linux-arm64-deb"
+              if "aarch64.rpm" in n or "arm64.rpm" in n:
+                  return "linux-arm64-rpm"
               # Tauri names the macOS updater bundle just "Pulse.app.tar.gz" (no
               # arch). macos-latest is Apple Silicon, so map it to darwin-aarch64.
               if ".app.tar.gz" in n:
