@@ -20,6 +20,7 @@ import {
 import type { AppUser, BackupInfo, UserRole } from "../db";
 import { beep } from "../lib/audio";
 import { PinPromptModal } from "../components/PinPromptModal";
+import { UpdatesCard } from "../components/UpdatesCard";
 
 export function SettingsPage() {
   const pharmacyName = useStore((s) => s.pharmacyName);
@@ -900,6 +901,8 @@ export function SettingsPage() {
         </div>
 
         {appearanceCard}
+
+        <UpdatesCard />
 
         <button
           onClick={() => void save()}
