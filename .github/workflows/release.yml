@@ -170,7 +170,7 @@ jobs:
 
           tag = os.environ["GITHUB_REF_NAME"]
           version = tag.lstrip("v")
-          base_url = f"https://github.com/natx6/cardiac/releases/download/{tag}"
+          base_url = f"https://github.com/natx6/pulse/releases/download/{tag}"
 
           def platform_key(name):
               n = name.lower()
@@ -178,7 +178,7 @@ jobs:
                   return "windows-x86_64"
               if "x64.app.tar.gz" in n:
                   return "darwin-x86_64"
-              # Tauri names the macOS updater bundle just "Cardiac.app.tar.gz" (no
+              # Tauri names the macOS updater bundle just "Pulse.app.tar.gz" (no
               # arch). macos-latest is Apple Silicon, so map it to darwin-aarch64.
               if ".app.tar.gz" in n:
                   return "darwin-aarch64"
@@ -218,7 +218,7 @@ jobs:
 
           manifest = {
               "version": version,
-              "notes": f"Cardiac v{version} — auto-built installers.",
+              "notes": f"Pulse v{version} — auto-built installers.",
               "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
               "platforms": platforms,
           }
@@ -246,6 +246,6 @@ jobs:
           if [ -f latest.json ]; then
             ASSETS="$ASSETS latest.json"
           fi
-          gh release create "v${VERSION}" --draft --title "Cardiac v${VERSION}" \
+          gh release create "v${VERSION}" --draft --title "Pulse v${VERSION}" \
             --notes "Auto-built installers for testing. Publish this release to roll the update out." \
             $ASSETS

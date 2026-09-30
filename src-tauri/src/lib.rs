@@ -4613,6 +4613,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0035_users_owner_manager_mca",
         include_str!("../migrations/0035_users_owner_manager_mca.sql"),
     ),
+    (
+        "0036_backfill_batches",
+        include_str!("../migrations/0036_backfill_batches.sql"),
+    ),
 ];
 
 /// Apply pending migrations with PRAGMA user_version as the version tracker.
@@ -6121,6 +6125,50 @@ mod stress_tests {
             .query_row("SELECT batches FROM sale_items WHERE sale_id=?1", [r.sale_id], |r| r.get(0))
             .unwrap();
         assert_eq!(stored, r.line_batches[0].batches, "result must match the stored trail");
+    }
+
+    /// Backfill (0036): every stocked product must have batch rows after
+    /// migrations — seeds set stock_qty with no ledger, which used to leave
+    /// the batch expander empty and blind the pick hint.
+    #[test]
+    fn backfill_batches_covers_seed_stock() {
+        let c = sdb();
+        let orphans: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM products p WHERE p.stock_qty > 0
+                 AND NOT EXISTS (SELECT 1 FROM product_batches b WHERE b.product_id = p.id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphans, 0, "no stocked product may lack batch rows after migrate");
+    }
+
+    /// Backfill is idempotent and inherits the product's own batch/expiry.
+    #[test]
+    fn backfill_batches_is_idempotent() {
+        let mut c = sdb();
+        c.execute(
+            "INSERT INTO products (name, batch_no, expiry_date, cost_price, selling_price, stock_qty)
+             VALUES ('Legacy', 'LG-1', '2027-05-05', 1.0, 2.0, 9)",
+            [],
+        )
+        .unwrap();
+        let sql = include_str!("../migrations/0036_backfill_batches.sql");
+        for _ in 0..2 {
+            let tx = c.transaction().expect("begin");
+            exec_migration(&tx, sql).expect("backfill applies");
+            tx.commit().expect("commit");
+        }
+        let (n, batch, expiry, qty): (i64, String, String, i64) = c
+            .query_row(
+                "SELECT COUNT(*), batch_no, expiry_date, quantity FROM product_batches
+                 WHERE product_id = (SELECT id FROM products WHERE name = 'Legacy')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((n, batch.as_str(), expiry.as_str(), qty), (1, "LG-1", "2027-05-05", 9));
     }
 
     // Deterministic xorshift so the fuzz is reproducible.

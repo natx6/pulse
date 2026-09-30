@@ -120,7 +120,7 @@ export function PosPage() {
       if (!q) return true;
       return (
         p.name.toLowerCase().includes(q) ||
-        (p.barcode ?? "").includes(q) ||
+        (p.barcode ?? "").toLowerCase().includes(q) ||
         (p.manufacturer ?? "").toLowerCase().includes(q) ||
         (p.generic_name ?? "").toLowerCase().includes(q) ||
         (p.active_ingredient ?? "").toLowerCase().includes(q)
@@ -153,7 +153,7 @@ export function PosPage() {
     const q = searchQuery.trim();
     if (!q) return;
     const st = useStore.getState();
-    const p = st.products.find((x) => x.barcode === q);
+    const p = st.products.find((x) => (x.barcode ?? "").toLowerCase() === q.toLowerCase());
     if (p) {
       // Delegate to tryAdd so the out-of-stock/at-cart-max checks can never
       // drift from the product-grid add path — a repeat scan past available
