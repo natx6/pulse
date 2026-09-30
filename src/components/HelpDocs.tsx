@@ -7,6 +7,8 @@ type DocSection = {
   icon: string;
   summary: string;
   when: string;
+  /** Numbered walkthrough — the exact taps in order. */
+  steps?: string[];
   buttons: { label: string; does: string }[];
   mixup?: { vs: string; pick: string }[];
 };
@@ -18,6 +20,12 @@ const DOCS: DocSection[] = [
     icon: "space_dashboard",
     summary: "Where you stand right now — today's money and what needs attention.",
     when: "You open Pulse. First thing you see every morning.",
+    steps: [
+      "Read the top tiles: sales today, profit, and what should be in the drawer.",
+      "Clear every red/amber alert: tap it — you jump straight to the product or order.",
+      "Expired items first: pull them off the shelf, then adjust them out in Inventory.",
+      "Open purchases: chase any supplier who hasn't delivered.",
+    ],
     buttons: [
       { label: "Sales today / Profit / In till", does: "Today's takings, your profit, and what should be in the drawer (opening float + cash in − refunds − cash expenses)." },
       { label: "Low stock / Expiring / Expired pills", does: "Tap a name to jump to Inventory and reorder. Critical = stock is 0." },
@@ -31,6 +39,13 @@ const DOCS: DocSection[] = [
     icon: "point_of_sale",
     summary: "Sell to a customer.",
     when: "Someone is standing in front of you.",
+    steps: [
+      "Scan the barcode (or type + Enter). The item lands in the cart with a beep.",
+      "Read the Pick lines under the item — take exactly those boxes/expiries off the shelf. Red EXPIRED means stop and pull it aside.",
+      "Set quantity with +/−. Attach the patient name if they pay on book or have a discount.",
+      "Tap Cash / Card / Mobile Money / Book, take the money, Complete Sale.",
+      "Check the receipt's Batch lines match the boxes you handed over. Done.",
+    ],
     buttons: [
       { label: "Search box", does: "Type a name, barcode, or supplier — also finds generics (diclo) and brands (roy) once FDA products are saved. Ctrl+K focuses it." },
       { label: "Barcode Scan", does: "Focuses the search so the scanner types straight in. Unknown code offers Add Manual Item." },
@@ -42,6 +57,8 @@ const DOCS: DocSection[] = [
       { label: "Add Manual Item", does: "Create a product that isn't in the catalog — Name + Price, with FDA suggestions when on. Goes to cart AND inventory (1 unit, no batch)." },
       { label: "Cash / Card / Mobile Money / Credit", does: "How they pay. Cash asks for tendered and shows change. Credit books it to the customer (settle later in Customers)." },
       { label: "Complete Sale", does: "Finishes the sale, prints if a printer is set, decrements stock. F9/F10/F11 switch pay method." },
+      { label: "Pick hint (batch + expiry)", does: "Under each cart line: which physical boxes to hand over, oldest expiry first, one per line. Red EXPIRED — do not sell means that batch is past its date: pull it off the shelf, don't hand it over." },
+      { label: "Receipt batch lines", does: "Every receipt line names the batches sold — your proof of which boxes left the shop." },
     ],
     mixup: [
       { vs: "Hold vs Cancel", pick: "Hold keeps the cart for later; clearing (× on each line or a fresh prescription) throws it away." },
@@ -53,6 +70,12 @@ const DOCS: DocSection[] = [
     icon: "history",
     summary: "Find an old sale — reprint, void, or refund.",
     when: "A customer comes back days later.",
+    steps: [
+      "Filter by date, patient, or receipt number until the sale shows.",
+      "Reprint: receipt comes out exactly as on the day (same discount/tax, same batches).",
+      "Refund: open Return, set Qty per product, add a Reason, Refund & restock — stock returns to its original batches.",
+      "Mistake from today only: Void the last sale instead — it erases it entirely.",
+    ],
     buttons: [
       { label: "Date / patient / receipt filters", does: "Narrow to the sale you want." },
       { label: "Reprint", does: "Prints the exact receipt again (same discount/tax as the sale)." },
@@ -69,6 +92,12 @@ const DOCS: DocSection[] = [
     icon: "groups",
     summary: "Find a person — see visits, history, and what they owe.",
     when: "Someone on credit returns, or you want their discount/history.",
+    steps: [
+      "Search the name or phone — every sale with a name creates the customer automatically.",
+      "Open their row: visits, last 10 sales (tap any to reprint), and outstanding credit.",
+      "Owes money? Settle: enter amount + method (Cash/MoMo/Bank/Cheque), manager PIN if asked, Record.",
+      "Regular? Set their Discount % once — it applies itself at every future sale.",
+    ],
     buttons: [
       { label: "Search", does: "By name or phone. Customers are auto-created on sale — no pre-registering." },
       { label: "A customer row", does: "Opens visits, Total visits, Last visit, per-customer Discount %, Last 10 sales (tap to reprint), and Outstanding credit." },
@@ -82,6 +111,13 @@ const DOCS: DocSection[] = [
     icon: "inventory_2",
     summary: "Everything on the shelf — stock, batches, reorder.",
     when: "You want to see, add, or fix stock.",
+    steps: [
+      "New delivery? Receive Stock (F2): scan, enter qty + batch + expiry + cost — one product at a time, exact.",
+      "Hundreds of items? Import Stock: load the Excel, check the preview table, Import (a backup is taken first).",
+      "Shelf looks wrong? Stock take: count what's really there, enter counts, Commit — differences become audited corrections.",
+      "Something expired/damaged? Tune the row: adjust down with a Reason (manager PIN for reductions).",
+      "Running low? The Reorder Soon pill + bell tell you; order from Requisitions, not from here.",
+    ],
     buttons: [
       { label: "Search (Ctrl+K) / Sort headers", does: "Find by name, barcode, supplier. Sort by any column. Shows 100/page with Prev/Next." },
       { label: "An item row (chevron)", does: "Expands its batches — nearest expiry first (what sells first). Red exp = expired." },
@@ -107,6 +143,13 @@ const DOCS: DocSection[] = [
     icon: "shopping_cart",
     summary: "Order from your supplier, receive it, and know what you owe.",
     when: "Stock is low and you need to order.",
+    steps: [
+      "New Purchase: pick the supplier (or + New), add Reference No. and Date.",
+      "Add products by search — or one click: Add low & out-of-stock, then type the quantities.",
+      "Per line set Qty, Unit cost, Sell price; check Margin. Save as Ordered (nothing moves yet) or Received (stock lands immediately).",
+      "Truck arrives later? Open the order → Receive: enter what actually came per line.",
+      "Paid them? Pay on the order — Balance always shows what you still owe.",
+    ],
     buttons: [
       { label: "New Purchase", does: "Pick Supplier (or + New) → Reference No. (invoice/waybill) → Date → Pay term → add products (search or Add low & out-of-stock). Per line: Sell as (Pack/Bottle/Inhaler — what you sell), Qty, Unit cost, Disc %, Net cost, Sell price, Margin, Line total, Expiry, Batch no. Order discount at the bottom." },
       { label: "Add low & out-of-stock", does: "One click adds everything at/below its reorder level — then type how many you need." },
@@ -125,6 +168,12 @@ const DOCS: DocSection[] = [
     icon: "bar_chart",
     summary: "See what you made and spent.",
     when: "End of day / auditor / accountant.",
+    steps: [
+      "Pick the range (Today is default), narrow by Operator or Method if needed.",
+      "Read the KPIs: Sales, Profit, Margin, VAT, Discount.",
+      "Close the till: Daily cash-up — enter Opening float in the morning, Counted cash at night, save the Variance.",
+      "Need it on paper? Export CSV (everything, including the audit trail) or print the Controlled-drug register for inspectors.",
+    ],
     buttons: [
       { label: "Today / Yesterday / 7 / 30 / Custom", does: "Pick the range. Operator and Method filters narrow further." },
       { label: "Sales / Profit / Margin / VAT / Discount", does: "The KPIs for the range. VAT uses your tax rate; discount shows patient tiers." },
@@ -132,6 +181,7 @@ const DOCS: DocSection[] = [
       { label: "Supplier Balances", does: "What you owe each supplier (opening + purchases − payments). Import suppliers with opening balances here." },
       { label: "Audit Trail", does: "Every action in the range, newest first — sales, returns, voids, adjustments, purchases, payments, imports, expenses, logins' changes. Included in Export CSV." },
       { label: "Export CSV", does: "Writes the whole report (choose where to save) for the accountant or auditor." },
+      { label: "Daily cash-up", does: "Opening float (morning cash in drawer) + cash sales − cash refunds − cash expenses = Expected. Count the drawer, enter Counted, save the Variance. Card/MoMo never touch the till." },
     ],
   },
   {
@@ -140,6 +190,11 @@ const DOCS: DocSection[] = [
     icon: "receipt_long",
     summary: "What you spent — rent, light, courier.",
     when: "Money leaves the shop for anything that isn't stock.",
+    steps: [
+      "Add: pick Category, enter Amount, how it was paid (Cash/Card/MoMo), a Note, Date.",
+      "Remember: only Cash expenses come out of the till — Card/MoMo are tracked but don't change the cash-up.",
+      "Wrong entry? Delete it (two taps) and re-add — expenses have no edit, so the audit stays clean.",
+    ],
     buttons: [
       { label: "Add", does: "Category + Amount + Payment method + Note + Date. Cash expenses count against the till in Daily Cash-up; Card/Bank are tracked but don't touch the float." },
       { label: "Summary (in Reports)", does: "Same range — expenses by category alongside sales." },
@@ -151,6 +206,13 @@ const DOCS: DocSection[] = [
     icon: "settings",
     summary: "Your shop, users, printer, backup, and data tools.",
     when: "Setup, staff changes, printing, backups, yearly refresh.",
+    steps: [
+      "First day: Pharmacy name + tax + MoMo number + receipt footer, then manager PIN, then import stock.",
+      "New staff: Logins → add account with role (owner/manager/mca) → they sign in with a temp password.",
+      "Printer on the network? Enter its host:port once — every receipt gets a Thermal button.",
+      "Leaving for the day? Nothing to do — backups happen every 10th sale and on exit. Copy to flash drive weekly.",
+      "New version out? Update bar appears at the top → Update now (or Later) — or Check for updates here.",
+    ],
     buttons: [
       { label: "Pharmacy", does: "Name, tax %, MoMo number, receipt footer — appears on receipts." },
       { label: "Logins", does: "Owner/manager adds accounts (Username / Display name / Temp password / Role: owner, manager, mca). MCA sees POS, Inventory, Customers, own Reports, theme-only Settings, add-only Expenses. Reset PW / Deactivate anyone but the last active owner/manager." },
@@ -159,6 +221,7 @@ const DOCS: DocSection[] = [
       { label: "FDA Ghana catalog", does: "Shows 7,987 DRUG/DRUGS count. Update FDA catalog pulls the yearly register (30-60s, needs internet) with a progress bar — then works offline. Enable FDA autocomplete toggle hides suggestions everywhere (Quick Add, Add Product, Import)." },
       { label: "Starting fresh?", does: "Clear sample data — demo rows only (DMO-, Demo Wholesale, Ama Mensah). Only shows when demo data exists (dev). Wipe all stock (dev only) empties everything for import testing — keeps users/settings/FDA." },
       { label: "Appearance", does: "Dark mode toggle." },
+      { label: "Updates", does: "Installed version, Check for updates, and Update right here — same as the top bar. A failed check explains itself in plain words." },
       { label: "Loss prevention (Manager PIN)", does: "4-8 digits. Gates voids, stock reductions, supplier payments, and credit settlement. Refunds are open to all roles. Separate from login passwords. Default manager is manager / manager (must change) unless you migrated a prior PIN." },
     ],
   },
@@ -168,6 +231,11 @@ const DOCS: DocSection[] = [
     icon: "support_agent",
     summary: "This help (search it) + the tour + how to reach us.",
     when: "You're stuck or want to re-learn.",
+    steps: [
+      "Type your problem in the search above (try return, FDA, requisition, void) — matching sections open themselves.",
+      "Still stuck? Take a product tour replays the spotlight walkthrough.",
+      "Need a human? Contact tab: say what you were doing + what you expected → Send via Email (version and device attach themselves).",
+    ],
     buttons: [
       { label: "Help (search here)", does: "This page — per-tab, button-by-button. Try return, FDA, requisition, void." },
       { label: "Take a product tour", does: "Replays the spotlight tour (MCAs see only their tabs)." },
@@ -207,6 +275,7 @@ export function HelpDocs() {
         d.title.toLowerCase().includes(s) ||
         d.summary.toLowerCase().includes(s) ||
         d.when.toLowerCase().includes(s) ||
+        (d.steps ?? []).some((t) => t.toLowerCase().includes(s)) ||
         d.buttons.some((b) => b.label.toLowerCase().includes(s) || b.does.toLowerCase().includes(s)),
     );
   }, [q, roleFiltered]);
@@ -246,6 +315,19 @@ export function HelpDocs() {
                   <p className="mb-3 rounded bg-primary/5 px-3 py-2 text-body-sm text-on-surface">
                     <span className="font-bold">When:</span> {s.when}
                   </p>
+                  {s.steps && s.steps.length > 0 && (
+                    <ol className="mb-3 space-y-1.5 rounded border border-primary/25 bg-primary/5 px-3 py-2">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-primary">How to</p>
+                      {s.steps.map((t, i) => (
+                        <li key={i} className="flex gap-2 text-body-sm leading-relaxed text-on-surface">
+                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-on-primary">
+                            {i + 1}
+                          </span>
+                          <span>{t}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
                   <div className="space-y-2">
                     {s.buttons.map((b) => (
                       <div key={b.label} className="flex gap-3 rounded border border-outline-variant/50 bg-surface px-3 py-2">
