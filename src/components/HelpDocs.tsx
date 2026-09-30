@@ -9,6 +9,9 @@ type DocSection = {
   when: string;
   /** Numbered walkthrough — the exact taps in order. */
   steps?: string[];
+  /** MCA variant of the walkthrough, shown instead of `steps` for counter
+   * staff (no voids/refunds/receiving — those need the manager). */
+  mcaSteps?: string[];
   buttons: { label: string; does: string }[];
   mixup?: { vs: string; pick: string }[];
 };
@@ -76,6 +79,12 @@ const DOCS: DocSection[] = [
       "Refund: open Return, set Qty per product, add a Reason, Refund & restock — stock returns to its original batches.",
       "Mistake from today only: Void the last sale instead — it erases it entirely.",
     ],
+    mcaSteps: [
+      "Filter by date, patient, or receipt number until the sale shows.",
+      "Reprint any receipt exactly as on the day (same discount/tax, same batches).",
+      "Refund or void needed? Call the manager — those paths need their PIN.",
+      "Never edit or delete a past sale yourself.",
+    ],
     buttons: [
       { label: "Date / patient / receipt filters", does: "Narrow to the sale you want." },
       { label: "Reprint", does: "Prints the exact receipt again (same discount/tax as the sale)." },
@@ -98,6 +107,12 @@ const DOCS: DocSection[] = [
       "Owes money? Settle: enter amount + method (Cash/MoMo/Bank/Cheque), manager PIN if asked, Record.",
       "Regular? Set their Discount % once — it applies itself at every future sale.",
     ],
+    mcaSteps: [
+      "Search the name or phone — customers appear automatically after a sale.",
+      "Open their row for visits, last sales, and outstanding credit.",
+      "They want to pay off credit or need a discount? Call the manager.",
+      "New customer details are captured at the counter during a sale.",
+    ],
     buttons: [
       { label: "Search", does: "By name or phone. Customers are auto-created on sale — no pre-registering." },
       { label: "A customer row", does: "Opens visits, Total visits, Last visit, per-customer Discount %, Last 10 sales (tap to reprint), and Outstanding credit." },
@@ -117,6 +132,12 @@ const DOCS: DocSection[] = [
       "Shelf looks wrong? Stock take: count what's really there, enter counts, Commit — differences become audited corrections.",
       "Something expired/damaged? Tune the row: adjust down with a Reason (manager PIN for reductions).",
       "Running low? The Reorder Soon pill + bell tell you; order from Requisitions, not from here.",
+    ],
+    mcaSteps: [
+      "Search (Ctrl+K) and expand any row — batches show oldest expiry first: sell from those boxes.",
+      "Read the status pill: Reorder Soon or Critical means tell the manager today.",
+      "Something expired or the shelf looks wrong? Don't adjust it yourself — call the manager.",
+      "Print shelf labels as needed.",
     ],
     buttons: [
       { label: "Search (Ctrl+K) / Sort headers", does: "Find by name, barcode, supplier. Sort by any column. Shows 100/page with Prev/Next." },
@@ -269,8 +290,13 @@ export function HelpDocs() {
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return roleFiltered;
-    return roleFiltered.filter(
+    // Counter staff read their own walkthroughs, so search those — never the
+    // manager-only steps they can't see.
+    const visible = roleFiltered.map((d) =>
+      currentUser?.role === "mca" && d.mcaSteps ? { ...d, steps: d.mcaSteps } : d,
+    );
+    if (!s) return visible;
+    return visible.filter(
       (d) =>
         d.title.toLowerCase().includes(s) ||
         d.summary.toLowerCase().includes(s) ||
@@ -278,7 +304,7 @@ export function HelpDocs() {
         (d.steps ?? []).some((t) => t.toLowerCase().includes(s)) ||
         d.buttons.some((b) => b.label.toLowerCase().includes(s) || b.does.toLowerCase().includes(s)),
     );
-  }, [q, roleFiltered]);
+  }, [q, roleFiltered, currentUser]);
 
   return (
     <div className="flex h-full flex-col">
