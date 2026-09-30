@@ -8,6 +8,7 @@ import type { PaymentLine, PaymentMethod, Product, SaleResult } from "../types";
 import { PaymentModal } from "../components/PaymentModal";
 import { ReceiptModal } from "../components/ReceiptModal";
 import { PickHint } from "../components/PickHint";
+import { CategoryFilter } from "../components/CategoryFilter";
 import { AddCustomerModal } from "../components/AddCustomerModal";
 import { Tip } from "../components/Tip";
 import { useToast } from "../store/toast";
@@ -108,10 +109,16 @@ export function PosPage() {
     };
   }, [patientInput]);
 
-  const categories = useMemo(
-    () => Array.from(new Set(products.map((p) => p.category).filter(Boolean))) as string[],
-    [products],
-  );
+  const categories = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of products) {
+      if (!p.category) continue;
+      counts.set(p.category, (counts.get(p.category) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [products]);
 
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -348,16 +355,7 @@ export function PosPage() {
             </div>
           </div>
           <div className="flex gap-2">
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="h-10 rounded border border-outline-variant bg-surface px-3 text-body-sm text-on-surface focus:border-primary focus:outline-none"
-            >
-              <option>All Categories</option>
-              {categories.map((c) => (
-                <option key={c}>{c}</option>
-              ))}
-            </select>
+            <CategoryFilter categories={categories} value={category} onChange={setCategory} />
           </div>
         </div>
 
