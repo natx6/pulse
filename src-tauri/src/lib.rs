@@ -4337,7 +4337,7 @@ fn intake_stock(
                 rusqlite::params![
                     name, input.barcode, input.category, input.manufacturer, input.supplier,
                     input.batch_no, input.expiry_date, input.cost_price.unwrap_or(0.0),
-                    input.selling_price, input.quantity, input.unit, pack
+                    input.selling_price, input.quantity, input.unit, pack.unwrap_or(1)
                 ],
             )
             .map_err(|e| e.to_string())?;
