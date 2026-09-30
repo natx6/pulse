@@ -13,7 +13,9 @@ export function ImportStockModal({
   onDone,
 }: {
   onClose: () => void;
-  onDone: () => void;
+  /** Runs after a successful commit. Awaited — a refresh failure shows in
+   * the modal instead of silently leaving a stale (empty) list behind. */
+  onDone: () => void | Promise<void>;
 }) {
   const products = useStore((s) => s.products);
   const currentUser = useStore((s) => s.currentUser);
@@ -117,7 +119,15 @@ export function ImportStockModal({
       setSummary(res);
       setBackupPath(bpath);
       setPhase("done");
-      onDone();
+      try {
+        await onDone();
+      } catch (e) {
+        // The stock is saved — only the on-screen list failed to reload.
+        // Say so plainly instead of showing an empty shelf.
+        setErr(
+          `Saved ${res.created + res.updated} items, but the list didn't refresh: ${String(e).replace(/^Error: /, "")} — close and reopen the app; nothing is lost.`,
+        );
+      }
       beep(true);
     } catch (e) {
       setErr(String(e).replace(/^Error: /, ""));

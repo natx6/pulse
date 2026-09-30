@@ -738,7 +738,9 @@ export function InventoryPage() {
       {importOpen && (
         <ImportStockModal
           onClose={() => setImportOpen(false)}
-          onDone={() => void refreshProducts()}
+          onDone={async () => {
+            await refreshProducts();
+          }}
         />
       )}
       {stockTakeOpen && <StockTakeModal onClose={() => setStockTakeOpen(false)} />}
