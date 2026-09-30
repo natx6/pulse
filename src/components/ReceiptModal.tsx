@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { CartLine, PaymentLine, SaleResult } from "../types";
 import { useStore } from "../store/useStore";
 import { fmtMoney } from "../lib/money";
+import { formatBatchBreakdown } from "../lib/batches";
 import { getSettings, printThermalReceipt } from "../db";
 
 interface Props {
@@ -54,7 +55,11 @@ export function ReceiptModal({ result, lines, subtotal, discountPct, discountAmt
         cashier: operator?.trim() || null,
         lines: lines.map((l) => ({
           name: l.name,
-          detail: [l.unit ?? null, `${l.qty} x ${ghs(l.unitPrice)}`].filter(Boolean).join(" · "),
+          detail: [
+            l.unit ?? null,
+            `${l.qty} x ${ghs(l.unitPrice)}`,
+            formatBatchBreakdown(l.batches) ? `Batch ${formatBatchBreakdown(l.batches)}` : null,
+          ].filter(Boolean).join(" | "),
           amount: ghs(l.qty * l.unitPrice),
         })),
         subtotal: ghs(subtotal),
@@ -125,6 +130,11 @@ export function ReceiptModal({ result, lines, subtotal, discountPct, discountAmt
                     {l.unit ? `${l.unit} · ` : ""}
                     {l.qty} × {fmtMoney(l.unitPrice)}
                   </p>
+                  {formatBatchBreakdown(l.batches) && (
+                    <p className="font-data-mono text-data-mono text-primary">
+                      Batch: {formatBatchBreakdown(l.batches)}
+                    </p>
+                  )}
                 </div>
                 <span className="shrink-0 font-data-mono text-data-mono text-on-surface">
                   {fmtMoney(l.qty * l.unitPrice)}

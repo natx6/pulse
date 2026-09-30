@@ -40,6 +40,9 @@ export interface CartLine {
   unit: string | null;
   unitPrice: number;
   qty: number;
+  /** FEFO breakdown recorded at sale time ("AX-8821@2027-03-15x2;B15x1").
+   * Present on receipt/reprint lines so the handover is checkable. */
+  batches?: string | null;
 }
 
 export interface SaleLine {
@@ -70,6 +73,8 @@ export interface SaleResult {
   sale_id: number;
   total: number;
   change: number;
+  /** Per-line FEFO breakdowns actually deducted, same order as lines sent in. */
+  line_batches: { product_id: number; batches: string }[];
 }
 
 export interface Patient {

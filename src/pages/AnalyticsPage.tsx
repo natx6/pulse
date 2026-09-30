@@ -22,7 +22,7 @@ import type {
   ControlledTxn,
 } from "../db";
 import { useStore } from "../store/useStore";
-import type { PaymentLine, PaymentMethod } from "../types";
+import type { CartLine, PaymentLine, PaymentMethod, SaleResult } from "../types";
 import { fmtMoney } from "../lib/money";
 import { beep } from "../lib/audio";
 import { ReceiptModal } from "../components/ReceiptModal";
@@ -402,8 +402,8 @@ export function AnalyticsPage() {
           : "bg-warn-muted text-warn";
 
   const [reprint, setReprint] = useState<{
-    result: { receipt_no: string; sale_id: number; total: number; change: number };
-    lines: { productId: number; name: string; unit: string | null; unitPrice: number; qty: number }[];
+    result: SaleResult;
+    lines: CartLine[];
     subtotal: number;
     tax: number;
     /** Discount snapshot (migration 0024) so reprints explain subtotal > total. */
@@ -723,8 +723,8 @@ export function AnalyticsPage() {
       ]);
       if (!sale) return;
       const items = await db.select<
-        { product_name: string; quantity: number; unit_price: number; unit: string | null }[]
-      >("SELECT product_name, quantity, unit_price, unit FROM sale_items WHERE sale_id = $1", [
+        { product_name: string; quantity: number; unit_price: number; unit: string | null; batches: string | null }[]
+      >("SELECT product_name, quantity, unit_price, unit, batches FROM sale_items WHERE sale_id = $1", [
         sale.id,
       ]);
       const pays = await db.select<
@@ -746,6 +746,7 @@ export function AnalyticsPage() {
           sale_id: sale.id,
           total: Number(sale.total_amount),
           change: Number(sale.change_given ?? 0),
+          line_batches: [],
         },
         lines: items.map((i) => ({
           productId: 0,
@@ -753,6 +754,7 @@ export function AnalyticsPage() {
           unit: i.unit,
           unitPrice: Number(i.unit_price),
           qty: Number(i.quantity),
+          batches: i.batches ?? null,
         })),
         subtotal: sub,
         tax: Number(sale.tax_amount ?? 0),

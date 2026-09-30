@@ -29,6 +29,7 @@ interface SaleItem {
   quantity: number;
   unit_price: number;
   unit: string | null;
+  batches: string | null;
 }
 
 interface SalePayment {
@@ -167,7 +168,7 @@ export function HistoryPage() {
       const d = await initDb();
       const [items, payments, returns] = await Promise.all([
         d.select<SaleItem[]>(
-          `SELECT product_id, product_name, quantity, unit_price, unit
+          `SELECT product_id, product_name, quantity, unit_price, unit, batches
            FROM sale_items WHERE sale_id = $1 ORDER BY id`,
           [sale.id],
         ),
@@ -214,6 +215,7 @@ export function HistoryPage() {
       unit: i.unit,
       unitPrice: i.unit_price,
       qty: i.quantity,
+      batches: i.batches ?? null,
     }));
   }, [detail]);
 
@@ -224,6 +226,7 @@ export function HistoryPage() {
       sale_id: selected.id,
       total: selected.total_amount,
       change: selected.change_given,
+      line_batches: [],
     };
   }, [selected]);
 

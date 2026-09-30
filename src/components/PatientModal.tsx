@@ -100,8 +100,8 @@ export function PatientModal({ name, phone, onClose }: Props) {
       ]);
       if (!sale) return;
       const items = await db.select<
-        { product_name: string; quantity: number; unit_price: number; unit: string | null }[]
-      >("SELECT product_name, quantity, unit_price, unit FROM sale_items WHERE sale_id = $1", [
+        { product_name: string; quantity: number; unit_price: number; unit: string | null; batches: string | null }[]
+      >("SELECT product_name, quantity, unit_price, unit, batches FROM sale_items WHERE sale_id = $1", [
         sale.id,
       ]);
       const pays = await db.select<
@@ -122,6 +122,7 @@ export function PatientModal({ name, phone, onClose }: Props) {
           sale_id: sale.id,
           total: Number(sale.total_amount),
           change: Number(sale.change_given ?? 0),
+          line_batches: [],
         },
         lines: items.map((i) => ({
           productId: 0,
@@ -129,6 +130,7 @@ export function PatientModal({ name, phone, onClose }: Props) {
           unit: i.unit,
           unitPrice: Number(i.unit_price),
           qty: Number(i.quantity),
+          batches: i.batches ?? null,
         })),
         subtotal: sub,
         tax: Number(sale.tax_amount ?? 0),

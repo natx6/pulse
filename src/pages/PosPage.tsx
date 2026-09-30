@@ -7,6 +7,7 @@ import { initDb, savePurchase } from "../db";
 import type { PaymentLine, PaymentMethod, Product, SaleResult } from "../types";
 import { PaymentModal } from "../components/PaymentModal";
 import { ReceiptModal } from "../components/ReceiptModal";
+import { PickHint } from "../components/PickHint";
 import { AddCustomerModal } from "../components/AddCustomerModal";
 import { Tip } from "../components/Tip";
 import { useToast } from "../store/toast";
@@ -169,10 +170,13 @@ export function PosPage() {
 
   const onSaleComplete = async (r: SaleResult, payments: PaymentLine[]) => {
     // Capture receipt header details BEFORE clearing the counter below.
+    // Stamp each line with the batches the ledger actually deducted so the
+    // receipt shows which physical boxes were sold.
     const st = useStore.getState();
+    const batchByProduct = new Map(r.line_batches.map((b) => [b.product_id, b.batches]));
     setLastSale({
       result: r,
-      lines: [...cart],
+      lines: cart.map((l) => ({ ...l, batches: batchByProduct.get(l.productId) ?? null })),
       subtotal,
       discountPct,
       discountAmt,
@@ -622,6 +626,7 @@ export function PosPage() {
                   {fmtMoney(l.unitPrice)}
                 </span>
               </div>
+              <PickHint productId={l.productId} qty={l.qty} />
               <div className="mt-1 flex items-center justify-between gap-2">
                 <div className="flex items-center rounded border border-outline-variant bg-surface">
                   <Tip label="Fewer">

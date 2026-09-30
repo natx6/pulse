@@ -29,6 +29,17 @@ pub struct SaleResult {
     sale_id: i64,
     total: f64,
     change: f64,
+    /// Per-line FEFO breakdowns actually deducted — e.g. "AX-8821@2027-03-15x2".
+    /// The receipt shows these so the worker can match the physical boxes
+    /// handed over against what the ledger consumed.
+    line_batches: Vec<SaleLineBatches>,
+}
+
+/// One sale line's consumed batches, in the same order as the sale lines sent in.
+#[derive(Serialize)]
+pub struct SaleLineBatches {
+    product_id: i64,
+    batches: String,
 }
 
 /// One row of a stock import, produced by the frontend column mapping.
@@ -623,6 +634,7 @@ fn complete_sale_impl(
         )
         .map_err(|e| e.to_string())?;
     }
+    let mut line_batches: Vec<SaleLineBatches> = Vec::with_capacity(lines.len());
     for l in &lines {
         let (price, cost) = catalog[&l.product_id];
         let batches = fefo_deduct(&tx, l.product_id, l.quantity)?;
@@ -632,6 +644,10 @@ fn complete_sale_impl(
             rusqlite::params![sale_id, l.product_id, l.name, l.quantity, price, l.unit, cost, batches],
         )
         .map_err(|e| e.to_string())?;
+        line_batches.push(SaleLineBatches {
+            product_id: l.product_id,
+            batches,
+        });
     }
 
     let detail = format!(
@@ -665,6 +681,7 @@ fn complete_sale_impl(
         sale_id,
         total,
         change,
+        line_batches,
     })
 }
 
@@ -6085,6 +6102,25 @@ mod stress_tests {
             .unwrap();
         assert_eq!(q1, 2, "oldest batch B1 must be consumed first");
         assert_eq!(q2, 5, "newer batch B2 must be untouched");
+    }
+
+    /// The receipt needs the deducted batches: SaleResult must carry the
+    /// exact FEFO breakdown per line, matching sale_items.batches on disk.
+    #[test]
+    fn sale_result_carries_deducted_batches() {
+        let mut c = sdb();
+        let pid = add_product(&c, "Vit C", 2.0, 5.0, 10);
+        add_batch(&c, pid, "B1", "2025-01-01", 5);
+        add_batch(&c, pid, "B2", "2027-01-01", 5);
+        let r = complete_sale_impl(&mut c, vec![cash(35.0)], vec![line(pid, "Vit C", 7, 5.0)], None, None, None, None, None)
+            .expect("sale");
+        assert_eq!(r.line_batches.len(), 1);
+        assert_eq!(r.line_batches[0].product_id, pid);
+        assert_eq!(r.line_batches[0].batches, "B1@2025-01-01x5;B2@2027-01-01x2");
+        let stored: String = c
+            .query_row("SELECT batches FROM sale_items WHERE sale_id=?1", [r.sale_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, r.line_batches[0].batches, "result must match the stored trail");
     }
 
     // Deterministic xorshift so the fuzz is reproducible.
