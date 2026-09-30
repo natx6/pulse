@@ -61,6 +61,9 @@ export function SupportPage() {
     <div className="flex h-full flex-col overflow-hidden bg-surface-container-lowest p-margin-page">
       <div className="mb-4" data-tour="tour-support">
         <h2 className="text-headline-lg font-headline-lg text-on-surface">Support</h2>
+        <p className="mt-1 font-data-mono text-data-mono text-on-surface-variant">
+          Pulse v{version} · Device {deviceId}
+        </p>
         <div className="mt-3 flex w-fit rounded-full border border-outline-variant bg-surface p-1">
           <button
             onClick={() => setTab("help")}
