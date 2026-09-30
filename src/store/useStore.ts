@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { CartLine, PageId, Patient, Product, Role } from "../types";
+import type { AvailableUpdate } from "../lib/updater";
 import { loadOperators as dbLoadOperators, loadProducts, saveSetting, refreshFdaCatalog } from "../db";
 import type { AppUser, Operator } from "../db";
 
@@ -57,6 +58,10 @@ interface AppState {
   maxDiscountPct: number;
   /** FDA catalog refresh job — survives tab switches (see FdaJob). */
   fdaJob: FdaJob;
+  /** Update found by the launch-time check or Settings → Check for updates.
+   * Lives here (not App state) so a manual check raises the banner too. */
+  availableUpdate: AvailableUpdate | null;
+  setAvailableUpdate(u: AvailableUpdate | null): void;
 
   /** Deep-link target set when following a notification: the destination page
    * pulses the matching row. `n` is a nonce so re-clicking the same item
@@ -227,6 +232,8 @@ export const useStore = create<AppState>((set, get) => ({
 
   applySettings: (s) => set({ ...s }),
   setTourOpen: (v) => set({ tourOpen: v }),
+  availableUpdate: null,
+  setAvailableUpdate: (u) => set({ availableUpdate: u }),
   fdaJob: { status: "idle", progress: null, message: "" },
   setFdaProgress: (p) =>
     set((st) => ({

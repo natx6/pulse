@@ -4,7 +4,7 @@ import { useStore } from "./store/useStore";
 import { initScanner } from "./lib/scanner";
 import { beep } from "./lib/audio";
 import { activeOperatorAt } from "./lib/shift";
-import { checkForUpdate, type AvailableUpdate } from "./lib/updater";
+import { checkForUpdate } from "./lib/updater";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
@@ -92,7 +92,8 @@ export default function App() {
   // Auto-update: installed builds check for a newer release on launch and
   // raise a banner — the worker picks the moment, nothing downloads or
   // restarts mid-shift uninvited. The dev app never checks.
-  const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null);
+  const availableUpdate = useStore((s) => s.availableUpdate);
+  const setAvailableUpdate = useStore((s) => s.setAvailableUpdate);
   const [updateNotif, setUpdateNotif] = useState(true);
   useEffect(() => {
     if (import.meta.env.DEV) return;
